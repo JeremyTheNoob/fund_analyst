@@ -78,13 +78,36 @@ def get_fund_daily_info(symbol):
         nav_date = nav_col[0].split('-')[0:3] if nav_col else ['2026', '03', '20']
         nav_date_str = f"{nav_date[0]}-{nav_date[1]}-{nav_date[2]}"
         
+        # 获取净值并转换为数值
+        nav_value = fund_info[nav_col[0]] if nav_col else 1.0
+        try:
+            nav_value = float(nav_value)
+        except (ValueError, TypeError):
+            nav_value = 1.0
+        
+        # 获取日增长率并转换为数值
+        growth_value = fund_info['日增长率']
+        try:
+            growth_value = float(growth_value)
+        except (ValueError, TypeError):
+            growth_value = 0.0
+        
+        # 获取累计净值
+        cum_nav_value = 1.0
+        cum_nav_cols = [col for col in fund_info.index if '累计净值' in col and '20' in col]
+        if cum_nav_cols:
+            try:
+                cum_nav_value = float(fund_info[cum_nav_cols[0]])
+            except (ValueError, TypeError):
+                cum_nav_value = 1.0
+        
         return {
             'code': fund_info['基金代码'],
             'name': fund_info['基金简称'],
             'nav_date': nav_date_str,
-            'nav': fund_info[nav_col[0]] if nav_col else 0,
-            'cum_nav': fund_info[[col for col in fund_info.index if '累计净值' in col and '20' in col][0]] if any('累计净值' in col and '20' in col for col in fund_info.index) else 0,
-            'daily_growth': fund_info['日增长率'],
+            'nav': nav_value,
+            'cum_nav': cum_nav_value,
+            'daily_growth': growth_value,
             'purchase_status': fund_info['申购状态'],
             'redemption_status': fund_info['赎回状态'],
             'fee': fund_info['手续费']
@@ -672,8 +695,8 @@ def main():
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("最新净值", f"{fund_info['nav']:.4f}")
-                st.metric("日增长率", f"{fund_info['daily_growth']:.2f}%")
+                st.metric("最新净值", f"{float(fund_info['nav']):.4f}")
+                st.metric("日增长率", f"{float(fund_info['daily_growth']):.2f}%")
             with col2:
                 st.metric("净值日期", fund_info['nav_date'])
                 st.metric("申购状态", fund_info['purchase_status'])
