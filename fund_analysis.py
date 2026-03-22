@@ -5,16 +5,20 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import statsmodels.api as sm
 
 # ===== 页面配置 =====
 st.set_page_config(
-    page_title="基金穿透式分析",
+    page_title="基金深度分析",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# ===== 数据获取函数（带缓存，10分钟内不重复请求） =====
+# ===================================================
+# 基础数据获取函数
+# ===================================================
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_nav_history(fund_code):
     """获取基金历史净值"""
@@ -30,7 +34,7 @@ def get_nav_history(fund_code):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_fund_detail(fund_code):
-    """获取基金详细信息（规模、费率、成立时间等）"""
+    """获取基金详细信息"""
     try:
         df = ak.fund_individual_detail_info_xq(symbol=fund_code)
         return df
@@ -49,9 +53,8 @@ def get_fund_manager(fund_code):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_portfolio(fund_code):
-    """获取持仓数据"""
+    """获取持仓数据（多个季度）"""
     try:
-        # 尝试获取最近几个季度的数据
         quarters = []
         for year in [2024, 2023]:
             for quarter in ['0630', '0331', '1231', '0930']:
@@ -59,6 +62,7 @@ def get_portfolio(fund_code):
                     df = ak.fund_portfolio_hold_em(symbol=fund_code, date=f"{year}{quarter}")
                     if not df.empty:
                         df['报告期'] = f"{year}-{quarter[:2]}-{quarter[2:]}"
+                        df['占净值比例'] = pd.to_numeric(df['占净值比例'], errors='coerce')
                         quarters.append(df)
                 except:
                     continue
@@ -73,13 +77,14 @@ def get_portfolio_industry(fund_code):
     """获取行业配置数据"""
     try:
         df = ak.fund_portfolio_industry_allocation_em(symbol=fund_code, date="2024")
+        df['占净值比例'] = pd.to_numeric(df['占净值比例'], errors='coerce')
         return df
     except:
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fund_basic_info(fund_code):
-    """从基金日报中获取基金基本信息"""
+    """获取基金基本信息"""
     try:
         df = ak.fund_open_fund_daily_em()
         row = df[df['基金代码'] == fund_code]
@@ -88,13 +93,19 @@ def get_fund_basic_info(fund_code):
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_benchmark_index(index_code):
-    """获取基准指数数据（用于计算Alpha）"""
+def get_index_data(index_code, start_date="20100101"):
+    """获取指数数据（基准）"""
     try:
-        # 默认使用沪深300作为基准
-        if index_code is None:
-            index_code = "sh000300"
-        df = ak.index_zh_a_hist(symbol=index_code, period="daily", start_date="20100101")
+        if index_code == "000300":
+            code = "sh000300"
+        elif index_code == "000905":
+            code = "sh000905"
+        elif index_code == "000852":
+            code = "sh000852"
+        else:
+            code = "sh000300"
+        
+        df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=start_date)
         df['日期'] = pd.to_datetime(df['日期'])
         df['收盘'] = pd.to_numeric(df['收盘'], errors='coerce')
         df = df.sort_values('日期').dropna(subset=['收盘'])
@@ -102,124 +113,265 @@ def get_benchmark_index(index_code):
     except:
         return pd.DataFrame()
 
-# ===== 指标计算函数 =====
-def calc_enhanced_metrics(nav_df, fund_code=None):
-    """计算增强版指标：年化收益、波动率、最大回撤、夏普、卡玛、Alpha"""
+# ===================================================
+# 维度2: 收益与风险分析
+# ===================================================
+
+def calculate_performance_metrics(nav_df, benchmark_df=None):
+    """计算收益与风险指标：年化收益、波动率、Sharpe、Calmar、Sortino、信息比率"""
     nav = nav_df['单位净值'].values
-    returns = pd.Series(nav).pct_change().dropna()
+    daily_returns = pd.Series(nav).pct_change().dropna()
     
-    # 年化收益率
     start_nav = nav[0]
     end_nav = nav[-1]
     days = (nav_df['净值日期'].iloc[-1] - nav_df['净值日期'].iloc[0]).days
     annual_return = (end_nav / start_nav) ** (365 / max(days, 1)) - 1
+    annual_volatility = daily_returns.std() * np.sqrt(252)
     
-    # 年化波动率
-    annual_vol = returns.std() * np.sqrt(252)
+    risk_free_rate = 0.025
+    sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 0 else 0
     
-    # 最大回撤
     cummax = pd.Series(nav).cummax()
     drawdown = (pd.Series(nav) - cummax) / cummax
     max_drawdown = drawdown.min()
+    calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
     
-    # 夏普比率（无风险利率 2.5%）
-    risk_free = 0.025
-    sharpe = (returns.mean() * 252 - risk_free) / annual_vol if annual_vol > 0 else 0
+    downside_returns = daily_returns[daily_returns < 0]
+    downside_deviation = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
+    sortino_ratio = (annual_return - risk_free_rate) / downside_deviation if downside_deviation > 0 else 0
     
-    # 卡玛比率（年化收益 / |最大回撤|）
-    calmar = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
-    
-    # Alpha计算（相对于基准）
+    information_ratio = 0
+    tracking_error = 0
     alpha = 0
     beta = 1
-    try:
-        benchmark_df = get_benchmark_index(None)
-        if not benchmark_df.empty:
-            # 合并基金净值和基准指数数据
-            fund_nav_scaled = pd.DataFrame({
-                'date': nav_df['净值日期'],
-                'fund_return': returns
-            }).set_index('date')
-            
-            benchmark_returns = benchmark_df.set_index('日期')['收盘'].pct_change().dropna()
-            
-            # 合并数据
-            merged = pd.DataFrame({
-                'fund': fund_nav_scaled['fund_return'],
-                'benchmark': benchmark_returns
-            }).dropna()
-            
-            if len(merged) > 30:
-                # 计算Beta
-                covariance = merged['fund'].cov(merged['benchmark'])
-                benchmark_variance = merged['benchmark'].var()
-                beta = covariance / benchmark_variance if benchmark_variance != 0 else 1
-                
-                # 计算Alpha (年化)
-                alpha = (merged['fund'].mean() - beta * merged['benchmark'].mean()) * 252
-    except Exception as e:
-        pass
+    
+    if benchmark_df is not None and not benchmark_df.empty:
+        fund_ret = pd.DataFrame({
+            'date': nav_df['净值日期'],
+            'fund_return': daily_returns
+        }).set_index('date')
+        
+        benchmark_nav = benchmark_df.set_index('日期')['收盘']
+        benchmark_ret = benchmark_nav.pct_change().dropna()
+        
+        merged = pd.DataFrame({
+            'fund': fund_ret['fund_return'],
+            'benchmark': benchmark_ret
+        }).dropna()
+        
+        if len(merged) > 30:
+            excess_returns = merged['fund'] - merged['benchmark']
+            X = sm.add_constant(merged['benchmark'])
+            model = sm.OLS(merged['fund'], X).fit()
+            alpha = model.params[0] * 252
+            beta = model.params[1]
+            tracking_error = excess_returns.std() * np.sqrt(252)
+            information_ratio = alpha / tracking_error if tracking_error > 0 else 0
     
     return {
         'annual_return': annual_return,
-        'annual_vol': annual_vol,
+        'annual_volatility': annual_volatility,
+        'sharpe_ratio': sharpe_ratio,
+        'calmar_ratio': calmar_ratio,
+        'sortino_ratio': sortino_ratio,
         'max_drawdown': max_drawdown,
-        'sharpe': sharpe,
-        'calmar': calmar,
+        'information_ratio': information_ratio,
         'alpha': alpha,
         'beta': beta,
+        'tracking_error': tracking_error,
         'total_return': (end_nav / start_nav - 1),
         'days': days
     }
 
-def calc_turnover_rate(portfolio_df):
-    """计算持仓换手率"""
-    if len(portfolio_df) < 2:
-        return 0
-    
-    # 按报告期分组
-    quarters = portfolio_df['报告期'].unique()
-    if len(quarters) < 2:
-        return 0
-    
-    # 计算相邻季度持仓变化
-    turnover_list = []
-    for i in range(len(quarters) - 1):
-        q1 = portfolio_df[portfolio_df['报告期'] == quarters[i]]
-        q2 = portfolio_df[portfolio_df['报告期'] == quarters[i + 1]]
-        
-        if not q1.empty and not q2.empty:
-            stocks_q1 = set(q1['股票名称'].unique())
-            stocks_q2 = set(q2['股票名称'].unique())
-            
-            # 换手率 = (新增 + 清空) / 2 / 10
-            new_stocks = len(stocks_q2 - stocks_q1)
-            removed_stocks = len(stocks_q1 - stocks_q2)
-            turnover = (new_stocks + removed_stocks) / 20
-            turnover_list.append(turnover)
-    
-    return np.mean(turnover_list) * 100 if turnover_list else 0
+# ===================================================
+# 维度3: 持仓结构分析 (HHI指数)
+# ===================================================
 
-def analyze_industry_concentration(industry_df):
-    """分析行业集中度"""
-    if industry_df.empty:
-        return {'top1': 0, 'top3': 0, 'top5': 0, 'is_concentrated': False}
+def calculate_portfolio_structure(portfolio_df, industry_df):
+    """计算持仓结构指标：HHI指数、行业集中度、换手率"""
+    metrics = {}
     
-    industry_df['占净值比例'] = pd.to_numeric(industry_df['占净值比例'], errors='coerce')
-    top_industries = industry_df.nlargest(5, '占净值比例')
+    if not portfolio_df.empty:
+        latest_quarter = portfolio_df['报告期'].iloc[0]
+        latest_portfolio = portfolio_df[portfolio_df['报告期'] == latest_quarter]
+        
+        if not latest_portfolio.empty and '占净值比例' in latest_portfolio.columns:
+            weights = latest_portfolio['占净值比例'].values / 100
+            hhi = np.sum(weights ** 2)
+            
+            if hhi < 0.05:
+                hhi_level = "高度分散"
+            elif hhi < 0.10:
+                hhi_level = "分散"
+            elif hhi < 0.18:
+                hhi_level = "适中"
+            else:
+                hhi_level = "集中"
+            
+            metrics['hhi'] = hhi
+            metrics['hhi_level'] = hhi_level
+            metrics['top10_ratio'] = weights.sum() * 100
+            metrics['top3_ratio'] = weights[:3].sum() * 100 if len(weights) >= 3 else weights.sum() * 100
+            metrics['top1_ratio'] = weights[0] * 100 if len(weights) > 0 else 0
+    
+    if not industry_df.empty:
+        if '占净值比例' in industry_df.columns:
+            industry_weights = industry_df['占净值比例'].values / 100
+            industry_hhi = np.sum(industry_weights ** 2)
+            metrics['industry_hhi'] = industry_hhi
+            metrics['top_industry_ratio'] = industry_weights[0] * 100 if len(industry_weights) > 0 else 0
+            metrics['top3_industry_ratio'] = industry_weights[:3].sum() * 100 if len(industry_weights) >= 3 else 0
+    
+    if len(portfolio_df) >= 2:
+        quarters = sorted(portfolio_df['报告期'].unique(), reverse=True)
+        turnover_rates = []
+        
+        for i in range(len(quarters) - 1):
+            q1_stocks = set(portfolio_df[portfolio_df['报告期'] == quarters[i]]['股票名称'].values)
+            q2_stocks = set(portfolio_df[portfolio_df['报告期'] == quarters[i+1]]['股票名称'].values)
+            
+            new_stocks = len(q2_stocks - q1_stocks)
+            removed_stocks = len(q1_stocks - q2_stocks)
+            quarterly_turnover = (new_stocks + removed_stocks) / 20
+            turnover_rates.append(quarterly_turnover)
+        
+        metrics['turnover_rate'] = np.mean(turnover_rates) * 100 if turnover_rates else 0
+    else:
+        metrics['turnover_rate'] = 0
+    
+    return metrics
+
+# ===================================================
+# 维度4: 晨星九宫格风格判定
+# ===================================================
+
+def morningstar_style_box(nav_df, portfolio_df, industry_df):
+    """晨星九宫格风格判定：X轴大盘vs小盘，Y轴价值vs成长"""
+    style_metrics = {}
+    
+    if not portfolio_df.empty:
+        latest_quarter = portfolio_df['报告期'].iloc[0]
+        latest_portfolio = portfolio_df[portfolio_df['报告期'] == latest_quarter]
+    else:
+        return {'style': '数据不足', 'position': 'N/A'}
+    
+    large_cap_keywords = ['银行', '保险', '证券', '白酒', '家电', '地产', '公用', '交运']
+    mid_cap_keywords = ['医药', '汽车', '建材', '化工', '机械']
+    small_cap_keywords = ['科技', '电子', '新能源', '军工', '环保']
+    
+    large_cap_count = 0
+    small_cap_count = 0
+    
+    if not latest_portfolio.empty and '股票名称' in latest_portfolio.columns:
+        for stock in latest_portfolio['股票名称'].values:
+            if any(kw in stock for kw in large_cap_keywords):
+                large_cap_count += 1
+            elif any(kw in stock for kw in small_cap_keywords):
+                small_cap_count += 1
+        
+        total = len(latest_portfolio)
+        if total > 0:
+            large_cap_ratio = large_cap_count / total
+            small_cap_ratio = small_cap_count / total
+            
+            if large_cap_ratio > 0.6:
+                cap_style = "大盘"
+            elif small_cap_ratio > 0.6:
+                cap_style = "小盘"
+            else:
+                cap_style = "中盘"
+        else:
+            cap_style = "数据不足"
+    else:
+        cap_style = "数据不足"
+    
+    value_keywords = ['银行', '保险', '地产', '公用', '交运', '基建', '煤炭', '钢铁']
+    growth_keywords = ['新能源', '电子', '半导体', '医药生物', '军工', '高端制造', '人工智能']
+    
+    value_count = 0
+    growth_count = 0
+    
+    if not latest_portfolio.empty and '股票名称' in latest_portfolio.columns:
+        for stock in latest_portfolio['股票名称'].values:
+            if any(kw in stock for kw in value_keywords):
+                value_count += 1
+            elif any(kw in stock for kw in growth_keywords):
+                growth_count += 1
+        
+        total = len(latest_portfolio)
+        if total > 0:
+            value_ratio = value_count / total
+            growth_ratio = growth_count / total
+            
+            if value_ratio > 0.6:
+                value_style = "价值"
+            elif growth_ratio > 0.6:
+                value_style = "成长"
+            else:
+                value_style = "平衡"
+        else:
+            value_style = "数据不足"
+    else:
+        value_style = "数据不足"
+    
+    style_metrics['cap_style'] = cap_style
+    style_metrics['value_style'] = value_style
+    style_metrics['style'] = f"{cap_style}{value_style}" if cap_style != "数据不足" and value_style != "数据不足" else "数据不足"
+    
+    return style_metrics
+
+# ===================================================
+# 维度5: Fama-French三因子模型
+# ===================================================
+
+def fama_french_three_factor(nav_df, benchmark_df=None):
+    """Fama-French三因子模型回归（简化版：使用CAPM单因子）"""
+    daily_returns = pd.Series(nav_df['单位净值'].values).pct_change().dropna()
+    dates = nav_df['净值日期'].iloc[1:].values
+    
+    if benchmark_df is not None and not benchmark_df.empty:
+        fund_ret = pd.DataFrame({
+            'date': dates,
+            'fund_return': daily_returns.values
+        }).set_index('date')
+        
+        benchmark_nav = benchmark_df.set_index('日期')['收盘']
+        benchmark_ret = benchmark_nav.pct_change().dropna()
+        
+        merged = pd.DataFrame({
+            'fund': fund_ret['fund_return'],
+            'market': benchmark_ret
+        }).dropna()
+        
+        if len(merged) > 60:
+            risk_free_daily = 0.025 / 252
+            merged['fund_excess'] = merged['fund'] - risk_free_daily
+            merged['market_excess'] = merged['market'] - risk_free_daily
+            
+            X = sm.add_constant(merged['market_excess'])
+            model = sm.OLS(merged['fund_excess'], X).fit()
+            
+            return {
+                'alpha': model.params[0] * 252,
+                'beta_market': model.params[1],
+                'r_squared': model.rsquared,
+                'p_value': model.pvalues[1]
+            }
     
     return {
-        'top1': top_industries['占净值比例'].iloc[0] if len(top_industries) > 0 else 0,
-        'top3': top_industries['占净值比例'].head(3).sum() if len(top_industries) >= 3 else 0,
-        'top5': top_industries['占净值比例'].sum(),
-        'top_industries': top_industries.head(5)
+        'alpha': 0,
+        'beta_market': 1,
+        'r_squared': 0,
+        'p_value': 1
     }
 
-# ===== 标题 =====
-st.title("📊 基金深度分析工具")
-st.markdown("基于 AkShare 数据源，5 维度穿透式分析")
+# ===================================================
+# 主界面
+# ===================================================
 
-# ===== 侧边栏 =====
+st.title("📊 基金深度分析工具")
+st.markdown("基于 AkShare 数据源，5 维度专业量化分析")
+
 with st.sidebar:
     st.header("🔍 基金查询")
     fund_code = st.text_input(
@@ -228,28 +380,35 @@ with st.sidebar:
         max_chars=6,
         help="例如：014416 泰康研究精选股票"
     )
+    
+    st.markdown("#### 基准选择")
+    benchmark_choice = st.selectbox(
+        "比较基准",
+        ["沪深300 (000300)", "中证500 (000905)", "中证1000 (000852)"],
+        index=0
+    )
+    benchmark_code = benchmark_choice.split('(')[1].split(')')[0]
+    
     run = st.button("🚀 开始分析", type="primary", use_container_width=True)
     st.markdown("---")
     st.caption("📌 数据来源：AkShare")
     st.caption("⚠️ 仅供学习参考，不构成投资建议")
 
-# ===== 欢迎页 =====
 if not run:
     st.info("👈 请在左侧输入基金代码，点击「开始分析」")
     cols = st.columns(5)
     with cols[0]:
-        st.markdown("#### 📋 身份扫描\n规模、费率、成立时间")
+        st.markdown("#### 📋 基本信息\n规模、费率、类型")
     with cols[1]:
-        st.markdown("#### 📈 性价比分析\nAlpha、夏普、卡玛比率")
+        st.markdown("#### 📈 收益风险\nSharpe、Calmar、Sortino")
     with cols[2]:
-        st.markdown("#### 👤 经理灵魂拷问\n风格稳定性、回撤控制")
+        st.markdown("#### 👤 基金经理\n经验、能力雷达图")
     with cols[3]:
-        st.markdown("#### 📦 持仓透视镜\n集中度、换手率")
+        st.markdown("#### 📦 持仓分析\nHHI指数、集中度、换手")
     with cols[4]:
-        st.markdown("#### 🎯 归因分析\nBeta、规模、风格因子")
+        st.markdown("#### 🎯 风格归因\n晨星九宫格、FF三因子")
     st.stop()
 
-# ===== 获取数据 =====
 progress_bar = st.progress(0, text="正在获取数据...")
 
 try:
@@ -295,22 +454,20 @@ except:
 
 progress_bar.empty()
 
-# ===== 计算指标 =====
-metrics = calc_enhanced_metrics(nav_df, fund_code)
-turnover_rate = calc_turnover_rate(portfolio_df) if not portfolio_df.empty else 0
-industry_concentration = analyze_industry_concentration(industry_df)
+benchmark_df = get_index_data(benchmark_code)
 
-# ===== 基金概览 =====
+performance_metrics = calculate_performance_metrics(nav_df, benchmark_df)
+portfolio_metrics = calculate_portfolio_structure(portfolio_df, industry_df)
+style_metrics = morningstar_style_box(nav_df, portfolio_df, industry_df)
+ff_metrics = fama_french_three_factor(nav_df, benchmark_df)
+
 st.success("✅ 数据获取成功")
 st.markdown("---")
 
-# 获取基金名称和状态
 fund_name = "—"
 fund_type = "—"
 fund_size = "—"
 establish_date = "—"
-management_fee = "—"
-custody_fee = "—"
 buy_status = "—"
 sell_status = "—"
 
@@ -321,8 +478,6 @@ if not detail_df.empty:
         fund_type = row.get('基金类型', '—')
         fund_size = row.get('基金规模', '—')
         establish_date = row.get('成立日期', '—')
-        management_fee = row.get('管理费率', '—')
-        custody_fee = row.get('托管费率', '—')
 
 if not basic_df.empty:
     row = basic_df.iloc[0]
@@ -341,35 +496,7 @@ overview_cols[5].metric("赎回状态", sell_status)
 
 st.markdown("---")
 
-# ===================================================
-# 维度 1：基金身份扫描
-# ===================================================
-st.header("📋 维度一：基金身份扫描")
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("基金类型", fund_type)
-c2.metric("成立日期", establish_date)
-c3.metric("管理费率", management_fee if management_fee != "—" else "见合同")
-c4.metric("托管费率", custody_fee if custody_fee != "—" else "见合同")
-
-if fund_size != "—":
-    try:
-        size_value = float(str(fund_size).replace('亿', '').replace('万', '').strip())
-        if size_value > 500:
-            st.warning(f"⚠️ 基金规模较大（{fund_size}），需警惕风格漂移风险")
-        elif size_value < 2:
-            st.warning(f"⚠️ 基金规模较小（{fund_size}），可能面临清盘风险")
-        else:
-            st.success(f"✅ 基金规模适中（{fund_size}），运作稳定")
-    except:
-        pass
-
-st.markdown("---")
-
-# ===================================================
-# 维度 2：收益与风险的"性价比"
-# ===================================================
-st.header("📈 维度二：收益与风险的性价比")
+st.header("📈 维度二：收益与风险分析")
 
 left, right = st.columns([3, 1])
 
@@ -397,26 +524,28 @@ with left:
 with right:
     st.markdown("#### 核心指标")
     
-    ar = metrics['annual_return']
-    av = metrics['annual_vol']
-    md = metrics['max_drawdown']
-    sr = metrics['sharpe']
-    cr = metrics['calmar']
-    alpha = metrics['alpha']
-    beta = metrics['beta']
-    tr = metrics['total_return']
+    ar = performance_metrics['annual_return']
+    av = performance_metrics['annual_volatility']
+    md = performance_metrics['max_drawdown']
+    sr = performance_metrics['sharpe_ratio']
+    cr = performance_metrics['calmar_ratio']
+    sotr = performance_metrics['sortino_ratio']
+    ir = performance_metrics['information_ratio']
+    alpha = performance_metrics['alpha']
+    beta = performance_metrics['beta']
     
     ar_delta = f"{'↑' if ar >= 0 else '↓'}"
     st.metric("年化收益率", f"{ar*100:.2f}%", delta=ar_delta, delta_color="normal" if ar >= 0 else "inverse")
-    st.metric("超额收益(Alpha)", f"{alpha*100:.2f}%")
     st.metric("年化波动率", f"{av*100:.2f}%")
     st.metric("最大回撤", f"{md*100:.2f}%")
     st.metric("夏普比率", f"{sr:.2f}")
     st.metric("卡玛比率", f"{cr:.2f}")
-    st.metric("Beta系数", f"{beta:.2f}")
-    st.metric("成立以来总收益", f"{tr*100:.2f}%")
+    st.metric("Sortino比率", f"{sotr:.2f}")
+    st.metric("Alpha", f"{alpha*100:.2f}%")
+    st.metric("Beta", f"{beta:.2f}")
+    if ir != 0:
+        st.metric("信息比率", f"{ir:.2f}")
     
-    # 风险评级
     if av < 0.10:
         risk_label, risk_color = "低风险 🟢", "success"
     elif av < 0.20:
@@ -428,102 +557,85 @@ with right:
     
     getattr(st, risk_color)(f"风险等级：{risk_label}")
 
+with st.expander("📖 指标说明"):
+    st.markdown("""
+    - **夏普比率**: 每承担一单位风险带来的超额收益，>1为优秀
+    - **卡玛比率**: 年化收益/|最大回撤|，反映回撤控制的性价比
+    - **Sortino比率**: 只考虑下行风险，适合厌恶回撤的投资者
+    - **Alpha**: 相对于基准的超额收益，>0表示跑赢基准
+    - **Beta**: 市场敏感度，>1表示波动大于大盘
+    - **信息比率**: Alpha/跟踪误差，衡量超额收益的稳定性
+    """)
+
 st.markdown("---")
 
-# ===================================================
-# 维度 3：持仓"透视镜"
-# ===================================================
-st.header("📦 维度三：持仓透视镜")
+st.header("📦 维度三：持仓结构分析 (HHI指数)")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("持仓HHI指数", f"{portfolio_metrics.get('hhi', 0):.3f}")
+    st.caption(portfolio_metrics.get('hhi_level', '数据不足'))
+
+with col2:
+    st.metric("前10持仓占比", f"{portfolio_metrics.get('top10_ratio', 0):.2f}%")
+
+with col3:
+    st.metric("换手率", f"{portfolio_metrics.get('turnover_rate', 0):.1f}%")
+
+hhi = portfolio_metrics.get('hhi', 0)
+if hhi < 0.05:
+    st.success(f"✅ HHI={hhi:.3f}: 持仓高度分散，个股风险低")
+elif hhi < 0.10:
+    st.info(f"🟡 HHI={hhi:.3f}: 持仓分散，风险适中")
+elif hhi < 0.18:
+    st.warning(f"🟠 HHI={hhi:.3f}: 持仓相对集中，关注集中度风险")
+else:
+    st.error(f"🔴 HHI={hhi:.3f}: 持仓高度集中，个股风险暴露大")
+
+turnover = portfolio_metrics.get('turnover_rate', 0)
+if turnover > 70:
+    st.warning(f"⚠️ 高换手率（{turnover:.1f}%）：短线博弈风格，交易成本高")
+elif turnover > 40:
+    st.info(f"🟡 中等换手率（{turnover:.1f}%）：中等风格")
+else:
+    st.success(f"✅ 低换手率（{turnover:.1f}%）：长线持有风格，交易成本低")
 
 if not portfolio_df.empty:
-    latest_portfolio = portfolio_df[portfolio_df['报告期'] == portfolio_df['报告期'].iloc[0]].head(10).copy()
-    latest_portfolio['占净值比例'] = pd.to_numeric(latest_portfolio['占净值比例'], errors='coerce')
+    st.markdown("#### 最新持仓")
+    latest_quarter = portfolio_df['报告期'].iloc[0]
+    latest_portfolio = portfolio_df[portfolio_df['报告期'] == latest_quarter].head(10)
     
-    p1, p2 = st.columns([1, 1])
+    display_cols = ['股票代码', '股票名称', '占净值比例']
+    available_cols = [c for c in display_cols if c in latest_portfolio.columns]
+    st.dataframe(latest_portfolio[available_cols], hide_index=True, use_container_width=True)
+    st.caption(f"报告期：{latest_quarter}")
+
+if 'industry_hhi' in portfolio_metrics:
+    st.markdown("#### 行业配置")
     
-    with p1:
-        st.markdown("#### 前十大重仓股")
-        display_cols = ['股票代码', '股票名称', '占净值比例']
-        available_cols = [c for c in display_cols if c in latest_portfolio.columns]
-        if '报告期' in latest_portfolio.columns:
-            st.caption(f"报告期：{latest_portfolio['报告期'].iloc[0]}")
-        st.dataframe(latest_portfolio[available_cols], hide_index=True, use_container_width=True)
-    
-    with p2:
-        st.markdown("#### 重仓股分布")
-        fig3 = px.pie(
-            latest_portfolio,
-            values='占净值比例',
-            names='股票名称',
-            color_discrete_sequence=px.colors.sequential.RdBu
-        )
-        fig3.update_traces(textposition='inside', textinfo='percent+label')
-        fig3.update_layout(height=380, margin=dict(t=20, b=20), showlegend=False)
-        st.plotly_chart(fig3, use_container_width=True)
-    
-    # 集中度分析
-    top10_ratio = latest_portfolio['占净值比例'].sum()
-    top3_ratio = latest_portfolio['占净值比例'].head(3).sum()
-    top1_ratio = latest_portfolio['占净值比例'].head(1).sum()
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("第一大持仓占比", f"{top1_ratio:.2f}%")
-    c2.metric("前三大持仓占比", f"{top3_ratio:.2f}%")
-    c3.metric("前十大持仓占比", f"{top10_ratio:.2f}%")
-    
-    # 换手率分析
-    st.markdown("#### 持仓风格分析")
-    if turnover_rate > 70:
-        st.warning(f"⚠️ 高换手率（{turnover_rate:.1f}%）：短线博弈风格，交易成本较高")
-    elif turnover_rate > 40:
-        st.info(f"🟡 中等换手率（{turnover_rate:.1f}%）：中等风格，适度调整持仓")
-    else:
-        st.success(f"✅ 低换手率（{turnover_rate:.1f}%）：长线持有风格，交易成本低")
+    i1, i2 = st.columns(2)
+    i1.metric("行业HHI", f"{portfolio_metrics['industry_hhi']:.3f}")
+    i2.metric("第一大行业占比", f"{portfolio_metrics.get('top_industry_ratio', 0):.2f}%")
     
     if not industry_df.empty:
-        st.markdown("#### 行业配置分析")
-        ind = industry_concentration
-        ind_top = ind.get('top_industries', pd.DataFrame())
-        
-        if not ind_top.empty:
-            i1, i2, i3 = st.columns(3)
-            i1.metric("第一大行业占比", f"{ind['top1']:.2f}%")
-            i2.metric("前三行业占比", f"{ind['top3']:.2f}%")
-            i3.metric("前五行业占比", f"{ind['top5']:.2f}%")
-            
-            # 行业配置图
-            fig4 = px.bar(
-                ind_top.head(10),
-                x='占净值比例',
-                y='行业名称',
-                orientation='h',
-                color_discrete_sequence=px.colors.sequential.Reds
-            )
-            fig4.update_layout(
-                title="行业配置 Top 10",
-                xaxis_title="占净值比例 (%)",
-                yaxis_title="行业",
-                height=400,
-                margin=dict(t=40, b=20)
-            )
-            st.plotly_chart(fig4, use_container_width=True)
-            
-            # 行业集中度提示
-            if ind['top1'] > 30:
-                st.warning(f"⚠️ 行业高度集中：第一大行业占比 {ind['top1']:.2f}%，存在赛道风险")
-            elif ind['top5'] > 70:
-                st.info(f"🟡 行业相对集中：前五大行业占比 {ind['top5']:.2f}%")
-            else:
-                st.success(f"✅ 行业配置分散：前五大行业占比 {ind['top5']:.2f}%")
-else:
-    st.warning("⚠️ 未找到该基金的持仓数据（部分基金不公开详细持仓）")
+        fig_industry = px.bar(
+            industry_df.head(10),
+            x='占净值比例',
+            y='行业名称',
+            orientation='h',
+            color_discrete_sequence=px.colors.sequential.Reds
+        )
+        fig_industry.update_layout(
+            title="行业配置 Top 10",
+            height=400,
+            margin=dict(t=40, b=20)
+        )
+        st.plotly_chart(fig_industry, use_container_width=True)
 
 st.markdown("---")
 
-# ===================================================
-# 维度 4：基金经理"灵魂拷问"
-# ===================================================
-st.header("👤 维度四：基金经理灵魂拷问")
+st.header("👤 维度四：基金经理分析")
 
 if not manager_df.empty:
     m = manager_df.iloc[0]
@@ -533,8 +645,6 @@ if not manager_df.empty:
     tenure_days = int(''.join(filter(str.isdigit, tenure_days_str))) if tenure_days_str else 0
     tenure_years = tenure_days / 365
     scale = m.get('现任基金资产总规模', '—')
-    best_return = m.get('现任基金最佳回报', '—')
-    funds_count = m.get('任职基金只数', '—')
     
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("基金经理", manager_name)
@@ -542,155 +652,112 @@ if not manager_df.empty:
     m3.metric("从业年限", f"{tenure_years:.1f} 年")
     m4.metric("管理规模", f"{scale} 亿")
     
-    # 能力雷达图
-    st.markdown("#### 基金经理能力评估")
+    st.markdown("#### 能力评估")
     
     tenure_score = min(tenure_years / 10 * 100, 100)
     scale_val = float(str(scale).replace('亿', '').strip()) if scale != '—' else 10
     scale_score = min(scale_val / 100 * 100, 100)
-    return_score = min(max(metrics['annual_return'] * 100 + 50, 0), 100)
-    drawdown_score = max(0, 100 + metrics['max_drawdown'] * 200)
-    sharpe_score = min(max(metrics['sharpe'] * 30 + 50, 0), 100)
-    turnover_score = max(0, 100 - turnover_rate)
+    return_score = min(max(ar * 100 + 50, 0), 100)
+    drawdown_score = max(0, 100 + md * 200)
+    sharpe_score = min(max(sr * 30 + 50, 0), 100)
     
-    categories = ['任职年限', '管理规模', '收益能力', '回撤控制', '夏普表现', '持仓稳定']
-    values = [tenure_score, scale_score, return_score, drawdown_score, sharpe_score, turnover_score]
+    categories = ['任职年限', '管理规模', '收益能力', '回撤控制', '夏普表现']
+    values = [tenure_score, scale_score, return_score, drawdown_score, sharpe_score]
     
-    fig2 = go.Figure(go.Scatterpolar(
+    fig_radar = go.Figure(go.Scatterpolar(
         r=values + [values[0]],
         theta=categories + [categories[0]],
         fill='toself',
         fillcolor='rgba(232,71,71,0.15)',
         line=dict(color='#E84747', width=2)
     ))
-    fig2.update_layout(
+    fig_radar.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
         height=400,
         margin=dict(t=20, b=20)
     )
-    st.plotly_chart(fig2, use_container_width=True)
-    
-    # 历史表现分析
-    st.markdown("#### 历史表现分析")
-    
-    # 检查大熊市表现（2018、2022）
-    crash_years = [2018, 2022]
-    crash_performance = []
-    
-    for year in crash_years:
-        year_nav = nav_df[nav_df['净值日期'].dt.year == year]
-        if not year_nav.empty:
-            year_return = (year_nav['单位净值'].iloc[-1] / year_nav['单位净值'].iloc[0] - 1) * 100
-            crash_performance.append({
-                'year': year,
-                'return': year_return
-            })
-    
-    if crash_performance:
-        c1, c2 = st.columns(2)
-        for cp in crash_performance:
-            year = cp['year']
-            ret = cp['return']
-            if ret > -10:
-                msg = f"✅ {year}年表现优异：{ret:.2f}%（同期市场大跌，经理风控能力突出）"
-                c1 if year == 2018 else c2.success(msg)
-            elif ret > -25:
-                msg = f"🟡 {year}年表现中等：{ret:.2f}%（低于市场跌幅，有一定抗跌能力）"
-                c1 if year == 2018 else c2.warning(msg)
-            else:
-                msg = f"⚠️ {year}年表现较差：{ret:.2f}%（回撤较大，需关注经理的回撤控制）"
-                c1 if year == 2018 else c2.error(msg)
-    
-    # 从业年限评价
-    if tenure_years >= 10:
-        st.success(f"✅ 从业{tenure_years:.0f}年，经验丰富，经历过完整牛熊周期")
-    elif tenure_years >= 5:
-        st.info(f"🟡 从业{tenure_years:.1f}年，有一定经验，但需观察更长期表现")
-    else:
-        st.warning(f"⚠️ 从业{tenure_years:.1f}年，经验相对较短，稳定性待观察")
+    st.plotly_chart(fig_radar, use_container_width=True)
 else:
     st.warning("⚠️ 未找到该基金的经理信息")
 
 st.markdown("---")
 
-# ===================================================
-# 维度 5：归因分析 (Style & Attribution)
-# ===================================================
-st.header("🎯 维度五：归因分析")
+st.header("🎯 维度五：风格与归因分析")
 
-beta = metrics['beta']
-alpha = metrics['alpha']
+st.markdown("#### 晨星九宫格风格判定")
+style = style_metrics.get('style', '数据不足')
+cap_style = style_metrics.get('cap_style', '—')
+value_style = style_metrics.get('value_style', '—')
 
-b1, b2 = st.columns(2)
-b1.metric("Beta系数", f"{beta:.2f}", 
-         "Beta>1: 跟涨跟跌 | Beta<1: 相对稳健" if beta >= 1 else "Beta<1: 防御性强 | Beta>1: 攻击性强")
-b2.metric("Alpha收益", f"{alpha*100:.2f}%", 
-         "正Alpha: 跑赢基准 | 负Alpha: 跑输基准" if alpha >= 0 else "负Alpha: 跑输基准 | 正Alpha: 跑赢基准")
+col_s1, col_s2, col_s3 = st.columns(3)
+col_s1.metric("市值风格", cap_style)
+col_s2.metric("价值/成长风格", value_style)
+col_s3.metric("综合风格", style)
 
-st.markdown("#### 收益来源解析")
+fig_style = go.Figure()
+fig_style.add_shape(type="rect", x0=-1, y0=-1, x1=1, y1=1, line=dict(color="gray", width=2))
+fig_style.add_shape(type="line", x0=0, y0=-1.2, x1=0, y1=1.2, line=dict(color="gray", width=1, dash="dash"))
+fig_style.add_shape(type="line", x0=-1.2, y0=0, x1=1.2, y1=0, line=dict(color="gray", width=1, dash="dash"))
 
-# 基于Beta和Alpha分解收益
-total_return = metrics['annual_return']
-market_return = total_return * beta
-excess_return = alpha
+x_pos = 0.5 if cap_style == "大盘" else (-0.5 if cap_style == "小盘" else 0)
+y_pos = 0.5 if value_style == "价值" else (-0.5 if value_style == "成长" else 0)
 
-if beta > 1.1:
-    st.warning(f"⚠️ 高Beta（{beta:.2f}）：基金走势受市场影响大，牛市时涨幅更高，熊市时回撤也更大")
-elif beta < 0.9:
-    st.success(f"✅ 低Beta（{beta:.2f}）：基金相对抗跌，适合风险厌恶型投资者")
-else:
-    st.info(f"🟡 中等Beta（{beta:.2f}）：基金走势与市场基本同步")
+fig_style.add_trace(go.Scatter(
+    x=[x_pos],
+    y=[y_pos],
+    mode='markers',
+    marker=dict(size=30, color='#E84747'),
+    name='当前风格'
+))
 
-if alpha > 0.05:
-    st.success(f"✅ 正Alpha（{alpha*100:.2f}%）：基金经理创造超额收益能力强")
-elif alpha < -0.02:
-    st.warning(f"⚠️ 负Alpha（{alpha*100:.2f}%）：基金经理持续跑输基准，需谨慎")
-else:
-    st.info(f"🟡 Alpha接近0（{alpha*100:.2f}%）：基金经理基本复制基准，未创造显著超额收益")
+fig_style.update_layout(
+    title="晨星九宫格风格定位",
+    xaxis=dict(title="大盘 ←→ 小盘", range=[-1.2, 1.2], zeroline=False),
+    yaxis=dict(title="价值 ←→ 成长", range=[-1.2, 1.2], zeroline=False),
+    showlegend=False,
+    height=400,
+    margin=dict(t=40, b=20)
+)
 
-st.markdown("#### 因子暴露分析（基于持仓特征推断）")
+fig_style.add_annotation(x=-0.9, y=0.9, text="大盘价值", showarrow=False, font=dict(size=12))
+fig_style.add_annotation(x=0, y=0.9, text="大盘平衡", showarrow=False, font=dict(size=12))
+fig_style.add_annotation(x=0.9, y=0.9, text="大盘成长", showarrow=False, font=dict(size=12))
+fig_style.add_annotation(x=-0.9, y=-0.9, text="小盘价值", showarrow=False, font=dict(size=12))
+fig_style.add_annotation(x=0, y=-0.9, text="小盘平衡", showarrow=False, font=dict(size=12))
+fig_style.add_annotation(x=0.9, y=-0.9, text="小盘成长", showarrow=False, font=dict(size=12))
 
-# 基于行业配置推断风格因子
-if not industry_df.empty and not industry_concentration.get('top_industries', pd.DataFrame()).empty:
-    top_industry = industry_concentration['top_industries'].iloc[0]['行业名称'] if len(industry_concentration['top_industries']) > 0 else "—"
-    
-    # 简单的风格推断逻辑
-    style_factors = []
-    
-    # 成长vs价值
-    if '科技' in top_industry or '半导体' in top_industry or '新能源' in top_industry or '医药' in top_industry:
-        style_factors.append("🎯 成长风格：偏好高成长赛道，波动较大但弹性强")
-    elif '银行' in top_industry or '地产' in top_industry or '公用' in top_industry:
-        style_factors.append("💎 价值风格：偏好低估值板块，防守性强但爆发力一般")
-    else:
-        style_factors.append("⚖️ 均衡风格：成长与价值并重")
-    
-    # 市值偏好
-    if '大盘' in top_industry:
-        style_factors.append("📊 大盘风格：偏好大盘蓝筹，流动性好但弹性一般")
-    elif '中小' in top_industry or '成长' in top_industry:
-        style_factors.append("🚀 小盘风格：偏好中小盘，弹性大但流动性风险高")
-    
-    for factor in style_factors:
-        st.markdown(factor)
-else:
-    st.info("📝 风格因子分析需要完整的行业配置数据，当前数据不足")
+st.plotly_chart(fig_style, use_container_width=True)
+
+st.markdown("#### Fama-French因子分析")
+alpha_ff = ff_metrics.get('alpha', 0)
+beta_market = ff_metrics.get('beta_market', 1)
+r_squared = ff_metrics.get('r_squared', 0)
+
+col_f1, col_f2, col_f3 = st.columns(3)
+col_f1.metric("Alpha", f"{alpha_ff*100:.2f}%")
+col_f2.metric("Market Beta", f"{beta_market:.2f}")
+col_f3.metric("R²拟合度", f"{r_squared:.2f}")
+
+st.markdown("""
+**CAPM模型回归结果**:
+Ri - Rf = α + β(Rm - Rf) + ε
+
+- **Alpha > 0**: 基金经理创造超额收益
+- **Beta > 1**: 基金波动大于市场
+- **R²**: 模型解释度，越接近1说明收益主要来自市场因子
+""")
 
 st.markdown("---")
 
-# ===================================================
-# 综合评分
-# ===================================================
 st.header("💡 综合评估")
 
-# 更新评分逻辑，加入更多维度
-score_r = min(max(metrics['annual_return'] * 100 + 30, 0), 25)      # 收益 25分
-score_s = min(max(metrics['sharpe'] * 15 + 20, 0), 20)               # 夏普 20分
-score_d = min(max((1 + metrics['max_drawdown']) * 25, 0), 20)        # 回撤 20分
-score_a = min(max(metrics['alpha'] * 100 + 50, 0), 15)               # Alpha 15分
-score_t = max(0, 20 - turnover_rate / 5)                              # 换手率 20分
+score_return = min(max(ar * 100 + 50, 0), 25)
+score_sharpe = min(max(sr * 15 + 10, 0), 20)
+score_drawdown = min(max((1 + md) * 20, 0), 20)
+score_alpha = min(max(alpha * 100 + 50, 0), 20)
+score_concentration = max(0, 15 - portfolio_metrics.get('hhi', 0) * 100)
 
-total_score = score_r + score_s + score_d + score_a + score_t
+total_score = score_return + score_sharpe + score_drawdown + score_alpha + score_concentration
 
 if total_score >= 85:
     rating = "⭐⭐⭐⭐⭐ 卓越"
@@ -713,79 +780,46 @@ with sc1:
     st.metric("综合评分", f"{total_score:.0f} / 100")
     getattr(st, rating_color)(f"综合评级：{rating}")
     
-    # 评分明细
     with st.expander("📊 评分明细"):
-        st.write(f"- 收益能力：{score_r:.0f}/25（年化收益率{ar*100:.2f}%，Alpha{alpha*100:.2f}%）")
-        st.write(f"- 风险调整收益：{score_s:.0f}/20（夏普比率{sr:.2f}）")
-        st.write(f"- 回撤控制：{score_d:.0f}/20（最大回撤{md*100:.2f}%，卡玛比率{cr:.2f}）")
-        st.write(f"- 超额收益：{score_a:.0f}/15（Alpha{alpha*100:.2f}%）")
-        st.write(f"- 持仓稳定：{score_t:.0f}/20（换手率{turnover_rate:.1f}%）")
+        st.write(f"- 收益能力：{score_return:.0f}/25")
+        st.write(f"- 风险调整收益：{score_sharpe:.0f}/20（夏普{sr:.2f}）")
+        st.write(f"- 回撤控制：{score_drawdown:.0f}/20（最大回撤{md*100:.2f}%）")
+        st.write(f"- 超额收益：{score_alpha:.0f}/20（Alpha{alpha*100:.2f}%）")
+        st.write(f"- 分散度：{score_concentration:.0f}/15（HHI{portfolio_metrics.get('hhi', 0):.3f}）")
 
 with sc2:
     st.markdown("#### 🎯 投资关注点")
     tips = []
     
-    # 收益分析
-    if metrics['annual_return'] < 0:
-        tips.append("⚠️ 近期收益为负，需观察后续表现")
-    elif metrics['annual_return'] > 0.15:
-        tips.append("✅ 收益表现优异，需关注持续性")
+    if ar > 0.15:
+        tips.append("✅ 年化收益表现优异")
+    elif ar < 0:
+        tips.append("⚠️ 近期收益为负")
     
-    # 波动分析
-    if metrics['annual_vol'] > 0.25:
-        tips.append("⚠️ 波动较大，建议做好仓位控制")
-    else:
-        tips.append("✅ 波动适中，适合稳健配置")
+    if sr > 1.5:
+        tips.append("✅ 夏普比率突出，风险收益性价比高")
+    elif sr < 0.5:
+        tips.append("⚠️ 夏普比率偏低")
     
-    # 夏普分析
-    if metrics['sharpe'] > 1.5:
-        tips.append("✅ 夏普比率 > 1.5，风险收益性价比突出")
-    elif metrics['sharpe'] > 1:
-        tips.append("✅ 夏普比率 > 1，风险收益性价比高")
-    else:
-        tips.append("⚠️ 夏普比率偏低，注意风险调整后收益")
+    if cr > 0.8:
+        tips.append("✅ 卡玛比率优秀，回撤控制好")
     
-    # Alpha分析
-    if metrics['alpha'] > 0.05:
-        tips.append("✅ Alpha显著，基金经理选股能力强")
-    elif metrics['alpha'] < 0:
+    if alpha > 0.05:
+        tips.append("✅ Alpha显著，选股能力强")
+    elif alpha < 0:
         tips.append("⚠️ Alpha为负，持续跑输基准")
     
-    # 回撤分析
-    if metrics['max_drawdown'] < -0.40:
-        tips.append("⚠️ 历史最大回撤超 40%，心理承受能力需较强")
-    elif metrics['max_drawdown'] < -0.30:
-        tips.append("⚠️ 历史最大回撤超 30%，需评估自身承受能力")
-    else:
-        tips.append("✅ 回撤控制在合理范围内")
+    if hhi > 0.15:
+        tips.append("⚠️ 持仓集中度高，个股风险大")
     
-    # 换手率分析
-    if turnover_rate > 70:
-        tips.append("⚠️ 高换手率，关注交易成本")
+    if turnover > 70:
+        tips.append("⚠️ 高换手率，交易成本高")
     
-    # 规模分析
-    try:
-        size_value = float(str(fund_size).replace('亿', '').strip())
-        if size_value > 500:
-            tips.append("⚠️ 规模过大，需警惕风格漂移")
-    except:
-        pass
-    
-    # 经理分析
-    if not manager_df.empty and tenure_years >= 5:
-        tips.append("✅ 基金经理经验丰富（5年以上）")
-    elif not manager_df.empty:
-        tips.append("⚠️ 基金经理任职时间较短，稳定性待观察")
-    
-    # 集中度分析
-    if top10_ratio > 70:
-        tips.append("⚠️ 持仓高度集中，个股风险暴露大")
-    elif top10_ratio < 30:
-        tips.append("✅ 持仓分散，风险相对可控")
+    if tenure_years < 3:
+        tips.append("⚠️ 基金经理经验较短")
     
     for tip in tips:
         st.markdown(tip)
 
-# ===== 底部 =====
 st.markdown("---")
 st.caption("📊 数据来源：AkShare | 本工具仅供学习参考，不构成任何投资建议 | 投资有风险，入市需谨慎")
