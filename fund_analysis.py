@@ -223,18 +223,11 @@ def enrich_holdings_with_valuation(holdings: pd.DataFrame) -> pd.DataFrame:
     if holdings is None or holdings.empty:
         return holdings
     
-    # 批量获取全市场估值数据
-    with st.spinner("正在获取个股估值数据（约需5-10秒）..."):
-        valuation_df = fetch_stock_valuation_batch()
+    # 批量获取全市场估值数据（静默加载，只显示齿轮动画）
+    valuation_df = fetch_stock_valuation_batch()
     
     if valuation_df.empty:
-        # 显示调试信息
-        if hasattr(valuation_df, '_errors'):
-            st.warning(f"估值数据获取失败，错误信息: {valuation_df._errors}")
         return holdings
-    
-    # 显示获取到的列名（用于调试）
-    st.caption(f"估值数据列: {list(valuation_df.columns)}")
     
     # 合并持仓和估值数据
     merged = holdings.merge(
@@ -676,29 +669,13 @@ def main():
         st.info("👆 输入基金代码后点击按钮开始分析")
         return
     
-    # 数据获取阶段
-    with st.status("📡 正在获取数据...", expanded=True) as status:
-        # 基础信息
-        st.write("获取基金详情...")
+    # 数据获取阶段（使用简洁的加载动画）
+    with st.spinner(""):
         basic = fetch_fund_basic_info(symbol)
-        
-        # 净值数据
-        st.write("获取净值数据...")
         nav_df = fetch_nav_data(symbol)
-        
-        # 基准数据
-        st.write("获取基准数据...")
         bench_df = fetch_benchmark_data()
-        
-        # 持仓数据
-        st.write("获取持仓数据...")
         holdings_raw = fetch_holdings(symbol)
-        
-        # 持仓估值
-        st.write("获取个股估值（这可能需要几秒钟）...")
         holdings_enriched = enrich_holdings_with_valuation(holdings_raw)
-        
-        status.update(label="✅ 数据获取完成", state="complete")
     
     # 检查数据完整性
     if nav_df is None or nav_df.empty:
