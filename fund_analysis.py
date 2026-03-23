@@ -139,7 +139,40 @@ def fetch_stock_valuation_batch() -> pd.DataFrame:
     """批量获取全市场股票估值数据（缓存避免重复请求）"""
     try:
         df = ak.stock_zh_a_spot_em()
-        return df[["代码", "名称", "市盈率-动态", "市净率", "总市值", "所属行业"]].copy()
+        
+        # 动态查找列名（容错不同版本）
+        col_mapping = {}
+        for target in ["代码", "名称", "市盈", "市净", "市值", "行业"]:
+            for col in df.columns:
+                if target in col:
+                    col_mapping[target] = col
+                    break
+        
+        # 选择找到的列
+        selected_cols = []
+        rename_map = {}
+        if "代码" in col_mapping:
+            selected_cols.append(col_mapping["代码"])
+            rename_map[col_mapping["代码"]] = "代码"
+        if "名称" in col_mapping:
+            selected_cols.append(col_mapping["名称"])
+            rename_map[col_mapping["名称"]] = "名称"
+        if "市盈" in col_mapping:
+            selected_cols.append(col_mapping["市盈"])
+            rename_map[col_mapping["市盈"]] = "市盈率-动态"
+        if "市净" in col_mapping:
+            selected_cols.append(col_mapping["市净"])
+            rename_map[col_mapping["市净"]] = "市净率"
+        if "市值" in col_mapping:
+            selected_cols.append(col_mapping["市值"])
+            rename_map[col_mapping["市值"]] = "总市值"
+        if "行业" in col_mapping:
+            selected_cols.append(col_mapping["行业"])
+            rename_map[col_mapping["行业"]] = "所属行业"
+        
+        result = df[selected_cols].copy()
+        result = result.rename(columns=rename_map)
+        return result
     except Exception:
         return pd.DataFrame()
 
@@ -251,22 +284,65 @@ def calc_portfolio_style(holdings_enriched: pd.DataFrame) -> dict:
     
     df = holdings_enriched.copy()
     
+    # 确保占净值比例是数值
+    df["占净值比例"] = pd.to_numeric(df["占净值比例"], errors="coerce")
+    
     # CR10（前十大占比）
     cr10 = df["占净值比例"].sum()
     
-    # 加权平均估值
-    df_valid_pe = df[df["市盈率-动态"] > 0]
-    weighted_pe = (df_valid_pe["市盈率-动态"] * df_valid_pe["占净值比例"]).sum() / df_valid_pe["占净值比例"].sum() if df_valid_pe["占净值比例"].sum() > 0 else np.nan
+    # 查找估值列（容错不同列名）
+    pe_col = None
+    for col in df.columns:
+        if "市盈" in col or col in ["PE", "pe", "市盈率"]:
+            pe_col = col
+            break
     
-    df_valid_pb = df[df["市净率"] > 0]
-    weighted_pb = (df_valid_pb["市净率"] * df_valid_pb["占净值比例"]).sum() / df_valid_pb["占净值比例"].sum() if df_valid_pb["占净值比例"].sum() > 0 else np.nan
+    pb_col = None
+    for col in df.columns:
+        if "市净" in col or col in ["PB", "pb", "市净率"]:
+            pb_col = col
+            break
+    
+    mv_col = None
+    for col in df.columns:
+        if "市值" in col and "总" in col:
+            mv_col = col
+            break
+    
+    # 加权平均估值
+    weighted_pe = np.nan
+    if pe_col and pe_col in df.columns:
+        df[pe_col] = pd.to_numeric(df[pe_col], errors="coerce")
+        df_valid_pe = df[df[pe_col] > 0]
+        if df_valid_pe["占净值比例"].sum() > 0:
+            weighted_pe = (df_valid_pe[pe_col] * df_valid_pe["占净值比例"]).sum() / df_valid_pe["占净值比例"].sum()
+    
+    weighted_pb = np.nan
+    if pb_col and pb_col in df.columns:
+        df[pb_col] = pd.to_numeric(df[pb_col], errors="coerce")
+        df_valid_pb = df[df[pb_col] > 0]
+        if df_valid_pb["占净值比例"].sum() > 0:
+            weighted_pb = (df_valid_pb[pb_col] * df_valid_pb["占净值比例"]).sum() / df_valid_pb["占净值比例"].sum()
     
     # 平均市值（亿元）
-    df_valid_mv = df[df["总市值"] > 0]
-    avg_mv = (df_valid_mv["总市值"] * df_valid_mv["占净值比例"]).sum() / df_valid_mv["占净值比例"].sum() / 1e8 if df_valid_mv["占净值比例"].sum() > 0 else np.nan
+    avg_mv = np.nan
+    if mv_col and mv_col in df.columns:
+        df[mv_col] = pd.to_numeric(df[mv_col], errors="coerce")
+        df_valid_mv = df[df[mv_col] > 0]
+        if df_valid_mv["占净值比例"].sum() > 0:
+            avg_mv = (df_valid_mv[mv_col] * df_valid_mv["占净值比例"]).sum() / df_valid_mv["占净值比例"].sum() / 1e8
     
     # 行业分布
-    industry_dist = df.groupby("所属行业")["占净值比例"].sum().sort_values(ascending=False) if "所属行业" in df.columns else pd.Series()
+    industry_col = None
+    for col in df.columns:
+        if "行业" in col or "industry" in col.lower():
+            industry_col = col
+            break
+    
+    industry_dist = pd.Series()
+    if industry_col and industry_col in df.columns:
+        industry_dist = df.groupby(industry_col)["占净值比例"].sum().sort_values(ascending=False)
+    
     top_industry = industry_dist.index[0] if len(industry_dist) > 0 else "N/A"
     top_industry_pct = industry_dist.iloc[0] if len(industry_dist) > 0 else 0
     
