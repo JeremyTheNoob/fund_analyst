@@ -659,29 +659,91 @@ def _show_base_header(basic: dict, type_info: dict):
     st.divider()
 
 
+def _interpret_sharpe(val: float) -> tuple[str, str]:
+    """返回(解读文字, 颜色)"""
+    if val >= 1.0: return "优秀，每承担1份波动能赚到超额收益", "green"
+    if val >= 0.5: return "合格，风险收益比尚可", "blue"
+    return "偏低，承担波动但回报不足", "yellow"
+
+
+def _interpret_sortino(val: float) -> tuple[str, str]:
+    if val >= 1.5: return "优秀，下行风险控制极好", "green"
+    if val >= 1.0: return "良好，持有体感稳健", "blue"
+    return "偏弱，下跌时波动较大", "yellow"
+
+
+def _interpret_calmar(val: float) -> tuple[str, str]:
+    if val >= 1.0: return "优秀，回撤补偿充足", "green"
+    if val >= 0.5: return "合格，回撤补偿尚可", "blue"
+    return "偏低，回撤大但收益跟不上", "yellow"
+
+
+def _interpret_maxdd(val: float) -> tuple[str, str]:
+    """val 是原始小数，如 -0.25"""
+    pct = abs(val) * 100
+    if pct <= 10: return "非常平稳，像开老头乐", "green"
+    if pct <= 20: return "波动正常，标准家用车感", "blue"
+    if pct <= 35: return "波动明显，成长股基风险", "yellow"
+    return "像坐过山车，心脏不好别买", "red"
+
+
+def _interpret_winrate(val: float) -> tuple[str, str]:
+    if val >= 0.75: return "优秀，75%+月份赚钱", "green"
+    if val >= 0.60: return "合格，六成月份赚钱", "blue"
+    return "偏低，亏损月份偏多", "yellow"
+
+
+def _interpret_recovery(days: int) -> tuple[str, str]:
+    if days <= 30: return "修复及时，流动性好", "green"
+    if days <= 60: return "需要一定耐心", "blue"
+    return f"⚠ 超60天警戒线，持有体感差", "red"
+
+
+def _metric_with_interpret(label: str, value: str, interp: str, color: str):
+    """带实时解读的指标卡片"""
+    color_map = {"green": "#28a745", "blue": "#17a2b8", "yellow": "#ffc107", "red": "#dc3545"}
+    hex_color = color_map.get(color, "#666")
+    st.markdown(f"""
+    <div style="background:#f8f9fa;border-radius:8px;padding:12px;margin:4px 0;">
+        <div style="font-size:0.85rem;color:#666;">{label}</div>
+        <div style="font-size:1.4rem;font-weight:bold;color:#333;">{value}</div>
+        <div style="font-size:0.8rem;color:{hex_color};margin-top:4px;">💡 {interp}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def _show_base_risk_panel(m: dict, show_sortino_primary: bool = False):
-    """通用风险指标面板（前两行）"""
+    """通用风险指标面板（带实时数据解读）"""
+    # 第一行：收益 + 回撤
     r1, r2 = st.columns(2)
     with r1:
-        st.metric("年化收益率", f"{m['annual_ret']*100:.2f}%")
+        _metric_with_interpret(
+            "年化收益率", f"{m['annual_ret']*100:.2f}%",
+            "过去一年的收益表现", "blue"
+        )
     with r2:
-        st.metric("最大回撤", f"{m['max_dd']*100:.2f}%")
+        interp, color = _interpret_maxdd(m['max_dd'])
+        _metric_with_interpret(
+            "最大回撤", f"{m['max_dd']*100:.2f}%",
+            interp, color
+        )
 
+    # 第二行：根据类型显示不同指标
     r3, r4 = st.columns(2)
     if show_sortino_primary:
         with r3:
-            st.metric("Sortino 比率", f"{m['sortino']:.2f}",
-                      help="只看下行风险，比夏普更适合固收类基金。≥1.5 优秀")
+            interp, color = _interpret_sortino(m['sortino'])
+            _metric_with_interpret("Sortino 比率", f"{m['sortino']:.2f}", interp, color)
         with r4:
-            st.metric("月度胜率", f"{m['win_rate']*100:.1f}%",
-                      help="正收益月份占比")
+            interp, color = _interpret_winrate(m['win_rate'])
+            _metric_with_interpret("月度胜率", f"{m['win_rate']*100:.1f}%", interp, color)
     else:
         with r3:
-            st.metric("夏普比率", f"{m['sharpe']:.2f}",
-                      help="≥1.0 为优秀")
+            interp, color = _interpret_sharpe(m['sharpe'])
+            _metric_with_interpret("夏普比率", f"{m['sharpe']:.2f}", interp, color)
         with r4:
-            st.metric("卡玛比率", f"{m['calmar']:.2f}",
-                      help="年化收益/最大回撤，越高越好")
+            interp, color = _interpret_calmar(m['calmar'])
+            _metric_with_interpret("卡玛比率", f"{m['calmar']:.2f}", interp, color)
 
 
 def _card(text: str, color: str):
@@ -711,39 +773,23 @@ def module_equity(df_nav, merged, portfolio, basic, type_info):
     ab = calc_alpha_beta(merged) if (merged is not None and len(merged) >= 60) else None
     hhi = calc_hhi(portfolio) if portfolio is not None else None
 
-    # 核心指标
+    # 核心指标（带实时解读）
     _show_base_risk_panel(m)
 
+    # 额外指标
     r5, r6 = st.columns(2)
     with r5:
-        st.metric("Sortino 比率", f"{m['sortino']:.2f}")
+        interp, color = _interpret_sortino(m['sortino'])
+        _metric_with_interpret("Sortino 比率", f"{m['sortino']:.2f}", interp, color)
     with r6:
-        st.metric("月度胜率", f"{m['win_rate']*100:.1f}%")
+        interp, color = _interpret_winrate(m['win_rate'])
+        _metric_with_interpret("月度胜率", f"{m['win_rate']*100:.1f}%", interp, color)
 
-    # 持有体感
-    mdd_pct = abs(m["max_dd"]) * 100
-    if mdd_pct > 35:
-        feel, feel_color = f"最大回撤 {mdd_pct:.1f}%，像坐过山车，心脏不好别买。", "red"
-    elif mdd_pct > 20:
-        feel, feel_color = f"最大回撤 {mdd_pct:.1f}%，波动明显，标准成长股基风险。", "yellow"
-    elif mdd_pct > 10:
-        feel, feel_color = f"最大回撤 {mdd_pct:.1f}%，标准家用车感，波动正常。", "blue"
-    else:
-        feel, feel_color = f"最大回撤 {mdd_pct:.1f}%，非常平稳。", "green"
-    if m["max_rec"] > 60:
-        feel += f"  ⚠ 最长回撤修复需 **{m['max_rec']}天**，需要耐心等待。"
-    _card(f"🎢 持有体感预测  {feel}", feel_color)
-
-    with st.expander("🤔 这些指标怎么看？"):
-        st.markdown("""
-        | 指标 | 白话解释 | 参考标准 |
-        |------|---------|---------|
-        | **夏普比率** | 每承担1份波动，赚了多少超额收益 | ≥1.0 优秀 |
-        | **卡玛比率** | 每亏1%历史最大回撤，带来多少年化收益 | ≥1.0 优秀 |
-        | **Sortino** | 只惩罚下行风险，比夏普更严格 | ≥1.5 优秀 |
-        | **月度胜率** | 一年12个月有多少月是正收益 | ≥60% 合格 |
-        | **最大回撤** | 从最高点到最低点最多亏多少 | 股基 <35% 可接受 |
-        """)
+    # 回撤修复天数（权益类也显示）
+    r7, _ = st.columns(2)
+    with r7:
+        interp, color = _interpret_recovery(m['max_rec'])
+        _metric_with_interpret("回撤修复天数", f"{m['max_rec']} 天", interp, color)
 
     st.divider()
 
@@ -866,36 +912,26 @@ def module_fixed(df_nav, merged, basic, type_info):
     # 核心指标：固收优先展示 Sortino + 回撤修复
     _show_base_risk_panel(m, show_sortino_primary=True)
 
+    # 额外指标（带实时解读）
     r5, r6 = st.columns(2)
     with r5:
-        rec = m["max_rec"]
-        delta_color = "inverse" if rec > 60 else "normal"
-        st.metric("回撤修复天数", f"{rec} 天",
-                  delta="⚠ 超60天警戒线" if rec > 60 else "✅ 修复及时",
-                  delta_color=delta_color,
-                  help="历史上最长的一次回撤修复了多少天")
+        interp, color = _interpret_recovery(m['max_rec'])
+        _metric_with_interpret("回撤修复天数", f"{m['max_rec']} 天", interp, color)
     with r6:
-        st.metric("年化波动率", f"{m['volatility']*100:.2f}%",
-                  help="债基波动率应尽量低于 5%")
+        vol = m['volatility'] * 100
+        if vol <= 3:
+            interp, color = "极稳，纯债水准", "green"
+        elif vol <= 5:
+            interp, color = "稳健，固收+水准", "blue"
+        elif vol <= 8:
+            interp, color = "波动偏大", "yellow"
+        else:
+            interp, color = "波动剧烈，不像债基", "red"
+        _metric_with_interpret("年化波动率", f"{vol:.2f}%", interp, color)
 
     # 专项诊断
     diag_text, diag_color = diagnose_fixed(m)
     _verdict_card("📋 AI 投顾点评（固收专项）", diag_text, diag_color)
-
-    with st.expander("🤔 固收类指标怎么看？"):
-        st.markdown("""
-        | 指标 | 白话解释 | 参考标准 |
-        |------|---------|---------|
-        | **Sortino 比率** | 比夏普更严格，只惩罚"下跌"那部分波动，对债基更公平 | ≥1.5 优秀，≥1.0 合格 |
-        | **回撤修复天数** | 跌下去之后，多少天能重新爬回来 | **>60天 = 预警**，持有体感很痛苦 |
-        | **月度胜率** | 一年里有多少个月是正收益 | ≥75% 为优质债基 |
-        | **年化波动率** | 净值波动幅度，越小越稳定 | 纯债 <3%，固收+ <8% |
-        | **最大回撤** | 从最高点到最低点，最多亏多少 | 纯债 <5%，固收+ <15% |
-
-        **Sortino vs Sharpe 的区别**：
-        Sharpe 把"涨得猛"也当成风险来惩罚。但我们买债基，是希望它稳，上涨多一点是好事！
-        Sortino 只看"跌了多少"，更符合固收投资者的真实关切。
-        """)
 
     st.divider()
 
@@ -929,35 +965,49 @@ def module_index(df_nav, merged, basic, type_info):
     # 基础收益风险
     _show_base_risk_panel(m)
 
-    # 指数专项指标
+    # 指数专项指标（带实时解读）
     if merged is not None and len(merged) >= 30:
         idx_m = calc_index_tracking(merged)
 
+        def _interpret_corr(c: float) -> tuple[str, str]:
+            if c >= 0.98: return "极优，跟踪精准", "green"
+            if c >= 0.95: return "良好，跟踪稳定", "blue"
+            if c >= 0.90: return "一般，有一定偏差", "yellow"
+            return "偏差较大，建议换产品", "red"
+
+        def _interpret_te(te: float) -> tuple[str, str]:
+            if te <= 0.02: return "极优，买得准", "green"
+            if te <= 0.05: return "合格，可接受", "blue"
+            return "误差偏大，不够精准", "yellow"
+
         r5, r6 = st.columns(2)
         with r5:
-            st.metric("与基准相关系数", f"{idx_m['corr']:.4f}",
-                      help="越接近1越精准，≥0.98 为优质指数基金")
+            interp, color = _interpret_corr(idx_m['corr'])
+            _metric_with_interpret("与基准相关系数", f"{idx_m['corr']:.4f}", interp, color)
         with r6:
-            st.metric("年化跟踪误差", f"{idx_m['tracking_error']*100:.2f}%",
-                      help="越小越精准，≤2% 为优秀")
+            interp, color = _interpret_te(idx_m['tracking_error'])
+            _metric_with_interpret("年化跟踪误差", f"{idx_m['tracking_error']*100:.2f}%", interp, color)
+
+        # 费率解读
+        fee_str = basic.get("fee", "--")
+        try:
+            fee_pct = float(fee_str.replace("%", ""))
+            if fee_pct <= 0.15:
+                fee_interp, fee_color = "极低费率，性价比极高", "green"
+            elif fee_pct <= 0.5:
+                fee_interp, fee_color = "费率正常", "blue"
+            else:
+                fee_interp, fee_color = "费率偏高，建议对比同类", "yellow"
+        except Exception:
+            fee_interp, fee_color = "费率数据不可用", "blue"
+
+        r7, _ = st.columns(2)
+        with r7:
+            _metric_with_interpret("管理费率", fee_str, fee_interp, fee_color)
 
         # 专项诊断
         diag_text, diag_color = diagnose_index(idx_m, None, basic.get("fee", "--"))
         _verdict_card("📋 AI 投顾点评（指数ETF专项）", diag_text, diag_color)
-
-        with st.expander("🤔 指数基金指标怎么看？"):
-            st.markdown("""
-            买指数基金，核心就三件事：**跟得准、费率低、规模大（流动性好）**。
-
-            | 指标 | 白话解释 | 参考标准 |
-            |------|---------|---------|
-            | **相关系数** | 基金净值与目标指数走势的同步程度 | ≥0.98 优秀，≥0.95 合格 |
-            | **跟踪误差** | 每天偏离目标指数多少，越小越好 | ≤2% 优秀，≤5% 合格 |
-            | **管理费率** | 每年从你的资产里扣多少费用 | ≤0.15% 极优，≤0.5% 合格 |
-
-            **重要提示**：如果跟踪误差大，说明这只指数基金买得不够准——
-            你花钱买"沪深300指数"，但收益率可能跟沪深300偏差很大。建议换一只同类里跟踪误差更小的产品。
-            """)
 
         st.divider()
 
