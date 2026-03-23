@@ -152,7 +152,19 @@ def fetch_fund_nav(symbol: str, years: int = 3) -> pd.DataFrame | None:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_benchmark(symbol: str = "sh000300") -> pd.DataFrame | None:
-    """获取指数日线数据（默认沪深300）"""
+    """获取沪深300日线数据，多接口容错"""
+    # 接口1：stock_zh_index_daily（新浪，稳定）
+    try:
+        df = ak.stock_zh_index_daily(symbol=symbol)
+        df = df[["date", "close"]].copy()
+        df.columns = ["date", "bench"]
+        df["date"]  = pd.to_datetime(df["date"])
+        df["bench"] = pd.to_numeric(df["bench"], errors="coerce")
+        return df.sort_values("date").dropna().reset_index(drop=True)
+    except Exception:
+        pass
+
+    # 接口2：stock_zh_index_daily_em（东财，备用）
     try:
         df = ak.stock_zh_index_daily_em(symbol=symbol)
         df = df[["date", "close"]].copy()
@@ -160,9 +172,25 @@ def fetch_benchmark(symbol: str = "sh000300") -> pd.DataFrame | None:
         df["date"]  = pd.to_datetime(df["date"])
         df["bench"] = pd.to_numeric(df["bench"], errors="coerce")
         return df.sort_values("date").dropna().reset_index(drop=True)
-    except Exception as e:
-        st.warning(f"基准数据获取失败：{e}")
-        return None
+    except Exception:
+        pass
+
+    # 接口3：index_zh_a_hist（备用）
+    try:
+        code = symbol.replace("sh", "").replace("sz", "")
+        df = ak.index_zh_a_hist(symbol=code, period="daily",
+                                start_date="20200101",
+                                end_date=datetime.now().strftime("%Y%m%d"))
+        df = df[["日期", "收盘"]].copy()
+        df.columns = ["date", "bench"]
+        df["date"]  = pd.to_datetime(df["date"])
+        df["bench"] = pd.to_numeric(df["bench"], errors="coerce")
+        return df.sort_values("date").dropna().reset_index(drop=True)
+    except Exception:
+        pass
+
+    st.warning("⚠ 基准数据（沪深300）获取失败，Alpha/Beta 相关指标将跳过。")
+    return None
 
 
 @st.cache_data(ttl=7200, show_spinner=False)
