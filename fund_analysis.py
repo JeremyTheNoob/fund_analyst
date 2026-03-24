@@ -853,36 +853,26 @@ def main():
     # 渲染CSS样式
     render_css()
 
-    # 标题
+    # ========== 极简首页 ==========
     st.markdown("""
-    <div class="hero-title">
-        <h1>🔬 基金深度穿透诊断</h1>
-        <p>FOF研究员视角 · 五阶段量化分析 · 大白话诊断报告</p>
+    <div style="text-align:center;padding:60px 20px 40px 20px;">
+        <h1 style="font-size:2.2rem;color:#1a1a2e;margin-bottom:8px;">🔬 基金深度穿透诊断</h1>
+        <p style="color:#888;font-size:1rem;">FOF研究员视角 · 五阶段量化分析 · 大白话诊断报告</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # 输入区
-    col_input, col_btn = st.columns([3, 1])
-    with col_input:
+    # 居中输入区
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
         symbol = st.text_input(
             "基金代码",
             value="011040",
-            placeholder="输入6位基金代码，例如：011040",
+            placeholder="输入6位基金代码",
             label_visibility="collapsed"
         )
-    with col_btn:
-        run = st.button("🔍 开始诊断", use_container_width=True, type="primary")
+        run = st.button("开始分析", use_container_width=True, type="primary")
 
     if not run:
-        # 使用说明
-        st.markdown("---")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.info("**📊 权益类基金**\nAlpha/Beta · 夏普 · 回撤\n晨星风格箱 · 持仓估值穿透")
-        with c2:
-            st.info("**🏦 债券类基金**\nSortino · 久期分析\n信用分层 · 收益构成")
-        with c3:
-            st.info("**📈 指数/ETF**\n跟踪误差 · 相关性\n估值分位 · 费率对比")
         return
 
     symbol = symbol.strip()
@@ -890,7 +880,7 @@ def main():
         st.error("请输入正确的6位基金代码")
         return
 
-    # ===================== 数据加载 =====================
+    # ========== 数据加载（只显示齿轮） ==========
     with st.spinner(""):
         basic = fetch_basic_info(symbol)
         nav_df = fetch_nav_history(symbol)
@@ -898,16 +888,15 @@ def main():
         holdings_raw = fetch_holdings(symbol)
         fund_type = basic.get('fund_type', 'equity')
 
-        # 获取估值快照（权益类才需要）
         snapshot_df = pd.DataFrame()
         if fund_type in ('equity', 'index'):
             snapshot_df = fetch_stock_snapshot()
 
     if nav_df.empty:
-        st.error(f"无法获取基金 {symbol} 的净值数据，请检查基金代码是否正确。")
+        st.error(f"无法获取基金 {symbol} 的净值数据")
         return
 
-    # ===================== 计算指标 =====================
+    # ========== 计算指标 ==========
     n_years = len(nav_df) / 252
     is_new_fund = n_years < 1
 
@@ -920,240 +909,215 @@ def main():
 
     diag = generate_diagnosis(basic, metrics, holdings_result, fund_type, n_years)
 
-    # ===================== 展示区 =====================
-
-    # 基本信息条
+    # ========== 报告展示（四部分结构） ==========
     fund_name = basic.get('name', symbol)
-    type_label = {"equity": "权益类（股票/混合）", "bond": "债券类（固收）", "index": "指数/ETF"}
-    type_tags = {"equity": "tag-blue", "bond": "tag-orange", "index": "tag-green"}
+
+    # ===================== 第一部分：基本面速览 (Identity) =====================
+    st.markdown("---")
+    st.markdown("## 第一部分：基本面速览 (Identity)")
+
+    # 基础信息卡片
+    info_cols = st.columns(4)
+    with info_cols[0]:
+        st.metric("基金名称", fund_name[:15] + "..." if len(fund_name) > 15 else fund_name)
+        st.caption(f"代码：{symbol}")
+    with info_cols[1]:
+        mgr = basic.get('manager', 'N/A')
+        mgr_years = basic.get('manager_years', '')
+        st.metric("基金经理", mgr)
+        st.caption(f"任职年限：{mgr_years}" if mgr_years else "")
+    with info_cols[2]:
+        scale = basic.get('scale', 'N/A')
+        st.metric("最新规模", scale)
+        st.caption(f"成立日期：{basic.get('establish_date', 'N/A')}")
+    with info_cols[3]:
+        fee = basic.get('fee_sale', 'N/A')
+        st.metric("申购费率", fee)
+        st.caption(f"基金公司：{basic.get('company', 'N/A')[:10]}")
+
+    # 成立不足1年警告
+    if is_new_fund:
+        st.warning("⚠️ **成立不足1年**：由于历史数据过短，以下量化指标仅供参考，不代表未来表现。")
+
+    # ===================== 第二部分：分类量化看板 (The Quant Dashboard) =====================
+    st.markdown("---")
+    st.markdown("## 第二部分：分类量化看板 (The Quant Dashboard)")
+
+    if fund_type in ('equity', 'index'):
+        st.markdown("### 🟢 权益类基金 (Stock-Focused)")
+
+        # 业绩归因
+        st.markdown("**业绩归因**：α(选股能力)、β(市场敏感度)、R²(相关性)**")
+        c1, c2, c3, c4 = st.columns(4)
+        alpha = metrics.get('alpha')
+        beta = metrics.get('beta')
+        r2 = metrics.get('r_squared')
+        with c1:
+            st.metric("Alpha（年化）", format_pct(alpha) if alpha else "N/A",
+                     delta="显著" if metrics.get('alpha_pvalue', 1) < 0.05 else "不显著")
+        with c2:
+            st.metric("Beta", format_num(beta) if beta else "N/A")
+        with c3:
+            st.metric("R²", format_num(r2) if r2 else "N/A")
+        with c4:
+            st.metric("信息比率", format_num(metrics.get('info_ratio')))
+
+        # 风险指标
+        st.markdown("**风险指标**：夏普比率、最大回撤、**回血天数**（补）")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("夏普比率", format_num(metrics.get('sharpe')))
+        with c2:
+            st.metric("最大回撤", format_pct(metrics.get('max_dd')))
+        with c3:
+            recovery = metrics.get('recovery_days')
+            st.metric("回血天数", f"{recovery}天" if recovery else "未回血")
+        with c4:
+            st.metric("月度胜率", format_pct(metrics.get('win_rate'), 1))
+
+        # 风格雷达
+        st.markdown("**风格雷达**：价值/成长、大盘/小盘、动能/低波")
+        style = calc_style_box(holdings_result)
+        st.info(f"📊 **晨星风格定位**：{style} | 加权PE：{holdings_result.get('weighted_pe', 'N/A'):.1f}x | 加权PB：{holdings_result.get('weighted_pb', 'N/A'):.2f}x")
+
+    else:  # bond
+        st.markdown("### 🔵 债券类基金 (Bond-Focused)")
+
+        # 收益拆解
+        st.markdown("**收益拆解**：票息收益（利息）vs 资本利得（买卖差价）")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("年化收益率", format_pct(metrics.get('annual_ret')))
+        with c2:
+            st.metric("近1年收益", format_pct(metrics.get('ret_1y')))
+        with c3:
+            st.metric("月度胜率", format_pct(metrics.get('win_rate'), 1))
+
+        # 核心指标
+        st.markdown("**核心指标**：")
+        st.markdown("- **久期(Duration)**：对利率变动的敏感度（利率每涨1%，债基跌多少？）")
+        st.markdown("- **到期收益率(YTM)**：穿透后的预期持收收益")
+
+        # 风险指标
+        st.markdown("**风险指标**：信用分层（AAA/AA+比例）、**下行标准差**（只看亏钱时的波动）")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            aaa = holdings_result.get('credit_aaa_pct')
+            st.metric("AAA级占比", f"{aaa:.1f}%" if aaa else "N/A")
+        with c2:
+            below = holdings_result.get('credit_below_aa_pct')
+            st.metric("AA及以下占比", f"{below:.1f}%" if below else "N/A")
+        with c3:
+            st.metric("下行偏差", format_pct(metrics.get('downside_vol')))
+
+    # ===================== 第三部分：底层持仓深度穿透 (Deep Look-Through) =====================
+    st.markdown("---")
+    st.markdown("## 第三部分：底层持仓深度穿透 (Deep Look-Through)")
+
+    if fund_type in ('equity', 'index'):
+        st.markdown("### 1. 行业深度分析 (Sector Health Check)")
+
+        industries = holdings_result.get('industries', {})
+        if industries:
+            st.markdown("**估值水位**：不仅看持有多少，还要看该行业当前的PE/PB在历史中的百分位。**")
+            # 行业表格
+            ind_df = pd.DataFrame([
+                {'行业': k, '持仓占比': f"{v:.1f}%", '估值判断': '—'}
+                for k, v in list(industries.items())[:5]
+            ])
+            st.dataframe(ind_df, use_container_width=True, hide_index=True)
+
+            st.markdown("**拥挤度**：该行业是否为目前全市场机构'抱团'的对象。**")
+            # 这里可以添加拥挤度分析
+
+        st.markdown("### 2. 重仓个股体检 (Security Scorecard)")
+        st.markdown("**权益类（个股）**：")
+        st.markdown("- **盈利/估值匹配度**：计算前十大个股的加权ROE vs PE")
+        st.markdown("- **业绩趋势**：穿透看这些公司近三年的净利润增长是否持续")
+
+        stocks = holdings_result.get('stocks', [])
+        if stocks:
+            stock_df = pd.DataFrame([
+                {'股票名称': s['名称'], '代码': s['代码'], '持仓权重': f"{s['权重%']}%",
+                 'PE': f"{s['PE']:.1f}x" if s['PE'] else "N/A",
+                 'PB': f"{s['PB']:.2f}x" if s['PB'] else "N/A"}
+                for s in stocks[:10]
+            ])
+            st.dataframe(stock_df, use_container_width=True, hide_index=True)
+
+    else:  # bond
+        st.markdown("### 1. 债券持仓信用分析")
+        bonds = holdings_result.get('bonds', [])
+        if bonds:
+            st.markdown("**违约风险穿透**：识别持仓中是否有'网红债'或低评级信用债。**")
+            bond_df = pd.DataFrame(bonds[:15])
+            st.dataframe(bond_df, use_container_width=True, hide_index=True)
+
+            st.markdown("**含权分析**：如果是可转债基金，需穿透分析其'股性'和'债性'的比例。**")
+            if holdings_result.get('has_convertible'):
+                st.warning("⚠️ 该基金持有可转债，具有一定股性波动风险")
+
+    # ===================== 第四部分：大白话诊断总结 (Plain English) =====================
+    st.markdown("---")
+    st.markdown("## 第四部分：大白话诊断总结 (Plain English)")
+
+    # 综合评分
+    score = diag.get('rating_score', 50)
+    rating = diag.get('rating', '⭐⭐⭐')
+    color = diag.get('rating_color', '#e67e22')
 
     st.markdown(f"""
-    <div style="background:white;border-radius:12px;padding:20px 24px;
-    box-shadow:0 2px 12px rgba(0,0,0,0.06);margin:16px 0 8px 0;">
-        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">
-            <span style="font-size:1.4rem;font-weight:700;color:#1a1a2e;">{fund_name}</span>
-            <span style="color:#888;font-size:0.9rem;">{symbol}</span>
-            <span class="tag {type_tags.get(fund_type,'tag-gray')}">{type_label.get(fund_type,'')}</span>
-            {'<span class="tag tag-red">⚠️ 成立不足1年，指标仅供参考</span>' if is_new_fund else ''}
-        </div>
-        <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:16px;font-size:0.85rem;color:#555;">
-            {'<span>📅 成立：' + str(basic.get('establish_date','N/A')) + '</span>' if basic.get('establish_date') else ''}
-            {'<span>👤 经理：' + str(basic.get('manager','N/A')) + ('（' + str(basic.get('manager_years')) + '）' if basic.get('manager_years') else '') + '</span>' if basic.get('manager') else ''}
-            {'<span>🏢 公司：' + str(basic.get('company','N/A')) + '</span>' if basic.get('company') else ''}
-            {'<span>💰 规模：' + str(basic.get('scale','N/A')) + '</span>' if basic.get('scale') else ''}
-        </div>
+    <div style="background:linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);border-radius:12px;
+    padding:24px;text-align:center;margin:20px 0;border-left:5px solid {color};">
+        <div style="font-size:1.2rem;color:#666;">综合诊断评分</div>
+        <div style="font-size:3rem;font-weight:900;color:{color};margin:8px 0;">{score}</div>
+        <div style="font-size:1.4rem;color:{color};">{rating}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ===================== Tab布局 =====================
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 量化看板", "🔬 持仓穿透", "📈 图表", "🩺 诊断报告"])
+    # 性格与实力诊断
+    st.markdown("### 1. 性格与实力诊断")
+    if fund_type in ('equity', 'index'):
+        st.markdown("**权益类**：他是靠'选股'赢的，还是靠'压赛道'赢的？**")
+    else:
+        st.markdown("**债券类**：他是'稳健的存钱罐'，还是'博取利差的激进派'？**")
+    st.info(diag['character'])
+    st.success(diag['skill'])
 
-    # ---- Tab1: 量化看板 ----
-    with tab1:
-        if fund_type in ('equity', 'index'):
-            st.markdown("#### 核心业绩指标")
-            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-            annual_ret = metrics.get('annual_ret')
-            with r1c1:
-                st.markdown(render_kpi(
-                    "年化收益率",
-                    format_pct(annual_ret) if annual_ret else "N/A",
-                    f"成立以来{format_pct(metrics.get('total_ret'))}",
-                    "kpi-card kpi-red" if (annual_ret and annual_ret < 0) else "kpi-card kpi-green"
-                ), unsafe_allow_html=True)
-            with r1c2:
-                st.markdown(render_kpi(
-                    "年化波动率",
-                    format_pct(metrics.get('annual_vol')),
-                    "年化标准差",
-                    "kpi-card"
-                ), unsafe_allow_html=True)
-            with r1c3:
-                sharpe = metrics.get('sharpe')
-                st.markdown(render_kpi(
-                    "夏普比率",
-                    format_num(sharpe),
-                    ">1.0 优秀 | >0.5 良好",
-                    "kpi-card kpi-green" if (sharpe and sharpe > 1) else (
-                        "kpi-card kpi-orange" if (sharpe and sharpe > 0.5) else "kpi-card")
-                ), unsafe_allow_html=True)
-            with r1c4:
-                st.markdown(render_kpi(
-                    "最大回撤",
-                    format_pct(metrics.get('max_dd')),
-                    f"回血约{metrics.get('recovery_days', '—')}天" if metrics.get('recovery_days') else "未完全回血",
-                    "kpi-card kpi-red" if (metrics.get('max_dd') and metrics['max_dd'] > 0.25) else "kpi-card"
-                ), unsafe_allow_html=True)
+    # 风险警告与避坑指南
+    st.markdown("### 2. 风险警告与避坑指南")
 
-            st.markdown("#### CAPM 归因分析")
-            r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-            alpha = metrics.get('alpha')
-            beta = metrics.get('beta')
-            alpha_pvalue = metrics.get('alpha_pvalue')
-            with r2c1:
-                st.markdown(render_kpi(
-                    "Alpha（年化）",
-                    format_pct(alpha) if alpha else "N/A",
-                    f"p值={alpha_pvalue:.3f}" if alpha_pvalue else "",
-                    "kpi-card kpi-green" if (alpha and alpha > 0) else "kpi-card kpi-red"
-                ), unsafe_allow_html=True)
-            with r2c2:
-                st.markdown(render_kpi(
-                    "Beta",
-                    format_num(beta),
-                    "<1 防守 | >1 进攻",
-                    "kpi-card"
-                ), unsafe_allow_html=True)
-            with r2c3:
-                st.markdown(render_kpi(
-                    "信息比率",
-                    format_num(metrics.get('info_ratio')),
-                    ">0.5 较好",
-                    "kpi-card"
-                ), unsafe_allow_html=True)
-            with r2c4:
-                st.markdown(render_kpi(
-                    "月度胜率",
-                    format_pct(metrics.get('win_rate'), 1) if metrics.get('win_rate') else "N/A",
-                    ">60% 优秀",
-                    "kpi-card kpi-green" if (metrics.get('win_rate') and metrics['win_rate'] > 0.6)
-                    else "kpi-card"
-                ), unsafe_allow_html=True)
+    st.markdown("**持仓过热警告**：如果重仓股全是高估值品种，提醒'高位站岗'风险。**")
+    st.markdown("**流动性警告**：如果基金规模巨大但重仓小盘股，提醒'想卖卖不出'的风险。**")
+    st.markdown("**回撤警告**：明确告诉用户，历史最惨的时候亏过多少，你能忍受吗？**")
 
-        else:  # bond
-            st.markdown("#### 债券基金核心指标")
-            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-            with r1c1:
-                annual_ret = metrics.get('annual_ret')
-                st.markdown(render_kpi(
-                    "年化收益率",
-                    format_pct(annual_ret),
-                    f"总收益{format_pct(metrics.get('total_ret'))}",
-                    "kpi-card kpi-green" if (annual_ret and annual_ret > 0) else "kpi-card kpi-red"
-                ), unsafe_allow_html=True)
-            with r1c2:
-                sortino = metrics.get('sortino')
-                st.markdown(render_kpi(
-                    "Sortino比率",
-                    format_num(sortino),
-                    "只看下行风险的夏普",
-                    "kpi-card kpi-green" if (sortino and sortino > 2) else "kpi-card"
-                ), unsafe_allow_html=True)
-            with r1c3:
-                st.markdown(render_kpi(
-                    "最大回撤",
-                    format_pct(metrics.get('max_dd')),
-                    f"回血约{metrics.get('recovery_days', '—')}天" if metrics.get('recovery_days') else "",
-                    "kpi-card kpi-red" if (metrics.get('max_dd') and metrics['max_dd'] > 0.05) else "kpi-card"
-                ), unsafe_allow_html=True)
-            with r1c4:
-                st.markdown(render_kpi(
-                    "月度胜率",
-                    format_pct(metrics.get('win_rate'), 1) if metrics.get('win_rate') else "N/A",
-                    ">65% 优秀",
-                    "kpi-card kpi-green" if (metrics.get('win_rate') and metrics['win_rate'] > 0.65)
-                    else "kpi-card"
-                ), unsafe_allow_html=True)
+    st.warning(diag['risk'])
+    st.error(diag['avoid'])
 
-            if metrics.get('ret_1y') is not None:
-                st.markdown("#### 近1年收益构成分析")
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.markdown(render_kpi("近1年收益",
-                        format_pct(metrics.get('ret_1y')), "", "kpi-card"), unsafe_allow_html=True)
-                with c2:
-                    st.markdown(render_kpi("下行偏差（年化）",
-                        format_pct(metrics.get('downside_vol')), "只计算亏损日的波动", "kpi-card"),
-                        unsafe_allow_html=True)
-                with c3:
-                    st.markdown(render_kpi("年化波动率",
-                        format_pct(metrics.get('annual_vol')), "", "kpi-card"), unsafe_allow_html=True)
+    # 图表区（折叠）
+    with st.expander("📈 查看图表分析"):
+        fig1 = plot_nav_chart(nav_df, bench_df, fund_name)
+        st.plotly_chart(fig1, use_container_width=True)
 
-    # ---- Tab2: 持仓穿透 ----
-    with tab2:
-        if fund_type in ('equity', 'index'):
-            stocks = holdings_result.get('stocks', [])
-            w_pe = holdings_result.get('weighted_pe')
-            w_pb = holdings_result.get('weighted_pb')
-            style = calc_style_box(holdings_result)
-            hhi = holdings_result.get('concentration')
+        fig2 = plot_drawdown_chart(nav_df)
+        st.plotly_chart(fig2, use_container_width=True)
 
-            st.markdown("#### 持仓估值画像")
-            pc1, pc2, pc3, pc4 = st.columns(4)
-            with pc1:
-                st.markdown(render_kpi("加权平均PE",
-                    f"{w_pe:.1f}x" if w_pe else "N/A",
-                    "前十大重仓加权",
-                    "kpi-card kpi-red" if (w_pe and w_pe > 50) else "kpi-card"
-                ), unsafe_allow_html=True)
-            with pc2:
-                st.markdown(render_kpi("加权平均PB",
-                    f"{w_pb:.2f}x" if w_pb else "N/A",
-                    "前十大重仓加权",
-                    "kpi-card"
-                ), unsafe_allow_html=True)
-            with pc3:
-                st.markdown(render_kpi("晨星风格",
-                    style, "基于估值推断", "kpi-card"
-                ), unsafe_allow_html=True)
-            with pc4:
-                st.markdown(render_kpi("持仓集中度(HHI)",
-                    f"{hhi:.0f}" if hhi else "N/A",
-                    "<1000分散 | >2500集中",
-                    "kpi-card kpi-orange" if (hhi and hhi > 2500) else "kpi-card"
-                ), unsafe_allow_html=True)
+        col_left, col_right = st.columns(2)
+        with col_left:
+            fig3 = plot_monthly_heatmap(nav_df)
+            if fig3:
+                st.plotly_chart(fig3, use_container_width=True)
+        with col_right:
+            if fund_type in ('equity', 'index'):
+                industries = holdings_result.get('industries', {})
+                if industries:
+                    fig4 = plot_industry_pie(industries)
+                    if fig4:
+                        st.plotly_chart(fig4, use_container_width=True)
 
-            if stocks:
-                st.markdown("#### 前十大重仓个股估值")
-                display_stocks = []
-                for s in stocks[:10]:
-                    display_stocks.append({
-                        '股票名称': s['名称'],
-                        '代码': s['代码'],
-                        '持仓权重': f"{s['权重%']}%",
-                        'PE': f"{s['PE']:.1f}x" if s['PE'] else "N/A",
-                        'PB': f"{s['PB']:.2f}x" if s['PB'] else "N/A",
-                        '估值判断': (
-                            "🟢 低估" if (s['PE'] and s['PE'] < 20) else
-                            ("🔴 较高" if (s['PE'] and s['PE'] > 50) else "🟡 合理")
-                        ) if s['PE'] else "—"
-                    })
-                st.dataframe(pd.DataFrame(display_stocks), use_container_width=True, hide_index=True)
-
-                if not snapshot_df.empty:
-                    st.caption("✅ 已从实时市场获取估值数据")
-                else:
-                    st.caption("⚠️ 未能获取实时估值数据，PE/PB显示N/A")
-
-        else:  # bond
-            bonds = holdings_result.get('bonds', [])
-            st.markdown("#### 债券持仓信用分析")
-            bc1, bc2, bc3 = st.columns(3)
-            with bc1:
-                aaa_pct = holdings_result.get('credit_aaa_pct')
-                st.markdown(render_kpi("AAA级占比",
-                    f"{aaa_pct:.1f}%" if aaa_pct else "N/A",
-                    "越高信用质量越好",
-                    "kpi-card kpi-green" if (aaa_pct and aaa_pct > 60) else "kpi-card"
-                ), unsafe_allow_html=True)
-            with bc2:
-                below_aa = holdings_result.get('credit_below_aa_pct')
-                st.markdown(render_kpi("AA及以下占比",
-                    f"{below_aa:.1f}%" if below_aa else "N/A",
-                    "占比越高信用风险越大",
-                    "kpi-card kpi-orange" if (below_aa and below_aa > 20) else "kpi-card"
-                ), unsafe_allow_html=True)
-            with bc3:
-                has_conv = holdings_result.get('has_convertible', False)
-                st.markdown(render_kpi("含权债（可转债）",
-                    "✅ 持有" if has_conv else "❌ 不含",
-                    "含可转债则有股性波动",
-                    "kpi-card kpi-orange" if has_conv else "kpi-card"
-                ), unsafe_allow_html=True)
-
-            if bonds:
-                st.markdown("#### 持仓明细")
-                st.dataframe(pd.DataFrame(bonds[:20]), use_container_width=True, hide_index=True)
+    # 免责声明
+    st.markdown("---")
+    st.caption("⚠️ 本报告基于公开数据和量化模型自动生成，仅供参考，不构成投资建议。投资有风险，入市需谨慎。")
 
     # ---- Tab3: 图表 ----
     with tab3:
