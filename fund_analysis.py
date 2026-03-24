@@ -3066,27 +3066,47 @@ def translate_results(model: str, results: dict,
 # ██████████████  VISUALIZATION LAYER  ██████████████
 # ============================================================
 
-def plot_cumulative_return(nav_df: pd.DataFrame, bm_df: pd.DataFrame) -> go.Figure:
-    """累计收益对比图（基金 vs 基准）"""
+def plot_cumulative_return(nav_df: pd.DataFrame, bm_df: pd.DataFrame,
+                           bm_label: str = '业绩基准') -> go.Figure:
+    """
+    累计收益对比图（基金 vs 基准）
+    修复：两条线必须从共同起点出发（inner join 对齐日期），否则基准会偏移显示
+    bm_label: 基准标签名（默认'业绩基准'，行业基金可传'申万行业指数'）
+    """
     fig = go.Figure()
 
-    # 基金累计收益
-    nav = nav_df.copy()
-    nav['cum'] = (1 + nav['ret'].fillna(0)).cumprod() - 1
+    nav = nav_df[['date', 'ret']].copy()
+    nav['date'] = pd.to_datetime(nav['date'])
 
-    fig.add_trace(go.Scatter(
-        x=nav['date'], y=nav['cum'] * 100,
-        name='基金净值', line=dict(color='#e74c3c', width=2)
-    ))
+    if not bm_df.empty and 'bm_ret' in bm_df.columns:
+        bm = bm_df[['date', 'bm_ret']].copy()
+        bm['date'] = pd.to_datetime(bm['date'])
 
-    # 基准累计收益
-    if not bm_df.empty:
-        bm = bm_df.copy()
-        bm['cum'] = (1 + bm['bm_ret'].fillna(0)).cumprod() - 1
-        fig.add_trace(go.Scatter(
-            x=bm['date'], y=bm['cum'] * 100,
-            name='业绩基准', line=dict(color='#3498db', width=2, dash='dash')
-        ))
+        # ── 关键修复：inner join 对齐日期 ──
+        # 两条线必须共享同一套日期序列，才能"从同一个 0% 起点出发"进行公平对比
+        merged = nav.merge(bm, on='date', how='inner').sort_values('date')
+        if merged.empty:
+            # 无共同日期时回退：独立画
+            nav['cum'] = (1 + nav['ret'].fillna(0)).cumprod() - 1
+            fig.add_trace(go.Scatter(x=nav['date'], y=nav['cum'] * 100,
+                                     name='基金净值', line=dict(color='#e74c3c', width=2)))
+        else:
+            # 用 cumprod 保证两条线都从 0 出发
+            cum_fund = (1 + merged['ret'].fillna(0)).cumprod() - 1
+            cum_bm   = (1 + merged['bm_ret'].fillna(0)).cumprod() - 1
+            fig.add_trace(go.Scatter(
+                x=merged['date'], y=cum_fund * 100,
+                name='基金净值', line=dict(color='#e74c3c', width=2)
+            ))
+            fig.add_trace(go.Scatter(
+                x=merged['date'], y=cum_bm * 100,
+                name=bm_label, line=dict(color='#3498db', width=2, dash='dash')
+            ))
+    else:
+        # 无基准数据，只画基金
+        nav['cum'] = (1 + nav['ret'].fillna(0)).cumprod() - 1
+        fig.add_trace(go.Scatter(x=nav['date'], y=nav['cum'] * 100,
+                                 name='基金净值', line=dict(color='#e74c3c', width=2)))
 
     fig.update_layout(
         title='累计收益率对比 (%)',
@@ -3096,6 +3116,7 @@ def plot_cumulative_return(nav_df: pd.DataFrame, bm_df: pd.DataFrame) -> go.Figu
         height=380, margin=dict(l=40, r=20, t=40, b=30)
     )
     return fig
+
 
 
 def plot_rolling_beta(rolling_df: pd.DataFrame, static_ratio: float) -> go.Figure:
@@ -3333,6 +3354,8 @@ def main():
     # 债券仓位超过 20% 时同时引入久期归因
     also_duration = (model_type in ('equity','mixed') and bond_ratio > 0.20)
 
+    _sector_bm_label = ''   # 行业基金申万基准标签，空=未覆写（STEP 5 sector 分支会更新）
+
     # ============================================================
     # STEP 4  基准构建
     # ============================================================
@@ -3395,6 +3418,20 @@ def main():
             )
             sector_res['sw_code'] = sw_code
             model_results['sector'] = sector_res
+
+            # ── 行业基金基准修复：用申万行业指数覆写 bm_df 供累计收益图使用 ──
+            # 原 bm_df 是沪深300，行业大涨时会造成基准严重失真
+            # 只在成功拉到申万指数时覆写，失败时保留沪深300作兜底
+            if not sw_ret.empty:
+                sw_bm_df = sw_ret.reset_index()
+                sw_bm_df.columns = ['date', 'bm_ret']
+                sw_bm_df['date'] = pd.to_datetime(sw_bm_df['date'])
+                bm_df = sw_bm_df   # 覆写，后续图表和标注都用申万指数
+                _sector_bm_label = f'申万{sw_name}指数（精准行业基准）'
+            else:
+                _sector_bm_label = ''   # 空 = 未覆写，展示区继续用招募说明书基准文本
+
+
 
     # ----- 债券模型 -----
     if model_type == 'bond' or also_duration:
@@ -3546,7 +3583,7 @@ def main():
     # ---------- Part 1: 基本信息速览 ----------
     st.markdown('<div class="section-title">📋 第一部分：基本信息速览</div>', unsafe_allow_html=True)
 
-    bm_text = basic['benchmark_text'] or '未获取到业绩基准'
+    bm_text = _sector_bm_label if _sector_bm_label else (basic['benchmark_text'] or '未获取到业绩基准')
     st.markdown(f"""
 <div class="card">
   <b>{basic['name']}</b> &nbsp;
@@ -3636,7 +3673,7 @@ def main():
         _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，表现弱于预期{_bm_str}。"
     st.markdown(f'<div style="font-size:0.85rem;color:#666;margin-bottom:8px">{_vis_comment}</div>',
                 unsafe_allow_html=True)
-    st.plotly_chart(plot_cumulative_return(nav_df, bm_df), use_container_width=True)
+    st.plotly_chart(plot_cumulative_return(nav_df, bm_df, bm_label=bm_text), use_container_width=True)
     st.markdown(
         f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
         f'业绩基准：{bm_text}'

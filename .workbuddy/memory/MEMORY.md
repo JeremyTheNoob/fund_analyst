@@ -17,10 +17,13 @@
   - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
-- **v9.3**（2026-03-24）：四项实战优化：
+- **v9.3**（2026-03-24）：四项实战优化 + 累计收益图三项修复：
   - **缓存升级**：`fetch_index_daily/fetch_ff_factors/fetch_treasury_10y/fetch_bond_index/fetch_sw_industry_ret` 全部升级为 `ttl=86400`（公共因子全天缓存），基金特有净值/持仓仍实时拉取
   - **前视偏差标注**：业绩基准小字追加「基于当前公开基准回溯，历史基准变更期间数据仅供参考」
   - **残差分析**：`run_ff_model()` 新增 `r_squared_recent` + `residual_insight`；全期-近期R²>0.25→橙色预警「疑有非标资产收益」；R²<0.4→蓝色独立风格说明；展示于Part 2权益解读卡下方
+  - **合规补丁**：Part 4 末尾完整免责卡片（不构成投资建议/模型局限/前视偏差/数据来源/风险提示）
+  - **累计收益图修复**：①inner join对齐日期防起点偏移；②sector类型改用申万行业指数作基准；③bm_text赋值顺序修复
+  - 文件：`fund_analysis.py` = `fund_analysis_v9.3.py`
   - **合规补丁**：Part 4 末尾完整免责卡片（不构成投资建议/模型局限/前视偏差/数据来源/风险提示）
   - 文件：`fund_analysis.py` = `fund_analysis_v9.3.py`
 - **v9.2**（2026-03-24）：数据层全面修复，7项关键修复：
