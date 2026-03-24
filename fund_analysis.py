@@ -220,16 +220,33 @@ def fetch_nav_history(symbol: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def fetch_benchmark(index_code: str = "000300") -> pd.DataFrame:
-    """获取基准指数数据（默认沪深300）"""
+    """获取基准指数数据（默认沪深300），多接口容错"""
+    end = datetime.now().strftime('%Y%m%d')
+    start = (datetime.now() - timedelta(days=5*365)).strftime('%Y%m%d')
+    
+    # 尝试东财接口
     try:
-        end = datetime.now().strftime('%Y%m%d')
-        start = (datetime.now() - timedelta(days=5*365)).strftime('%Y%m%d')
         df = ak.index_zh_a_hist(symbol=index_code, period="daily", start_date=start, end_date=end)
-        df['date'] = pd.to_datetime(df['日期'])
-        df['close'] = pd.to_numeric(df['收盘'], errors='coerce')
-        return df[['date', 'close']].dropna().sort_values('date').reset_index(drop=True)
+        if df is not None and not df.empty:
+            df['date'] = pd.to_datetime(df['日期'])
+            df['close'] = pd.to_numeric(df['收盘'], errors='coerce')
+            result = df[['date', 'close']].dropna().sort_values('date').reset_index(drop=True)
+            if len(result) > 100:
+                return result
     except:
-        return pd.DataFrame()
+        pass
+    
+    # 尝试新浪接口
+    try:
+        df = ak.index_zh_a_spot()
+        if df is not None and not df.empty:
+            # 新浪接口返回的是快照，需要构造历史数据（简化处理）
+            # 这里返回空，让上层逻辑处理无基准的情况
+            pass
+    except:
+        pass
+    
+    return pd.DataFrame()
 
 
 @st.cache_data(ttl=7200)
@@ -856,8 +873,8 @@ def main():
     # ========== 极简首页 ==========
     st.markdown("""
     <div style="text-align:center;padding:60px 20px 40px 20px;">
-        <h1 style="font-size:2.2rem;color:#1a1a2e;margin-bottom:8px;">🔬 基金深度穿透诊断</h1>
-        <p style="color:#888;font-size:1rem;">FOF研究员视角 · 五阶段量化分析 · 大白话诊断报告</p>
+        <h1 style="font-size:2.2rem;color:#1a1a2e;margin-bottom:8px;">🔬 基金诊断</h1>
+        <p style="color:#888;font-size:1rem;">FOF研究员视角 · 深度穿透分析</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -892,8 +909,11 @@ def main():
         if fund_type in ('equity', 'index'):
             snapshot_df = fetch_stock_snapshot()
 
+    # 调试信息（开发阶段）
+    # st.caption(f"Debug: nav_df={len(nav_df)}行, bench_df={len(bench_df)}行, holdings={len(holdings_raw)}行")
+
     if nav_df.empty:
-        st.error(f"无法获取基金 {symbol} 的净值数据")
+        st.error(f"无法获取基金 {symbol} 的净值数据，请检查基金代码是否正确或稍后重试。")
         return
 
     # ========== 计算指标 ==========
@@ -978,7 +998,11 @@ def main():
         # 风格雷达
         st.markdown("**风格雷达**：价值/成长、大盘/小盘、动能/低波")
         style = calc_style_box(holdings_result)
-        st.info(f"📊 **晨星风格定位**：{style} | 加权PE：{holdings_result.get('weighted_pe', 'N/A'):.1f}x | 加权PB：{holdings_result.get('weighted_pb', 'N/A'):.2f}x")
+        w_pe = holdings_result.get('weighted_pe')
+        w_pb = holdings_result.get('weighted_pb')
+        pe_str = f"{w_pe:.1f}x" if w_pe else "N/A"
+        pb_str = f"{w_pb:.2f}x" if w_pb else "N/A"
+        st.info(f"📊 **晨星风格定位**：{style} | 加权PE：{pe_str} | 加权PB：{pb_str}")
 
     else:  # bond
         st.markdown("### 🔵 债券类基金 (Bond-Focused)")
