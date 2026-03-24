@@ -12,6 +12,15 @@
   - `fund_manager_em()` - 基金经理（全量）
   - `fund_portfolio_hold_em(symbol=xxx, date="2024")` - 持仓
   - `fund_open_fund_daily_em()` - 基金日报（含申购/赎回状态、手续费）
+  - `fund_individual_basic_info_xq(symbol=xxx)` - 雪球基础信息（主力接口）
+  - `stock_zh_a_spot_em()` - 股票估值快照（PE/PB）
+  - `index_zh_a_hist(symbol=xxx, period="daily", ...)` - 指数历史行情（基准）
+
+## 当前版本
+- **v7.0**（2026-03-24 重写）：全新架构，彻底解决v6崩溃问题
+- 文件：`fund_analysis.py`（主部署文件）= `fund_analysis_v7.py`
+- 五阶段框架：类型识别→量化看板→持仓穿透→可视化→诊断报告
+- DataFrame构建规范：全部用字典方式，杜绝列名重复Bug
 
 ## 商业模式共识
 - 免费3次/天 + 付费会员（无限 + 高级功能）
