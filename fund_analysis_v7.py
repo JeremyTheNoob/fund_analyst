@@ -24,8 +24,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==================== 全局CSS ====================
-st.markdown("""
+# ==================== 工具函数 ====================
+
+def render_css():
+    """渲染全局CSS样式"""
+    css = """
 <style>
 /* 整体背景 */
 .stApp { background-color: #f4f6f9; }
@@ -97,7 +100,8 @@ st.markdown("""
     margin: 28px 0;
 }
 </style>
-""", unsafe_allow_html=True)
+"""
+    st.markdown(css, unsafe_allow_html=True)
 
 
 # ==================== 工具函数 ====================
@@ -846,6 +850,9 @@ def render_kpi(label: str, value: str, sub: str = "", color_class: str = "kpi-ca
 
 
 def main():
+    # 渲染CSS样式
+    render_css()
+
     # 标题
     st.markdown("""
     <div class="hero-title">
