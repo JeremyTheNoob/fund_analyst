@@ -1805,13 +1805,13 @@ def plot_fund_radar(fund_name: str, scores: dict) -> go.Figure:
     theta_labels = dim_labels + [dim_labels[0]]
     r_values     = values + [values[0]]
 
-    # 颜色：综合均值 ≥80→绿，≥60→橙，<60→红（语义化阈值）
+    # 颜色：综合均值 ≥75→绿，≥55→橙，<55→红
     avg_score = sum(values) / 5
-    if avg_score >= 80:
+    if avg_score >= 75:
         fill_color  = 'rgba(39,174,96,0.25)'
         line_color  = '#27ae60'
         title_badge = '🟢 综合优秀'
-    elif avg_score >= 60:
+    elif avg_score >= 55:
         fill_color  = 'rgba(230,126,34,0.20)'
         line_color  = '#e67e22'
         title_badge = '🟡 综合良好'
@@ -2480,17 +2480,17 @@ def translate_results(model: str, results: dict,
             out['_trend_data'] = trend_res  # 供展示层使用
         out['emotion_note'] = emotion_note
 
-        # ============ 风险（定性结论，数字详情见 Part 2.5 风险提示板块）============
+        # ============ 风险 ============
         risks = []
         if r2 > 0.9 and fee_total > 0.01:
-            risks.append("管理费过高但实质上是伪指数基金，费效比严重失衡")
+            risks.append(f"高R²+高管理费（{fee_total*100:.2f}%）：花了主动管理费，买了被动产品")
         if mkt_b > 1.3:
-            risks.append("高Beta放大器——牛市超额赚，熊市超额亏，需严格控制仓位比例")
+            risks.append(f"Beta={mkt_b:.2f}过高，牛熊市放大效应明显，需控制仓位")
         if smb_b > 0.5:
-            risks.append("小盘股集中持仓，流动性风险偏高，市场下行时可能形成踩踏")
+            risks.append("重仓小盘股，流动性风险较高，市场下行时可能跌幅更大")
         if consistency_warn and '无效加杠杆' in consistency_warn:
-            risks.append("满仓运作但无Alpha保护——典型的「用风险换收益却没换到」")
-        out['risk'] = '；'.join(risks) if risks else "风险特征正常，无明显异常。具体估值与压力数据见上方风险提示板块。"
+            risks.append("动态仓位显示满仓运作，但无有效Alpha保护，下行时损失将直接传导")
+        out['risk'] = '；'.join(risks) if risks else "风险特征正常，无明显异常。"
 
         # ============ 建议 + 评分 ============
         if alpha_f > 0.05 and alpha_p < 0.05:
@@ -2584,15 +2584,15 @@ def translate_results(model: str, results: dict,
             f"凸性 {conv:.1f}——{'正凸性，价格「涨得比跌得快」，有缓冲保护' if conv > 0 else '凸性偏低/负，利率大幅波动时缺乏缓冲保护'}。"
         )
 
-        # ============ 风险（定性结论，具体数据见 Part 2.5 久期压力测试）============
+        # ============ 风险 ============
         risks = []
         if dur_underlying > 7:
-            risks.append("超长久期，利率小幅上行即可带来较大净值损失——降息周期的利器，加息周期的定时炸弹")
+            risks.append(f"⚔️ 底层久期{dur_underlying:.1f}年，利率若上行1%，债券头寸约损失{dur_underlying:.0f}%")
         if carry > 0.04:
-            risks.append("高carry策略，信用溢价偏高，需防范信用违约和流动性收缩双重冲击")
+            risks.append(f"💣 综合carry偏高（{carry*100:.1f}%），可能含高票息信用债，需防范违约/流动性风险")
         if conv < 0:
-            risks.append("负凸性结构，利率大幅波动时缺乏自然缓冲，极端行情中的弱势品种")
-        out['risk'] = '；'.join(risks) if risks else "债券风险特征正常，无明显异常。具体压力测试数据见上方风险提示板块。"
+            risks.append("负凸性，利率大幅波动时缺乏保护，注意极端行情风险")
+        out['risk'] = '；'.join(risks) if risks else "债券风险特征正常，无明显异常。"
 
         # ============ 建议 + 评分 ============
         if carry > 0.02 and dur_underlying < 4 and conv >= 0:
@@ -2704,19 +2704,18 @@ def translate_results(model: str, results: dict,
         elif not alloc_pos and not sel_pos and excess < -0.02:
             out['skill'] += "⚠️ 双维度均为负，本期主动管理全面落后于基准，需关注是否为系统性原因。"
 
-        # ============ 风险（定性结论，具体数据见 Part 2.5）============
+        # ============ 风险 ============
         drift_msg = drift.get('message', '')
         if drift_msg:
             out['risk'] = drift_msg
         elif excess < 0:
-            _main_cause = (
-                '配置择时失误是主因' if abs(alloc) > abs(sel_inter) and alloc < 0
-                else '选股能力不足是主因' if sel_inter < 0
-                else '配置与选股双向拖累'
+            out['risk'] = (
+                f"总超额收益为负（{excess*100:+.2f}%），"
+                f"{'配置失误是主因' if abs(alloc) > abs(sel_inter) and alloc < 0 else '选股能力不足是主因' if sel_inter < 0 else '双向拖累'}，"
+                f"需持续跟踪改善情况。"
             )
-            out['risk'] = f"本期超额为负，{_main_cause}，需持续跟踪改善情况。详细归因见上方风险提示板块。"
         else:
-            out['risk'] = "股债配置均衡，无明显风格漂移预警。详细估值与压测数据见上方风险提示板块。"
+            out['risk'] = "股债配置均衡，无明显风格漂移预警。"
 
         # ============ 建议 + 评分 ============
         if alloc_pos and sel_pos and excess > 0.02:
@@ -2836,18 +2835,21 @@ def translate_results(model: str, results: dict,
                 f"买对应的行业ETF更划算。"
             )
 
-        # ============ 风险（定性结论，具体指标见 Part 2.5）============
+        # ============ 风险（含「单押赌博」专属提示） ============
         risks = []
         risks.append(
-            f"行业集中度高，需承担完整的{'「'+sw_nm+'」' if sw_nm else '特定行业'}系统性风险——行业景气下行时无分散保护"
+            f"行业集中度高，需承担完整的{'「'+sw_nm+'」' if sw_nm else '特定行业'}系统性风险"
         )
         if '单押赌博' in main_sec_tag:
             risks.append(
-                "🎲 **性价比预警**：表面Alpha不错，但来自于对少数个股的集中押注——"
-                "赢了是神，输了是坑。这类Alpha的可持续性极低，持有者需有承受极端行情的心理准备。"
+                f"🎲 **性价比预警**：Alpha={na*100:.1f}%看起来不错，"
+                f"但IR={ir:.2f}偏低（跟踪误差{te*100:.1f}%），"
+                f"说明经理在**单押某几只个股**——"
+                f"赢了是神（超额显著），输了是坑（回撤极深）。"
+                f"这种Alpha的可持续性很低，持有者需有承受极端情形的心理准备。"
             )
         if te > 0.12:
-            risks.append("跟踪误差极高，个股集中度风险大，实际波动可能远超行业指数")
+            risks.append(f"跟踪误差{te*100:.1f}%偏高，个股集中度风险大，波动可能远超行业指数")
         out['risk'] = '；'.join(risks)
 
         # ============ 建议 + 评分 ============
@@ -3296,19 +3298,19 @@ def main():
     with _rc2:
         # 5维评分卡片
         _dim_info = [
-            ('超额能力', '超额能力',
+            ('超额能力', '超额能力', '#e74c3c',
              f"年化Alpha {_radar_meta.get('alpha', 0)*100:.1f}%",
              '经理剔除大盘/行业Beta后靠真本事多赚的收益'),
-            ('风险控制', '风险控制',
+            ('风险控制', '风险控制', '#3498db',
              f"最大回撤 {_radar_meta.get('max_dd', 0)*100:.1f}% · 波动率 {_radar_meta.get('vol', 0)*100:.1f}%",
              '净值曲线的稳定性，跌得少跌得慢是防守力的体现'),
-            ('性价比', '性价比',
+            ('性价比', '性价比', '#9b59b6',
              f"夏普 {_radar_meta.get('sharpe', 0):.2f} · IR {_radar_meta.get('ir', 0):.2f}",
              '冒每一分风险赚到多少超额，稳稳当当赚才算值'),
-            ('风格稳定', '风格稳定',
+            ('风格稳定', '风格稳定', '#16a085',
              '滚动Beta波动 + R²解释度',
              '经理是否言行一致，有没有偷偷换风格'),
-            ('业绩持续', '业绩持续',
+            ('业绩持续', '业绩持续', '#e67e22',
              f"胜率 {_radar_meta.get('win_rate', 0)*100:.0f}% · 盈亏比 {_radar_meta.get('plr', 0):.2f}",
              '是一次性爆发还是持续稳定跑赢，常胜将军才算真本事'),
         ]
@@ -3316,14 +3318,14 @@ def main():
         st.markdown('<div style="font-size:0.82rem;color:#888;margin-bottom:8px">📊 各维度得分详解（满分100）</div>',
                     unsafe_allow_html=True)
 
-        for _dkey, _dlabel, _metric, _desc in _dim_info:
+        for _dkey, _dlabel, _color, _metric, _desc in _dim_info:
             _dscore = _radar_scores.get(_dkey, 50)
-            # 颜色语义化：≥80 绿色优秀 / 60-79 橙色及格 / <60 红色警告
-            _bar_color = '#27ae60' if _dscore >= 80 else '#e67e22' if _dscore >= 60 else '#e74c3c'
+            # 进度条颜色
+            _bar_color = '#27ae60' if _dscore >= 75 else '#e67e22' if _dscore >= 50 else '#e74c3c'
             _bar_pct = _dscore  # 0-100
             st.markdown(f"""
 <div style="background:white;border-radius:8px;padding:10px 14px;margin-bottom:7px;
-     box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:3px solid {_bar_color}">
+     box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:3px solid {_color}">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
     <span style="font-size:0.85rem;font-weight:600;color:#333">{_dlabel}</span>
     <span style="font-size:1.1rem;font-weight:700;color:{_bar_color}">{_dscore}</span>
@@ -3331,7 +3333,7 @@ def main():
   <div style="background:#f0f2f5;border-radius:4px;height:5px;margin-bottom:5px">
     <div style="background:{_bar_color};width:{_bar_pct}%;height:5px;border-radius:4px;transition:width .4s"></div>
   </div>
-  <div style="font-size:0.75rem;color:{_bar_color};font-weight:500">{_metric}</div>
+  <div style="font-size:0.75rem;color:#e74c3c;font-weight:500">{_metric}</div>
   <div style="font-size:0.72rem;color:#aaa;margin-top:2px">{_desc}</div>
 </div>
 """, unsafe_allow_html=True)
@@ -3442,23 +3444,6 @@ def main():
 
     if hidden.get('alert'):
         st.markdown(f'<div class="drift-alert">{hidden["alert"]}</div>', unsafe_allow_html=True)
-
-    # ---------- Part 1.5: 业绩可视化（提前，先看结果再看拆解）----------
-    st.markdown('<div class="section-title">📈 业绩走势一览</div>', unsafe_allow_html=True)
-    _bm_str = '（蓝线为业绩基准）' if not bm_df.empty else ''
-    _vis_comment = ''
-    if _total_ret > 0:
-        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，最大回撤 {_max_dd:.1f}%{_bm_str}。"
-    else:
-        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，表现弱于预期{_bm_str}。"
-    st.markdown(f'<div style="font-size:0.85rem;color:#666;margin-bottom:8px">{_vis_comment}</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(plot_cumulative_return(nav_df, bm_df), use_container_width=True)
-    st.markdown(
-        f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
-        f'业绩基准：{bm_text}</div>',
-        unsafe_allow_html=True
-    )
 
     # ---------- Part 2: 量化分析结果 ----------
     st.markdown('<div class="section-title">📊 第二部分：深度量化分析</div>', unsafe_allow_html=True)
@@ -3588,16 +3573,6 @@ def main():
 
     # 债券类结果
     if 'bond' in model_results:
-        # 微文案：当权益基金触发债券扫描时，主动告知用户原因
-        if model_type == 'equity':
-            st.markdown(
-                f'<div style="background:#f0f8ff;border:1px solid #74b9ff;border-radius:8px;'
-                f'padding:10px 16px;font-size:0.86rem;color:#2980b9;margin:8px 0 10px;line-height:1.7">'
-                f'💡 <b>跨界扫描发现</b>：该权益基金实际持有超 20% 的债券头寸，'
-                f'已自动触发隐含久期与信用风险测评。以下数据反映的是债券端的风险敞口。'
-                f'</div>',
-                unsafe_allow_html=True
-            )
         br = model_results['bond']
         # 优先展示底层真实久期（已做仓位修正），回退到组合级久期
         d_underlying = br.get('duration_underlying', br.get('duration', 0))
@@ -4026,42 +4001,10 @@ def main():
     # ---------- Part 2.5: 风险提示板块 ----------
     st.markdown('<div class="section-title">⚠️ 风险提示</div>', unsafe_allow_html=True)
 
-    # ── 动态列宽兜底：预判左列/右列是否有内容 ──
-    # 左列有内容：mixed/sector（收益拆解） 或 equity（有持仓的估值预警）
-    _top10_for_check = holdings.get('top10', pd.DataFrame())
-    _has_left_content = (
-        model_type in ('mixed', 'sector')  # 收益拆解
-        or (model_type == 'equity' and _top10_for_check is not None and not _top10_for_check.empty)
-    )
-    # 右列有内容：bond_ratio>0.10（久期压测） 或 mixed/sector且stock_ratio>0.15（估值预警）
-    _has_right_content = (
-        bond_ratio > 0.10
-        or (model_type in ('mixed', 'sector') and stock_ratio > 0.15)
-    )
-    # 决定布局
-    if _has_left_content and _has_right_content:
-        _risk_col_l, _risk_col_r = st.columns([1, 1])
-        _use_single_left  = False
-        _use_single_right = False
-    elif _has_left_content:
-        _risk_col_l  = st.container()
-        _risk_col_r  = None  # 占位，实际不会渲染右列
-        _use_single_left  = True
-        _use_single_right = False
-    elif _has_right_content:
-        _risk_col_l  = None
-        _risk_col_r  = st.container()
-        _use_single_left  = False
-        _use_single_right = True
-    else:
-        _risk_col_l  = st.container()
-        _risk_col_r  = None
-        _use_single_left  = True
-        _use_single_right = False
+    _risk_col_l, _risk_col_r = st.columns([1, 1])
 
-    # ── 左列 A：收益拆解（混合/行业型）或 前十大估值预警（权益型）──────
-    if _risk_col_l is not None:
-     with _risk_col_l:
+    # ── 左列 A：收益拆解（混合/行业型）或 前十大估值预警（权益/行业型）──────
+    with _risk_col_l:
 
         # A1. 收益拆解「功劳簿」（混合型 + 行业型）
         if model_type in ('mixed', 'sector'):
@@ -4073,15 +4016,9 @@ def main():
                 bm_df=bm_df,
             )
 
-            # 动态标题：用实际总收益，涨红跌绿
-            _decomp_ret_val = _total_ret  # _total_ret 已在 Part 1 KPI 区计算
-            _decomp_title_color = '#e74c3c' if _decomp_ret_val >= 0 else '#27ae60'
-            _decomp_title_verb  = '是怎么赚的？' if _decomp_ret_val >= 0 else '是怎么亏的？'
             st.markdown(
-                f'<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">'
-                f'📦 收益拆解：这 '
-                f'<span style="color:{_decomp_title_color};font-size:1.05rem">'
-                f'{_decomp_ret_val:+.2f}%</span> {_decomp_title_verb}</div>',
+                '<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">'
+                '📦 收益拆解：这 % 是怎么赚的？</div>',
                 unsafe_allow_html=True
             )
 
@@ -4231,8 +4168,7 @@ def main():
             )
 
     # ── 右列 B：前十大估值预警（混合/行业型）+ 债券压力测试 ──────────
-    if _risk_col_r is not None:
-     with _risk_col_r:
+    with _risk_col_r:
 
         # B1. 混合型/行业型的前十大估值预警（放右列）
         if model_type in ('mixed', 'sector'):
@@ -4305,8 +4241,8 @@ def main():
                 unsafe_allow_html=True
             )
 
-            # 三场景卡片（Flexbox 响应式，移动端自动折行）
-            _sc_html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+            # 三场景卡片
+            _sc_html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">'
             for _sc in _stress['scenarios']:
                 _bp = _sc['bp']
                 _fi = _sc['fund_impact'] * 100
@@ -4315,8 +4251,8 @@ def main():
                 _sc_bg = {'🟢':'#eafaf1','🟡':'#fffbea','🟠':'#fff4e5','🔴':'#fef0f0'}.get(_icon,'#f8f8f8')
                 _sc_border = {'🟢':'#27ae60','🟡':'#f39c12','🟠':'#e67e22','🔴':'#e74c3c'}.get(_icon,'#ccc')
                 _sc_html += f'''
-<div style="flex:1;min-width:120px;background:{_sc_bg};border:1px solid {_sc_border};
-     border-radius:8px;padding:10px;text-align:center">
+<div style="background:{_sc_bg};border:1px solid {_sc_border};border-radius:8px;
+     padding:10px;text-align:center">
   <div style="font-size:1.3rem">{_icon}</div>
   <div style="font-size:0.78rem;color:#666;margin:2px 0">利率↑{_bp}BP</div>
   <div style="font-size:1.1rem;font-weight:700;color:{_sc_border}">{_fi:+.2f}%</div>
@@ -4349,6 +4285,36 @@ def main():
                         f'需警惕双重风险叠加。</div>',
                         unsafe_allow_html=True
                     )
+        elif bond_ratio <= 0.10 and model_type not in ('bond',):
+            # 债券仓位极低，不展示压测
+            if model_type in ('mixed',) and not (model_results.get('bond')):
+                pass  # 静默
+            elif model_type == 'equity':
+                st.markdown(
+                    '<div style="color:#aaa;font-size:0.83rem;padding:20px 0">'
+                    '该基金以股票为主，债券仓位低于10%，久期压力测试意义有限。</div>',
+                    unsafe_allow_html=True
+                )
+
+    # ---------- Part 3: 业绩可视化 ----------
+    st.markdown('<div class="section-title">📈 第三部分：业绩可视化</div>', unsafe_allow_html=True)
+
+    # 可视化点评
+    _bm_str = '（蓝线为业绩基准）' if not bm_df.empty else ''
+    _vis_comment = ''
+    if _total_ret > 0:
+        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，最大回撤 {_max_dd:.1f}%{_bm_str}。"
+    else:
+        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，表现弱于预期{_bm_str}。"
+    st.markdown(f'<div style="font-size:0.85rem;color:#666;margin-bottom:8px">{_vis_comment}</div>',
+                unsafe_allow_html=True)
+    with st.expander("累计收益率对比图（基金 vs 业绩基准）", expanded=True):
+        st.plotly_chart(plot_cumulative_return(nav_df, bm_df), use_container_width=True)
+        st.markdown(
+            f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
+            f'业绩基准：{bm_text}</div>',
+            unsafe_allow_html=True
+        )
 
     # ---------- Part 4: 大白话诊断 ----------
     st.markdown('<div class="section-title">💬 第四部分：大白话诊断</div>', unsafe_allow_html=True)

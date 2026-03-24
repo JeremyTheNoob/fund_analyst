@@ -2,36 +2,70 @@
 
 ## 项目目标
 - 产品：基金穿透式分析工具，对外运营，含付费功能
-- 当前状态：Streamlit MVP 已可运行，正在规划正式版
+- 当前状态：v8.0 专业量化版已完成，待推送到GitHub部署
 
 ## 技术栈（当前）
 - 前端/后端：Python + Streamlit
 - 数据源：AkShare
-- 正确 API：
-  - `fund_open_fund_info_em(symbol=xxx, indicator="单位净值走势")` - 历史净值
-  - `fund_manager_em()` - 基金经理（全量）
-  - `fund_portfolio_hold_em(symbol=xxx, date="2024")` - 持仓
-  - `fund_open_fund_daily_em()` - 基金日报（含申购/赎回状态、手续费）
-  - `fund_individual_basic_info_xq(symbol=xxx)` - 雪球基础信息（主力接口）
-  - `stock_zh_a_spot_em()` - 股票估值快照（PE/PB）
-  - `index_zh_a_hist(symbol=xxx, period="daily", ...)` - 指数历史行情（基准）
+- 正确 API（已验证）：
+  - `fund_open_fund_info_em(symbol, indicator="单位净值走势")` - 历史净值，列名：净值日期/单位净值/日增长率（取前两列）
+  - `fund_individual_basic_info_xq(symbol)` - 雪球基础信息（基准文本）
+  - `fund_portfolio_hold_em(symbol, date="2024")` - 持仓
+  - `stock_zh_index_daily_em(symbol="sh000300")` - 指数日行情（沪深300/中证1000等）
+  - `bond_new_composite_index_cbond(indicator="财富")` - 中债综合指数（注意参数是"财富"不是"总值"）
+  - `bond_zh_us_rate(start_date=xxx)` - 10年国债收益率（列名：日期/中国国债收益率10年）
+  - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
-- **v7.0**（2026-03-24 重写）：全新架构，彻底解决v6崩溃问题
-- 文件：`fund_analysis.py`（主部署文件）= `fund_analysis_v7.py`
-- 五阶段框架：类型识别→量化看板→持仓穿透→可视化→诊断报告
-- DataFrame构建规范：全部用字典方式，杜绝列名重复Bug
+- **v9.1**（2026-03-24）：UI 全面重构，8项优化：
+  - Part 3 收益曲线提前至 Part 1 后（先看结果再看拆解）+ 去掉 expander
+  - Part 2.5 动态列宽兜底（预判左右列内容，避免空白块）
+  - 动态标题：「这 +X.XX% 是怎么赚/亏的？」涨红跌绿
+  - 雷达图&进度条颜色语义化：≥80绿/60-79橙/<60红（统一阈值）
+  - Part 4 risk 字段定性/定量分离（只下结论，不重复 Part 2.5 的数字）
+  - 权益基金触发久期模型时加「跨界扫描发现」微文案提示
+  - 压测卡片 CSS: Grid → Flexbox+min-width，移动端自动折行
+  - 文件：`fund_analysis.py` = `fund_analysis_v9.1.py`
+- **v9.0**（2026-03-24）：新增 Part 2.5「风险提示」板块，三大功能：
+  - `performance_decomposition()` 收益拆解功劳簿（Brinson配置+行业Alpha+残差）
+  - `fetch_stock_valuation_alert()` 前十大重仓股PE历史分位预警（百度财经API）
+  - `bond_stress_test()` 债券久期压力测试（3场景10/50/100BP）
+  - 股债双杀联合预警（混合型专属）
+- **v8.9**（2026-03-24）：报告开头新增5维综合实力雷达图（Plotly scatterpolar）
+  - 五维：超额能力/风险控制/性价比/风格稳定/业绩持续，各归一化0-100
+  - 函数：`calc_radar_scores()` + `plot_fund_radar()`
+  - 展示：Part 0（雷达图+评分卡+形状识别），位于 Part 1 基本信息之前
+- **v8.8**（2026-03-24）：翻译层全面升级（性格标签+情绪指标+一致性判定+四象限分类）
+- 文件：`fund_analysis.py`（主部署文件）= `fund_analysis_v9.0.py`
+
+## v8.0 核心架构（5层）
+1. **数据层**：基本信息 / 净值 / FF因子 / 国债利率 / 持仓季报
+2. **模型层**：
+   - 权益类：FF三/五因子 + Carhart四因子（自动选模型）
+   - 债券类：T-Model久期归因（从净值反推Duration + Convexity）
+   - 混合类：Brinson归因（配置效应+选择效应+交互效应）+ 20日滚动Beta监控 + 风格漂移预警
+   - 行业/主题型：中性化Alpha + 跟踪误差
+3. **逻辑网关**：股票仓位>80%→权益，<20%→债券，中间→混合；行业/主题单独处理
+4. **翻译层**：大白话四维诊断（性格/实力/风险/建议）+ 综合评分(0-100)
+5. **展示层**：Streamlit四部分布局
+
+## FF因子构建方案（A+C混合）
+- SMB = 中证1000(sh000852) - 沪深300(sh000300)
+- HML = 国证价值(sz399371) - 国证成长(sz399370)
+- MOM = 21日滚动均值收益率
+- 说明：方案B（全市场截面）数据量巨大且无历史快照接口，暂不实现
+
+## 基准构建规则
+- 从招募说明书解析（正则匹配×XX%格式）
+- 动态加权：先算各成分日收益率，再加权（不能直接加指数点数）
+- 未解析到基准时按类型使用默认（权益→沪深300，债券→中债综合，混合→60/40）
+
+## 债券仓位判断
+- 静态法：季报`fund_portfolio_hold_em`（最准但滞后）
+- 动态法：20日滚动双因子回归（股票+债券指数），偏差>15%触发风格漂移预警
 
 ## 商业模式共识
 - 免费3次/天 + 付费会员（无限 + 高级功能）
-- 主要获客渠道：微信公众号/视频号、小红书、雪球、SEO
-
-## 正式版技术选项
-- A：升级 Streamlit（2周，快速验证）
-- B：前后端分离（React + FastAPI + PostgreSQL，2个月）
-- C：微信小程序（6周，移动端优先）
-
-## 基金筛选阈值参数（待实现）
-- 卓越：综合分 ≥80，优选 ≥60，问题 ≤25
-- 偏科/问题条件：费率偏高、规模过小、经理任期 < 1年
-- 不同类型基金用不同权重（货币/指数被动特殊处理）
+- 获客渠道：小红书+抖音（图文+AI配音）
+- 部署地址：https://fundanalyst-supq2s7qdckbk9468a83bc.streamlit.app/
+- GitHub：https://github.com/JeremyTheNoob/fund_analyst

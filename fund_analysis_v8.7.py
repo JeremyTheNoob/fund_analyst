@@ -130,7 +130,7 @@ def fetch_basic_info(symbol: str) -> dict:
         if not r['fee_manage']:
             r['fee_manage'] = _parse_fee(info2.get('管理费率', ''))
         if not r['fee_sale']:
-            r['fee_sale'] = _parse_fee(info2.get('销售服务费率', ''))
+            r['fee_sale'] = _parse_fee(info2.get('托管费率', ''))
     except Exception:
         pass
 
@@ -244,7 +244,7 @@ def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
     """
     mkt   = fetch_index_daily('sh000300', start, end).rename(columns={'ret': 'Mkt'})
     small = fetch_index_daily('sh000852', start, end).rename(columns={'ret': 'ret_small'})
-    large = mkt[['date']].copy().assign(ret_large=mkt['Mkt'])  # large = 沪深300，直接复用 mkt
+    large = fetch_index_daily('sh000300', start, end).rename(columns={'ret': 'ret_large'})
     val   = fetch_index_daily('sz399371', start, end).rename(columns={'ret': 'ret_val'})
     grw   = fetch_index_daily('sz399370', start, end).rename(columns={'ret': 'ret_grw'})
 
@@ -359,7 +359,7 @@ def _parse_benchmark(text: str) -> dict:
     """
     if not text:
         return {}
-    pattern = r'([^×＊*\+\-]+?)[指数]?[收益率]?\s*[×＊*]\s*(\d+\.?\d*)\s*[%％]'
+    pattern = r'([^×＊*\+\-]+?)[指数]?[收益率]?\s*[×＊*]\s*(\d+)\s*[%％]'
     matches = re.findall(pattern, text)
 
     if not matches:
@@ -415,9 +415,8 @@ def build_benchmark_ret(parsed: dict, start: str, end: str) -> pd.DataFrame:
 
     merged = parts[0].rename(columns={'weighted':'bm_ret'})
     for p in parts[1:]:
-        # 用 inner join，只保留所有成分都有数据的交易日，防止停牌日 0 收益污染基准
-        merged = merged.merge(p, on='date', how='inner')
-        merged['bm_ret'] = merged['bm_ret'] + merged['weighted']
+        merged = merged.merge(p, on='date', how='outer')
+        merged['bm_ret'] = merged['bm_ret'].fillna(0) + merged['weighted'].fillna(0)
         merged.drop(columns=['weighted'], inplace=True)
 
     return merged[['date','bm_ret']].dropna().reset_index(drop=True)
@@ -476,8 +475,7 @@ def fetch_sw_industry_ret(sw_code: str, start: str, end: str) -> pd.Series:
         df = df[(df['日期'] >= pd.Timestamp(start)) & (df['日期'] <= pd.Timestamp(end))].copy()
         if df.empty or len(df) < 5:
             return pd.Series(dtype=float)
-        close_col = '收盘' if '收盘' in df.columns else df.columns[4]  # 备用：取第5列
-        df['ret'] = df[close_col].pct_change()
+        df['ret'] = df['收盘'].pct_change()
         df = df.dropna(subset=['ret'])
         return df.set_index('日期')['ret']
     except Exception:
@@ -568,17 +566,7 @@ def fetch_holdings(symbol: str, type_category: str = 'equity') -> dict:
 
     # 次级方案：用前十大股票持仓估算股票仓位（仅在资产配置接口失败时使用）
     try:
-        # 按年倒序尝试，优先拿最新年度季报（不再硬编码 2024）
-        _current_year = datetime.now().year
-        df = None
-        for _year in [str(_current_year - 1), str(_current_year), str(_current_year - 2)]:
-            try:
-                _tmp = ak.fund_portfolio_hold_em(symbol=symbol, date=_year)
-                if _tmp is not None and not _tmp.empty:
-                    df = _tmp
-                    break
-            except Exception:
-                continue
+        df = ak.fund_portfolio_hold_em(symbol=symbol, date="2024")
         if df is not None and not df.empty:
             result['top10'] = df.head(10)
             if not alloc_ok and '占净值比例' in df.columns:
@@ -595,14 +583,10 @@ def fetch_holdings(symbol: str, type_category: str = 'equity') -> dict:
 
 
 def _parse_pct(text: str) -> float:
-    """解析百分比字符串为小数（必须含 % 符号，防止将日期/代码误解析）"""
     if not text:
         return 0.0
-    m = re.search(r'(\d+\.?\d*)\s*[%％]', str(text))
-    if m:
-        v = float(m.group(1)) / 100
-        return v if v <= 2.0 else 0.0  # 超过200%视为解析错误
-    return 0.0
+    m = re.search(r'(\d+\.?\d*)', str(text))
+    return float(m.group(1)) / 100 if m else 0.0
 
 
 # ---------- 9. 隐性费率估算 ----------
@@ -1508,808 +1492,13 @@ def run_sector_model(fund_ret: pd.Series,
 # ██████████████  TRANSLATION LAYER  ██████████████
 # ============================================================
 
-# ---- 辅助：滚动Alpha趋势检测 ----
-
-def _calc_rolling_alpha_trend(fund_ret: pd.Series,
-                               bm_ret: pd.Series,
-                               window: int = 63) -> dict:
-    """
-    计算近三个月（约63个交易日）的滚动Alpha趋势，判断经理近期"状态"。
-
-    逻辑：
-      - 将全期切分为若干 window 天的月度滚动窗口（步长=21天，约1个月）
-      - 计算每段的超额收益年化 Alpha
-      - 若最近连续 3 段 Alpha 均呈下降趋势（逐步变差），触发"状态低迷"信号
-      - 返回方向（上升/下降/震荡）+ 近期每月Alpha列表 + 是否状态低迷
-
-    注意：只需要基金和基准的收益率序列，不依赖FF因子，计算量极小。
-    """
-    df = pd.DataFrame({'fund': fund_ret, 'bm': bm_ret}).dropna()
-    if len(df) < window * 2:
-        return {'trend': 'insufficient', 'monthly_alphas': [], 'is_slump': False,
-                'trend_text': ''}
-
-    # 每21天一个滚动窗口，取最近5个月
-    step = 21
-    alphas = []
-    for i in range(len(df) - window, max(len(df) - window * 5, -1), -step):
-        if i < 0:
-            break
-        chunk = df.iloc[i: i + window]
-        if len(chunk) < 30:
-            continue
-        monthly_alpha = (chunk['fund'] - chunk['bm']).mean() * 252
-        alphas.append(monthly_alpha)
-
-    alphas = list(reversed(alphas))  # 时间正序
-
-    if len(alphas) < 3:
-        return {'trend': 'insufficient', 'monthly_alphas': alphas, 'is_slump': False,
-                'trend_text': ''}
-
-    recent_3 = alphas[-3:]
-
-    # 连续下降：每一步都比前一步低
-    is_slump = (recent_3[0] > recent_3[1] > recent_3[2])
-
-    # 连续上升
-    is_recovering = (recent_3[0] < recent_3[1] < recent_3[2])
-
-    if is_slump:
-        trend = 'slump'
-        trend_text = (
-            f"近3个月滚动Alpha分别为 {recent_3[0]*100:.1f}% / {recent_3[1]*100:.1f}% / {recent_3[2]*100:.1f}%，"
-            "连续下降——经理近期可能进入<b>「审美疲劳期」</b>，"
-            "原有选股逻辑出现钝化，需持续观察是否能扭转。"
-        )
-    elif is_recovering:
-        trend = 'recovering'
-        trend_text = (
-            f"近3个月滚动Alpha {recent_3[0]*100:.1f}% → {recent_3[1]*100:.1f}% → {recent_3[2]*100:.1f}%，"
-            "逐月回升，经理状态趋于改善，可关注后续表现。"
-        )
-    else:
-        trend = 'volatile'
-        trend_text = (
-            f"近3个月滚动Alpha分别为 {recent_3[0]*100:.1f}% / {recent_3[1]*100:.1f}% / {recent_3[2]*100:.1f}%，"
-            f"走势震荡，暂无明确趋势信号。"
-        )
-
-    return {
-        'trend':          trend,
-        'monthly_alphas': alphas,
-        'is_slump':       is_slump,
-        'is_recovering':  is_recovering,
-        'trend_text':     trend_text,
-        'recent_3':       recent_3,
-    }
-
-
-# ============================================================
-# ██████████████  RADAR CHART MODULE  ██████████████
-# ============================================================
-
-def calc_radar_scores(
-    model_type: str,
-    model_results: dict,
-    nav_df: pd.DataFrame,
-    bm_df: pd.DataFrame,
-    rolling_df: pd.DataFrame = None,
-) -> dict:
-    """
-    计算基金综合实力雷达图5维评分（0-100分）。
-
-    维度定义：
-      Alpha   超额能力  ← 年化 Alpha / 中性化 Alpha
-      Risk    风险控制  ← 最大回撤 + 年化波动率（越小越好，取反后打分）
-      Eff     性价比    ← 夏普比率 + 信息比率（IR）
-      Stab    风格稳定性 ← 滚动Beta偏差 + R²解释度
-      Persist 业绩持续性 ← 月度胜率 + 盈亏比
-
-    各维度均归一化到 0-100，50分为行业中位数水准。
-    """
-
-    # ---- 基础收益率序列 ----
-    ret = nav_df.set_index('date')['ret'].dropna() if 'ret' in nav_df.columns else pd.Series(dtype=float)
-    nav_vals = nav_df['nav']
-    ann_factor = 252
-
-    # --------------------------------------------------
-    # 维度1：超额能力 Alpha（0-100）
-    # --------------------------------------------------
-    alpha_raw = 0.0
-    alpha_p   = 1.0
-    if model_type in ('equity',):
-        alpha_raw = model_results.get('alpha', 0.0) or 0.0
-        alpha_p   = model_results.get('alpha_pval', 1.0) or 1.0
-    elif model_type == 'sector':
-        sr = model_results.get('sector', model_results)
-        alpha_raw = sr.get('neutral_alpha', 0.0) or 0.0
-        alpha_p   = 0.05  # sector model 直接用超额序列，默认视为显著
-    elif model_type == 'mixed':
-        alpha_raw = model_results.get('excess_return', 0.0) or 0.0
-        alpha_p   = 0.05
-    elif model_type == 'bond':
-        alpha_raw = model_results.get('carry_alpha', 0.0) or 0.0
-        alpha_p   = 0.05
-
-    # 评分逻辑：Alpha越高且越显著 → 分越高
-    # 基础分：[-10%,+20%] → [0,100]，每1%≈3.3分
-    alpha_base = np.clip((alpha_raw + 0.10) / 0.30 * 100, 0, 100)
-    # 显著性折扣：p>0.1 降低可信度
-    if alpha_p > 0.1:
-        alpha_base *= 0.75
-    elif alpha_p > 0.05:
-        alpha_base *= 0.90
-    score_alpha = round(np.clip(alpha_base, 0, 100))
-
-    # --------------------------------------------------
-    # 维度2：风险控制 Risk（0-100，越小越好取反）
-    # --------------------------------------------------
-    _nav_cum  = nav_vals
-    _roll_max = _nav_cum.cummax()
-    max_dd    = ((_nav_cum - _roll_max) / _roll_max).min()   # 负值
-    vol       = ret.std() * np.sqrt(ann_factor) if len(ret) > 10 else 0.2
-
-    # 最大回撤评分：[-50%,0%] → [0,100]，回撤0分=100，回撤-50%=0
-    dd_score  = np.clip((1 + max_dd / 0.50) * 100, 0, 100)
-    # 年化波动率评分：[0%, 40%] → [100,0]
-    vol_score = np.clip((1 - vol / 0.40) * 100, 0, 100)
-    score_risk = round(np.clip(dd_score * 0.6 + vol_score * 0.4, 0, 100))
-
-    # --------------------------------------------------
-    # 维度3：性价比 Efficiency（0-100）
-    # --------------------------------------------------
-    # 夏普比率
-    rf_daily = 0.02 / ann_factor   # 无风险利率2%
-    excess_ret = ret - rf_daily
-    sharpe = (excess_ret.mean() / excess_ret.std() * np.sqrt(ann_factor)
-              if len(excess_ret) > 10 and excess_ret.std() > 0 else 0.0)
-
-    # 信息比率（如果有基准）
-    ir = 0.0
-    if not bm_df.empty and 'bm_ret' in bm_df.columns:
-        bm_ret_s = bm_df.set_index('date')['bm_ret'].dropna()
-        aligned  = pd.concat([ret, bm_ret_s], axis=1, join='inner').dropna()
-        if len(aligned) > 20:
-            ex_s = aligned.iloc[:, 0] - aligned.iloc[:, 1]
-            ir = (ex_s.mean() / ex_s.std() * np.sqrt(ann_factor)
-                  if ex_s.std() > 0 else 0.0)
-
-    # 也可以从 sector model 直接读取 IR
-    if model_type == 'sector':
-        sr = model_results.get('sector', model_results)
-        ir = sr.get('info_ratio', ir) or ir
-
-    # 夏普评分：[-1, 3] → [0, 100]
-    sharpe_score = np.clip((sharpe + 1.0) / 4.0 * 100, 0, 100)
-    # IR评分：[-1, 2] → [0, 100]
-    ir_score     = np.clip((ir + 1.0) / 3.0 * 100, 0, 100)
-    score_eff    = round(np.clip(sharpe_score * 0.5 + ir_score * 0.5, 0, 100))
-
-    # --------------------------------------------------
-    # 维度4：风格稳定性 Stability（0-100）
-    # --------------------------------------------------
-    r2        = 0.6   # 默认值
-    beta_std  = 0.15  # 滚动Beta标准差，越小越稳
-
-    if model_type == 'equity':
-        r2       = model_results.get('r_squared', 0.6) or 0.6
-    elif model_type == 'mixed':
-        r2       = 0.5   # 混合型天然R²偏低
-
-    if rolling_df is not None and not rolling_df.empty:
-        _beta_cols = [c for c in rolling_df.columns if 'beta' in c.lower() and '20' in c]
-        if _beta_cols:
-            beta_series = rolling_df[_beta_cols[0]].dropna()
-            if len(beta_series) > 5:
-                beta_std = beta_series.std()
-
-    # R²稳定性：如果R²太高（>0.95）说明完全贴基准，不算好的"稳定"（而是被动）
-    # 理想R²范围：0.5~0.85 → 说明有主动管理且因子解释合理
-    if r2 > 0.95:
-        r2_score = 60   # 过于贴基准，扣分
-    elif r2 >= 0.5:
-        r2_score = np.clip((r2 - 0.5) / 0.45 * 100, 0, 100)
-    else:
-        r2_score = np.clip(r2 / 0.5 * 60, 0, 60)
-
-    # Beta稳定性评分：[0, 0.4] → [100, 0]
-    beta_stab_score = np.clip((1 - beta_std / 0.4) * 100, 0, 100)
-    score_stab      = round(np.clip(r2_score * 0.4 + beta_stab_score * 0.6, 0, 100))
-
-    # --------------------------------------------------
-    # 维度5：业绩持续性 Persistence（0-100）
-    # --------------------------------------------------
-    # 月度胜率：基金月收益 > 基准月收益 的比例
-    win_rate  = 0.5
-    profit_loss_ratio = 1.0
-
-    if not bm_df.empty and 'bm_ret' in bm_df.columns:
-        bm_ret_s = bm_df.set_index('date')['bm_ret'].dropna()
-        aligned  = pd.concat([ret, bm_ret_s], axis=1, join='inner').dropna()
-        if len(aligned) > 20:
-            ex_s       = aligned.iloc[:, 0] - aligned.iloc[:, 1]
-            wins       = (ex_s > 0).sum()
-            total      = len(ex_s)
-            win_rate   = wins / total if total > 0 else 0.5
-            avg_win    = ex_s[ex_s > 0].mean() if wins > 0 else 0.0
-            losses     = (ex_s < 0).sum()
-            avg_loss   = abs(ex_s[ex_s < 0].mean()) if losses > 0 else 1e-6
-            profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 1.0
-    else:
-        # 无基准时，用对比0的胜率
-        if len(ret) > 20:
-            pos_days   = (ret > 0).sum()
-            win_rate   = pos_days / len(ret)
-            avg_pos    = ret[ret > 0].mean() if pos_days > 0 else 0
-            neg_days   = (ret < 0).sum()
-            avg_neg    = abs(ret[ret < 0].mean()) if neg_days > 0 else 1e-6
-            profit_loss_ratio = avg_pos / avg_neg if avg_neg > 0 else 1.0
-
-    # 胜率评分：[0.3, 0.7] → [0, 100]
-    wr_score  = np.clip((win_rate - 0.30) / 0.40 * 100, 0, 100)
-    # 盈亏比评分：[0.5, 2.5] → [0, 100]
-    plr_score = np.clip((profit_loss_ratio - 0.5) / 2.0 * 100, 0, 100)
-    score_persist = round(np.clip(wr_score * 0.5 + plr_score * 0.5, 0, 100))
-
-    return {
-        '超额能力': int(score_alpha),
-        '风险控制': int(score_risk),
-        '性价比':   int(score_eff),
-        '风格稳定': int(score_stab),
-        '业绩持续': int(score_persist),
-        # 附加原始值供 tooltip 展示
-        '_meta': {
-            'alpha':     alpha_raw,
-            'max_dd':    max_dd,
-            'vol':       vol,
-            'sharpe':    sharpe,
-            'ir':        ir,
-            'win_rate':  win_rate,
-            'plr':       profit_loss_ratio,
-        }
-    }
-
-
-def plot_fund_radar(fund_name: str, scores: dict) -> go.Figure:
-    """
-    使用 Plotly 绘制基金综合实力雷达图。
-
-    Args:
-        fund_name: 基金名称（用于标题）
-        scores:    calc_radar_scores 返回的5维评分字典
-                   键：'超额能力' / '风险控制' / '性价比' / '风格稳定' / '业绩持续'
-
-    Returns:
-        plotly Figure 对象
-    """
-    _meta = scores.get('_meta', {})
-
-    dim_labels = ['超额能力\n(Alpha)', '风险控制\n(Risk)', '性价比\n(Efficiency)',
-                  '风格稳定\n(Stability)', '业绩持续\n(Persistence)']
-    dim_keys   = ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
-    values     = [scores.get(k, 50) for k in dim_keys]
-
-    # 构建 tooltip 说明
-    _tip_lines = [
-        f"超额能力：{_meta.get('alpha', 0)*100:.1f}% 年化Alpha → {values[0]}分",
-        f"风险控制：回撤{_meta.get('max_dd', 0)*100:.1f}% · 波动{_meta.get('vol', 0)*100:.1f}% → {values[1]}分",
-        f"性价比：夏普{_meta.get('sharpe', 0):.2f} · IR={_meta.get('ir', 0):.2f} → {values[2]}分",
-        f"风格稳定：R²稳健性+Beta波动 → {values[3]}分",
-        f"业绩持续：胜率{_meta.get('win_rate', 0)*100:.0f}% · 盈亏比{_meta.get('plr', 0):.2f} → {values[4]}分",
-    ]
-    tooltip_text = '<br>'.join(_tip_lines)
-
-    # 闭合多边形
-    theta_labels = dim_labels + [dim_labels[0]]
-    r_values     = values + [values[0]]
-
-    # 颜色：综合均值 ≥80→绿，≥60→橙，<60→红（语义化阈值）
-    avg_score = sum(values) / 5
-    if avg_score >= 80:
-        fill_color  = 'rgba(39,174,96,0.25)'
-        line_color  = '#27ae60'
-        title_badge = '🟢 综合优秀'
-    elif avg_score >= 60:
-        fill_color  = 'rgba(230,126,34,0.20)'
-        line_color  = '#e67e22'
-        title_badge = '🟡 综合良好'
-    else:
-        fill_color  = 'rgba(231,76,60,0.20)'
-        line_color  = '#e74c3c'
-        title_badge = '🔴 综合偏弱'
-
-    # 行业中位数参考线（50分基准）
-    ref_vals = [50] * 5 + [50]
-
-    fig = go.Figure()
-
-    # 参考线（50分中位数圈）
-    fig.add_trace(go.Scatterpolar(
-        r=ref_vals,
-        theta=theta_labels,
-        fill='none',
-        line=dict(color='#cccccc', width=1.5, dash='dot'),
-        name='行业中位数（50分）',
-        hoverinfo='skip',
-    ))
-
-    # 基金主雷达图
-    fig.add_trace(go.Scatterpolar(
-        r=r_values,
-        theta=theta_labels,
-        fill='toself',
-        fillcolor=fill_color,
-        line=dict(color=line_color, width=2.5),
-        marker=dict(size=7, color=line_color),
-        name=fund_name,
-        text=[f'{v}分' for v in r_values],
-        hovertemplate='%{theta}: <b>%{r}分</b><extra></extra>',
-    ))
-
-    fig.update_layout(
-        polar=dict(
-            bgcolor='rgba(248,250,252,0.8)',
-            radialaxis=dict(
-                range=[0, 100],
-                tickvals=[0, 25, 50, 75, 100],
-                ticktext=['0', '25', '50', '75', '100'],
-                tickfont=dict(size=10, color='#999'),
-                gridcolor='#e8eaf0',
-                linecolor='#e8eaf0',
-            ),
-            angularaxis=dict(
-                tickfont=dict(size=11, color='#333', family='Arial'),
-                gridcolor='#e8eaf0',
-                linecolor='#e8eaf0',
-            ),
-        ),
-        showlegend=True,
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=-0.15,
-            xanchor='center',
-            x=0.5,
-            font=dict(size=11),
-        ),
-        title=dict(
-            text=(f'<b>{fund_name}</b> 综合实力透视图<br>'
-                  f'<span style="font-size:12px;color:#888">'
-                  f'{title_badge}｜均分 {avg_score:.0f}/100</span>'),
-            x=0.5,
-            xanchor='center',
-            font=dict(size=14, color='#1a1a2e'),
-        ),
-        paper_bgcolor='white',
-        margin=dict(t=90, b=60, l=60, r=60),
-        height=420,
-    )
-
-    return fig
-
-
-# ============================================================
-# ██████████████  RISK ANALYSIS MODULE  ██████████████
-# ============================================================
-
-# ------------------------------------------------------------------
-# 模块 A：收益拆解（仅混合/行业型基金使用）
-# ------------------------------------------------------------------
-
-def performance_decomposition(
-    model_results: dict,
-    sector_results: dict = None,
-    nav_df: pd.DataFrame = None,
-    bm_df: pd.DataFrame = None,
-) -> dict:
-    """
-    三层收益拆解（混合类/行业类）
-
-    层级：
-      仓位择时贡献  ← Brinson 配置效应
-      行业选股贡献  ← 中性化 Alpha × 行业权重（仅行业型可精确；混合型用选择效应代替）
-      其他残差      ← 总超额 - 仓位 - 行业
-
-    返回：
-      {
-        'total_excess':     年化总超额（浮点），
-        'allocation':       仓位择时贡献（浮点），
-        'sector_alpha':     行业选股贡献（浮点），
-        'residual':         残差（浮点），
-        'narrative':        一句话描述（str），
-        'credit_lines':     功劳簿列表（list of str），
-        'data_quality':     数据质量说明（str），
-      }
-    """
-    allocation   = model_results.get('allocation_effect', 0.0) or 0.0
-    sel_inter    = model_results.get('selection_inter_effect',
-                                     model_results.get('selection_effect', 0.0)) or 0.0
-    total_excess = model_results.get('excess_return', 0.0) or 0.0
-    data_quality = '正常'
-
-    # 行业选股贡献 ─────────────────────────────────────────────────
-    # 方案A（精确）：有行业Alpha × 行业权重
-    # 方案B（近似）：直接用 Brinson 选择效应（已剔除 allocation 的残差）
-    sector_alpha   = 0.0
-    sector_label   = '行业选股贡献'
-    credit_lines   = []
-
-    if sector_results and isinstance(sector_results, dict):
-        _na     = sector_results.get('neutral_alpha', 0.0) or 0.0
-        _sw_wt  = sector_results.get('sector_weight', None)  # 行业权重（如有）
-        _sw_name = sector_results.get('sw_name', '主要持仓行业')
-
-        if _sw_wt and _sw_wt > 0:
-            sector_alpha = _na * _sw_wt
-            sector_label = f'{_sw_name}选股贡献'
-            data_quality = '精确（行业Alpha × 行业权重）'
-        else:
-            # 无权重时用 neutral_alpha × 0.7（估算行业占股票仓位的约 70%）
-            sector_alpha = _na * 0.70
-            sector_label = f'{_sw_name}选股贡献（估算）'
-            data_quality = '估算（中性化Alpha × 0.7权重）'
-    else:
-        # 无行业模型时，选择效应近似为行业选股
-        sector_alpha = sel_inter
-        sector_label = '个股选择贡献'
-        data_quality = '近似（Brinson选择效应）'
-
-    residual = total_excess - allocation - sector_alpha
-
-    # 一句话叙事 ─────────────────────────────────────────────────
-    _total_pct = total_excess * 100
-    _alloc_pct = allocation   * 100
-    _sector_pct= sector_alpha * 100
-    _resid_pct = residual     * 100
-
-    # 找主因
-    _parts_signed = [
-        ('仓位择时', _alloc_pct),
-        (sector_label, _sector_pct),
-        ('其他收益', _resid_pct),
-    ]
-    _positive = [(n, v) for n, v in _parts_signed if v > 0.005]
-    _negative = [(n, v) for n, v in _parts_signed if v < -0.005]
-
-    if _total_pct >= 0:
-        _total_desc = f'今年超额收益 {_total_pct:+.1f}%'
-    else:
-        _total_desc = f'今年落后基准 {_total_pct:+.1f}%'
-
-    _breakdown_parts = []
-    for name, val in _parts_signed:
-        if abs(val) >= 0.1:  # 只说明显的部分
-            _breakdown_parts.append(f'{val:+.1f}% 来自{name}')
-
-    if _breakdown_parts:
-        narrative = _total_desc + '，其中 ' + '，'.join(_breakdown_parts) + '，剩余为杂音。'
-    else:
-        narrative = _total_desc + '，各分项贡献均较微弱。'
-
-    # 功劳簿 ─────────────────────────────────────────────────────
-    if abs(_alloc_pct) >= 0.1:
-        if _alloc_pct > 0:
-            credit_lines.append(
-                f'📍 **头号功臣：仓位择时**（+{_alloc_pct:.1f}%）'
-                f'  经理在行情转换节点调整了股债比例，站队正确，带来正贡献。'
-            )
-        else:
-            credit_lines.append(
-                f'📍 **拖累项：仓位择时**（{_alloc_pct:.1f}%）'
-                f'  大类资产配置方向判断失误，是本期超额落后的主因之一。'
-            )
-
-    if abs(_sector_pct) >= 0.1:
-        if _sector_pct > 0:
-            credit_lines.append(
-                f'🎯 **核心技能：{sector_label}**（+{_sector_pct:.1f}%）'
-                f'  即便行业整体平淡，经理通过精选个股获得了显著超额。'
-            )
-        else:
-            credit_lines.append(
-                f'⚠️ **拖累项：{sector_label}**（{_sector_pct:.1f}%）'
-                f'  行业内个股选择跑输了同行业基准，拖累整体表现。'
-            )
-
-    if abs(_resid_pct) >= 0.1:
-        if _resid_pct > 0:
-            credit_lines.append(
-                f'💡 **意外之财：模型残差**（+{_resid_pct:.1f}%）'
-                f'  含打新收益、交易超额及模型无法解释的随机收益。'
-            )
-        else:
-            credit_lines.append(
-                f'🔇 **其他损耗**（{_resid_pct:.1f}%）'
-                f'  含交易成本、微小滑点及模型残差。'
-            )
-
-    if not credit_lines:
-        credit_lines.append('📊 各分项贡献均较微弱，超额主要来自整体市场的系统性波动。')
-
-    return {
-        'total_excess':  total_excess,
-        'allocation':    allocation,
-        'sector_alpha':  sector_alpha,
-        'sector_label':  sector_label,
-        'residual':      residual,
-        'narrative':     narrative,
-        'credit_lines':  credit_lines,
-        'data_quality':  data_quality,
-    }
-
-
-# ------------------------------------------------------------------
-# 模块 B：前十大重仓股估值风险预警
-# ------------------------------------------------------------------
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_stock_valuation_alert(stock_codes: list, period: str = '近五年') -> list:
-    """
-    获取前十大重仓股当前 PE(TTM) 的历史分位数，生成估值风险预警。
-
-    Args:
-        stock_codes: 股票代码列表，如 ['600519', '000858', ...]
-        period:      历史回溯区间，支持'近一年'/'近三年'/'近五年'
-
-    Returns:
-        list of dict，每项包含：
-          {'code', 'name', 'current_pe', 'current_pb',
-           'pe_percentile', 'pb_percentile', 'risk_level', 'risk_icon'}
-    """
-    results = []
-
-    for code in stock_codes[:10]:  # 最多处理前十只
-        item = {'code': code, 'name': code, 'current_pe': None,
-                'current_pb': None, 'pe_percentile': None,
-                'pb_percentile': None, 'risk_level': '未知', 'risk_icon': '⚪'}
-        try:
-            # PE(TTM) 历史序列
-            df_pe = ak.stock_zh_valuation_baidu(
-                symbol=code, indicator='市盈率(TTM)', period=period
-            )
-            if df_pe is not None and not df_pe.empty and len(df_pe) > 20:
-                df_pe['value'] = pd.to_numeric(df_pe['value'], errors='coerce')
-                df_pe = df_pe.dropna(subset=['value'])
-                df_pe = df_pe[df_pe['value'] > 0]   # 过滤负PE（亏损期）
-                if len(df_pe) > 20:
-                    current_pe  = float(df_pe['value'].iloc[-1])
-                    pe_pct      = float((df_pe['value'] < current_pe).mean() * 100)
-                    item['current_pe']    = current_pe
-                    item['pe_percentile'] = pe_pct
-        except Exception:
-            pass
-
-        try:
-            # PB 历史序列
-            df_pb = ak.stock_zh_valuation_baidu(
-                symbol=code, indicator='市净率', period=period
-            )
-            if df_pb is not None and not df_pb.empty and len(df_pb) > 20:
-                df_pb['value'] = pd.to_numeric(df_pb['value'], errors='coerce')
-                df_pb = df_pb.dropna(subset=['value'])
-                df_pb = df_pb[df_pb['value'] > 0]
-                if len(df_pb) > 20:
-                    current_pb  = float(df_pb['value'].iloc[-1])
-                    pb_pct      = float((df_pb['value'] < current_pb).mean() * 100)
-                    item['current_pb']    = current_pb
-                    item['pb_percentile'] = pb_pct
-        except Exception:
-            pass
-
-        # 综合风险分级（优先用PE分位，无PE时用PB）
-        main_pct = item['pe_percentile'] if item['pe_percentile'] is not None else item['pb_percentile']
-        if main_pct is not None:
-            if main_pct >= 85:
-                item['risk_level'] = '极度高估'
-                item['risk_icon']  = '🔴'
-            elif main_pct >= 70:
-                item['risk_level'] = '偏高估值'
-                item['risk_icon']  = '🟠'
-            elif main_pct <= 15:
-                item['risk_level'] = '极度低估'
-                item['risk_icon']  = '🟢'
-            elif main_pct <= 30:
-                item['risk_level'] = '相对低估'
-                item['risk_icon']  = '🔵'
-            else:
-                item['risk_level'] = '估值合理'
-                item['risk_icon']  = '⚪'
-
-        results.append(item)
-
-    return results
-
-
-def plot_valuation_alert_chart(alert_data: list, stock_names: dict = None) -> go.Figure:
-    """
-    前十大重仓股估值分位数可视化（水平条形图）。
-
-    alert_data: fetch_stock_valuation_alert() 返回的列表
-    stock_names: {code: name} 映射表（可选）
-    """
-    if not alert_data:
-        return go.Figure()
-
-    # 只展示有有效数据的股票
-    valid = [d for d in alert_data if d['pe_percentile'] is not None or d['pb_percentile'] is not None]
-    if not valid:
-        return go.Figure()
-
-    codes    = []
-    pe_pcts  = []
-    pb_pcts  = []
-    labels   = []
-    colors_pe= []
-
-    for d in valid:
-        name  = (stock_names or {}).get(d['code'], d['name'] or d['code'])
-        short = name[:6] if len(name) > 6 else name
-        labels.append(f"{short}\n({d['code']})")
-        codes.append(d['code'])
-        pe_v = d['pe_percentile']
-        pb_v = d['pb_percentile']
-        pe_pcts.append(pe_v if pe_v is not None else 0)
-        pb_pcts.append(pb_v if pb_v is not None else 0)
-
-        # PE 颜色
-        if pe_v is None:
-            colors_pe.append('#cccccc')
-        elif pe_v >= 85:
-            colors_pe.append('#e74c3c')
-        elif pe_v >= 70:
-            colors_pe.append('#e67e22')
-        elif pe_v <= 15:
-            colors_pe.append('#27ae60')
-        elif pe_v <= 30:
-            colors_pe.append('#3498db')
-        else:
-            colors_pe.append('#95a5a6')
-
-    fig = go.Figure()
-
-    # PE 分位条
-    fig.add_trace(go.Bar(
-        y=labels,
-        x=pe_pcts,
-        name='PE历史分位',
-        orientation='h',
-        marker_color=colors_pe,
-        text=[f"{v:.0f}%" if v else 'N/A' for v in pe_pcts],
-        textposition='outside',
-        hovertemplate='%{y}<br>PE分位: %{x:.1f}%<extra></extra>',
-    ))
-
-    # 警戒线
-    fig.add_vline(x=85, line=dict(color='#e74c3c', dash='dash', width=1.5),
-                  annotation_text='高估线(85%)', annotation_position='top right',
-                  annotation_font_size=10)
-    fig.add_vline(x=15, line=dict(color='#27ae60', dash='dash', width=1.5),
-                  annotation_text='低估线(15%)', annotation_position='top right',
-                  annotation_font_size=10)
-
-    fig.update_layout(
-        title=dict(text='前十大重仓股 PE 历史分位数（近五年）',
-                   font=dict(size=13), x=0.5, xanchor='center'),
-        xaxis=dict(range=[0, 110], title='历史分位数 (%)', showgrid=True,
-                   gridcolor='#f0f2f5', ticksuffix='%'),
-        yaxis=dict(title='', autorange='reversed'),
-        height=max(280, len(valid) * 42 + 80),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        margin=dict(l=100, r=60, t=45, b=30),
-        showlegend=False,
-        bargap=0.35,
-    )
-
-    return fig
-
-
-# ------------------------------------------------------------------
-# 模块 C：债券久期压力测试
-# ------------------------------------------------------------------
-
-def bond_stress_test(eff_duration: float, bond_weight: float,
-                     bp_scenarios: list = None) -> dict:
-    """
-    债券久期压力测试：模拟利率上行对净值的冲击。
-
-    公式：ΔPrice ≈ -Duration × ΔY（修正久期近似，ΔY单位为小数）
-
-    Args:
-        eff_duration:  底层债券有效久期（年），来自 T-Model 回归
-        bond_weight:   组合中债券仓位权重（如 0.35 = 35%）
-        bp_scenarios:  自定义利率变动幅度（BP列表），默认 [10, 50, 100]
-
-    Returns:
-        {
-          'scenarios': [{'bp': 10, 'dy': 0.001, 'bond_impact': -0.03,
-                         'fund_impact': -0.01, 'risk_level': '低'}],
-          'max_impact': -0.05,       # 最大压力场景的净值影响
-          'narrative':  '一句话说明',
-        }
-    """
-    if bp_scenarios is None:
-        bp_scenarios = [10, 50, 100]
-
-    _dur  = max(abs(eff_duration), 0.1)   # 防零
-    _wt   = max(min(bond_weight, 1.0), 0.0)
-
-    scenarios = []
-    for bp in bp_scenarios:
-        dy          = bp / 10000.0            # BP → 小数（0.001 = 10BP = 0.1%）
-        bond_impact = -_dur * dy              # 债券头寸跌幅（近似）
-        fund_impact = bond_impact * _wt       # 对整个基金净值的冲击
-
-        if abs(fund_impact) < 0.003:
-            risk_level = '低'
-            risk_icon  = '🟢'
-        elif abs(fund_impact) < 0.01:
-            risk_level = '中'
-            risk_icon  = '🟡'
-        elif abs(fund_impact) < 0.03:
-            risk_level = '较高'
-            risk_icon  = '🟠'
-        else:
-            risk_level = '高'
-            risk_icon  = '🔴'
-
-        scenarios.append({
-            'bp':           bp,
-            'dy':           dy,
-            'bond_impact':  bond_impact,
-            'fund_impact':  fund_impact,
-            'risk_level':   risk_level,
-            'risk_icon':    risk_icon,
-        })
-
-    max_impact = scenarios[-1]['fund_impact']  # 最大压力场景
-
-    # 一句话叙事
-    if _wt < 0.20:
-        _wt_desc = '债券仓位较低，利率风险对整体净值影响有限'
-    elif _dur > 7:
-        _wt_desc = f'久期偏长（{_dur:.1f}年），对利率上行极度敏感'
-    elif _dur > 4:
-        _wt_desc = f'久期中等（{_dur:.1f}年），利率风险处于可控范围'
-    else:
-        _wt_desc = f'久期较短（{_dur:.1f}年），对加息冲击不敏感'
-
-    narrative = (
-        f'当前有效久期 {_dur:.1f}年，债券仓位 {_wt*100:.0f}%。{_wt_desc}。'
-        f'若利率上行100BP，预计基金净值影响约 {max_impact*100:.2f}%。'
-    )
-
-    return {
-        'scenarios':  scenarios,
-        'max_impact': max_impact,
-        'narrative':  narrative,
-        'eff_duration': _dur,
-        'bond_weight':  _wt,
-    }
-
-
 def translate_results(model: str, results: dict,
-                      basic: dict, holdings: dict,
-                      rolling_df: pd.DataFrame = None,
-                      bm_ret_for_trend: pd.Series = None,
-                      fund_ret_for_trend: pd.Series = None) -> dict:
+                      basic: dict, holdings: dict) -> dict:
     """
     将量化分析结果翻译为大白话四维诊断
-    返回：{character, skill, risk, advice, score, tags, emotion_note}
-
-    新增字段：
-      tags        - 性格标签列表，如 ['市场捕手', '小盘偏好', '成长风格']
-      emotion_note- 情绪指标文本（滚动Alpha趋势），空字符串表示无警示
-      consistency_warn - 一致性预警文本（beta高/alpha低 = 无效加杠杆）
+    返回：{character, skill, risk, advice, score}
     """
-    out = {
-        'character': '', 'skill': '', 'risk': '', 'advice': '', 'score': 60,
-        'tags': [],          # 新增：性格标签
-        'emotion_note': '',  # 新增：情绪指标
-        'consistency_warn': ''  # 新增：一致性预警
-    }
+    out = {'character': '', 'skill': '', 'risk': '', 'advice': '', 'score': 60}
 
     name = basic.get('name', '该基金')
     fee_total = basic.get('fee_total', 0)
@@ -2322,184 +1511,53 @@ def translate_results(model: str, results: dict,
         mkt_b   = betas.get('Mkt', 1.0)
         smb_b   = betas.get('SMB', 0.0)
         hml_b   = betas.get('HML', 0.0)
-        mom_b   = betas.get('MOM', 0.0)
 
-        alpha_f = alpha if alpha is not None else 0.0
-
-        # ============ 性格标签体系（多标签并列） ============
-        tags = []
-
-        # 主标签：由 Beta + Alpha 共同决定
-        if mkt_b > 1.2 and alpha_f > 0.05 and alpha_p < 0.05:
-            tags.append('⚡ 市场捕手')   # 高Beta + 真Alpha → 进攻型但有真本事
-        elif mkt_b > 1.2:
-            tags.append('🎯 激进放大镜')  # 高Beta 但Alpha无显著性 → 纯Beta押注
-        elif mkt_b < 0.7 and alpha_f > 0.03:
-            tags.append('🛡️ 稳健老兵')   # 低Beta + 正Alpha → 防守有余还能超额
+        # 性格
+        if mkt_b > 1.2:
+            out['character'] = f"**激进型**。{name}的市场Beta约{mkt_b:.2f}，牛市跑快熊市跑快，是市场的放大镜。"
         elif mkt_b < 0.7:
-            tags.append('🧊 防御专家')   # 纯防御，跑输牛市
-        elif r2 > 0.9:
-            tags.append('🪞 指数影子')   # 高度复制基准
-        elif alpha_f > 0.05 and alpha_p < 0.05:
-            tags.append('💎 明星选股手')  # 均衡Beta + 显著Alpha → 最理想
-        elif alpha_f > 0.02:
-            tags.append('🎓 努力型选手')  # 有超额但不够显著
+            out['character'] = f"**防守型**。Beta约{mkt_b:.2f}，擅长控制市场波动，但强牛市可能跑输大盘。"
         else:
-            tags.append('🌊 随波逐流型')  # 无明显Alpha，跟随大盘
-
-        # 风格附加标签
-        if smb_b > 0.4:
-            tags.append('📦 小盘偏好')
-        elif smb_b < -0.3:
-            tags.append('🏛️ 大盘偏好')
-
+            out['character'] = f"**均衡型**。Beta约{mkt_b:.2f}，随市场波动适中。"
+        if smb_b > 0.3:
+            out['character'] += f"偏好小盘股（SMB暴露{smb_b:.2f}），小盘行情好时受益更明显。"
         if hml_b > 0.3:
-            tags.append('🏷️ 价值风格')
+            out['character'] += "偏价值风格。"
         elif hml_b < -0.3:
-            tags.append('🚀 成长风格')
+            out['character'] += "偏成长风格。"
 
-        if mom_b > 0.3:
-            tags.append('📈 追势动量')
-        elif mom_b < -0.3:
-            tags.append('🔄 逆势反转')
-
-        out['tags'] = tags
-
-        # ============ 性格文本（character） ============
-        main_tag = tags[0] if tags else ''
-        if '市场捕手' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。Beta≈{mkt_b:.2f}，牛市弹性强；"
-                f"同时有真实Alpha，说明经理不只靠Beta吃饭，选股也有真功夫。"
-                f"进攻型中的佼佼者。"
-            )
-        elif '激进放大镜' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。Beta≈{mkt_b:.2f}，本质是市场的「放大镜」。"
-                f"牛市跑快熊市跑更快，超额收益尚无统计显著性——"
-                f"目前的超额可能只是Beta的附带品，而非经理真本事。"
-            )
-        elif '稳健老兵' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。Beta约{mkt_b:.2f}，跌得少、跌得慢；"
-                f"叠加年化Alpha {alpha_f*100:.1f}%，能在控制波动的同时创造超额。"
-                f"防守中不忘进攻，稳中求优。"
-            )
-        elif '防御专家' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。Beta约{mkt_b:.2f}，大盘下行时抗跌，"
-                f"但强牛市会明显跑输指数——适合保守投资者或高波动期的防御配置。"
-            )
-        elif '指数影子' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。R²={r2:.2f}，基金走势几乎贴着基准走。"
-                "你花了主动管理费，买了一个「伪指数基金」。"
-                "建议直接比较同类低费率ETF的替代可能性。"
-            )
-        elif '明星选股手' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。Beta适中（{mkt_b:.2f}），年化Alpha {alpha_f*100:.1f}%且统计显著（p={alpha_p:.3f}）。"
-                f"不靠押注大盘方向，靠选股能力创造超额——这是最理想的主动基金形态。"
-            )
-        elif '努力型选手' in main_tag:
-            out['character'] = (
-                f"**{main_tag}**。有一定超额（{alpha_f*100:.1f}%），但统计显著性不足，"
-                f"可能有运气成分。需要更长时间观察是否具备可复制的选股逻辑。"
-            )
-        else:
-            out['character'] = (
-                f"**{main_tag}**。Beta≈{mkt_b:.2f}，Alpha趋近于零，"
-                f"主要靠市场Beta驱动收益，没有展现明显的主动管理价值。"
-            )
-
-        # 风格附加文字
-        style_notes = [t for t in tags[1:]]
-        if style_notes:
-            out['character'] += f" | 风格标签：{'、'.join(style_notes)}。"
-
-        # ============ 实力（skill） ============
+        # 实力
         if alpha is None:
             out['skill'] = "数据不足，无法评估Alpha。"
         elif r2 > 0.9:
-            out['skill'] = (
-                f"R²={r2:.2f}，基金在高度复制基准，几乎没有主动管理。"
-                "与其支付管理费，不如买低费率指数基金。"
-            )
-        elif alpha_f > 0.05 and alpha_p < 0.05:
-            out['skill'] = (
-                f"年化Alpha {alpha_f*100:.1f}%，统计显著（p={alpha_p:.3f}）。"
-                "**这是真本事**，超额收益并非运气，经理有可复制的获利逻辑。"
-            )
-        elif alpha_f > 0.02 and alpha_p < 0.1:
-            out['skill'] = (
-                f"年化Alpha {alpha_f*100:.1f}%，有一定主动能力，但统计显著性不够强（p={alpha_p:.3f}）。"
-                "需要更长时间验证。"
-            )
-        elif alpha_f > 0:
-            out['skill'] = (
-                f"年化Alpha {alpha_f*100:.1f}%，但统计不显著（p={alpha_p:.3f}），"
-                "超额收益可能有运气成分。"
-            )
+            out['skill'] = (f"R²={r2:.2f}，基金在高度复制基准，几乎没有主动管理。"
+                            "与其支付管理费，不如买低费率指数基金。")
+        elif alpha > 0.05 and alpha_p < 0.05:
+            out['skill'] = (f"年化Alpha {alpha*100:.1f}%，统计显著（p={alpha_p:.3f}）。"
+                            "**这是真本事**，超额收益并非运气，经理有可复制的获利逻辑。")
+        elif alpha > 0.02 and alpha_p < 0.1:
+            out['skill'] = (f"年化Alpha {alpha*100:.1f}%，有一定主动能力，但统计显著性不够强。"
+                            "需要更长时间验证。")
+        elif alpha > 0:
+            out['skill'] = (f"年化Alpha {alpha*100:.1f}%，但统计不显著，超额收益可能有运气成分。")
         else:
-            out['skill'] = (f"年化Alpha {alpha_f*100:.1f}%为负，跑输风险调整后基准，需警惕。")
+            out['skill'] = (f"年化Alpha {alpha*100:.1f}%为负，跑输风险调整后基准，需警惕。")
 
-        # ============ 一致性判定（新增）：Beta高 + Alpha低 = 无效加杠杆 ============
-        consistency_warn = ''
-        # 从 rolling_df 中取最新动态 equity_beta（如有）
-        latest_dyn_beta = None
-        if rolling_df is not None and not rolling_df.empty:
-            col = 'equity_beta_20' if 'equity_beta_20' in rolling_df.columns else 'equity_beta'
-            if col in rolling_df.columns and rolling_df[col].notna().any():
-                latest_dyn_beta = rolling_df[col].dropna().iloc[-1]
-
-        if latest_dyn_beta is not None:
-            # 情形1：动态仓位很高（>0.85）但Alpha不显著或为负 → 无效加杠杆
-            if latest_dyn_beta > 0.85 and (alpha_f < 0.02 or alpha_p > 0.1):
-                consistency_warn = (
-                    f"⚡ **一致性预警 · 无效加杠杆**：动态Beta估算约 {latest_dyn_beta*100:.0f}%，"
-                    f"但年化Alpha仅 {alpha_f*100:.1f}%（p={alpha_p:.3f}，不显著）。"
-                    f"经理满仓押注市场，但没有换来相应的超额收益——"
-                    f"这是典型的「加了杠杆但没有Alpha」，风险/收益严重不对等。"
-                )
-            # 情形2：动态仓位低（<0.30）但因子模型算出高Alpha → 可能是选股能力集中在少数窗口
-            elif latest_dyn_beta < 0.30 and alpha_f > 0.05 and alpha_p < 0.05:
-                consistency_warn = (
-                    f"💡 **一致性观察**：动态仓位仅约 {latest_dyn_beta*100:.0f}%（轻仓），"
-                    f"但年化Alpha {alpha_f*100:.1f}%显著。"
-                    f"说明经理用较少的股票仓位创造了较高的超额——"
-                    f"选股精准度极高，或在特定时间窗口有集中获利。"
-                )
-
-        out['consistency_warn'] = consistency_warn
-
-        # ============ 情绪指标（新增）：滚动Alpha连续3月下降 ============
-        emotion_note = ''
-        if fund_ret_for_trend is not None and bm_ret_for_trend is not None:
-            trend_res = _calc_rolling_alpha_trend(fund_ret_for_trend, bm_ret_for_trend)
-            emotion_note = trend_res.get('trend_text', '')
-            out['_trend_data'] = trend_res  # 供展示层使用
-        out['emotion_note'] = emotion_note
-
-        # ============ 风险（定性结论，数字详情见 Part 2.5 风险提示板块）============
+        # 风险
         risks = []
         if r2 > 0.9 and fee_total > 0.01:
-            risks.append("管理费过高但实质上是伪指数基金，费效比严重失衡")
+            risks.append(f"高R²+高管理费（{fee_total*100:.2f}%）：花了主动管理费，买了被动产品")
         if mkt_b > 1.3:
-            risks.append("高Beta放大器——牛市超额赚，熊市超额亏，需严格控制仓位比例")
+            risks.append("Beta过高，牛熊市放大效应明显，需控制仓位")
         if smb_b > 0.5:
-            risks.append("小盘股集中持仓，流动性风险偏高，市场下行时可能形成踩踏")
-        if consistency_warn and '无效加杠杆' in consistency_warn:
-            risks.append("满仓运作但无Alpha保护——典型的「用风险换收益却没换到」")
-        out['risk'] = '；'.join(risks) if risks else "风险特征正常，无明显异常。具体估值与压力数据见上方风险提示板块。"
+            risks.append("重仓小盘股，流动性风险较高，市场下行时可能跌幅更大")
+        out['risk'] = '；'.join(risks) if risks else "风险特征正常，无明显异常。"
 
-        # ============ 建议 + 评分 ============
-        if alpha_f > 0.05 and alpha_p < 0.05:
+        # 建议
+        if alpha and alpha > 0.05 and alpha_p < 0.05:
             out['advice'] = "经理实力经过统计验证，适合长期持有，可适当提高配置比例。"
             out['score'] = 80
-            if emotion_note and '审美疲劳' in emotion_note:
-                out['advice'] += "注意：近期滚动表现有下滑，建议观察后续1~2个季度确认趋势。"
-                out['score'] = 72  # 小幅降分
-        elif alpha_f > 0:
+        elif alpha and alpha > 0:
             out['advice'] = "有一定超额收益，但需继续观察，建议持有并定期复查。"
             out['score'] = 65
         else:
@@ -2514,99 +1572,33 @@ def translate_results(model: str, results: dict,
         carry          = results.get('carry_alpha', results.get('credit_spread_alpha', 0.0))
         bond_ratio_used = results.get('bond_ratio_used', 1.0)
 
-        # ============ 性格标签（bond三分类） ============
-        bond_tags = []
-        # 主标签
-        if dur_underlying < 3 and carry > 0.02:
-            bond_tags.append('🛡️ 防御专家')        # 短久期 + 有carry → 低风险稳健型
-        elif dur_underlying >= 3 and carry > 0.03:
-            bond_tags.append('💰 收益挖掘机')       # 中长久期 + 高carry → 信用下沉型
-        elif dur_underlying > 6:
-            bond_tags.append('⚔️ 利率博弈师')       # 长久期 → 纯利率赌注
-        elif carry < 0.01:
-            bond_tags.append('🧊 纯利率型')         # 低carry → 只做利率敞口
-        else:
-            bond_tags.append('⚖️ 均衡债基')         # 中等久期+合理carry
-
-        if conv > 1.0:
-            bond_tags.append('🛡️ 正凸性保护')
-        elif conv < 0:
-            bond_tags.append('⚠️ 负凸性风险')
-        if carry > 0.04:
-            bond_tags.append('🎣 信用下沉')
-
-        out['tags'] = bond_tags
-
-        # ============ 性格文本 ============
+        # character：展示底层真实久期 + 若仓位<80%则加括号说明
         if bond_ratio_used < 0.80:
-            dur_note = f"（底层债券头寸真实久期，已修正仓位{bond_ratio_used*100:.0f}%）"
+            dur_note = (f"（底层债券头寸真实久期，已修正仓位{bond_ratio_used*100:.0f}%）")
         else:
             dur_note = ''
-
-        main_bond_tag = bond_tags[0] if bond_tags else ''
-        if '防御专家' in main_bond_tag:
-            out['character'] = (
-                f"**{main_bond_tag}**。底层有效久期{dur_underlying:.1f}年{dur_note}，利率敏感度低；"
-                f"综合carry {carry*100:.2f}%，在控制风险的同时保持稳定收益来源。"
-                f"适合作为组合底仓的「压舱石」。"
-            )
-        elif '收益挖掘机' in main_bond_tag:
-            out['character'] = (
-                f"**{main_bond_tag}**。久期{dur_underlying:.1f}年{dur_note}，综合carry {carry*100:.2f}%偏高，"
-                f"经理通过信用下沉（买中低评级债）挖掘额外收益。"
-                f"收益可观，但信用风险和流动性风险不可忽视。"
-            )
-        elif '利率博弈师' in main_bond_tag:
-            out['character'] = (
-                f"**{main_bond_tag}**。底层久期{dur_underlying:.1f}年{dur_note}，对利率极度敏感——"
-                f"利率下行1%净值约涨{dur_underlying:.0f}%，利率上行1%则反向损失。"
-                f"本质是在「押注利率下行」，风险收益高度不对称。"
-            )
-        elif '纯利率型' in main_bond_tag:
-            out['character'] = (
-                f"**{main_bond_tag}**。久期{dur_underlying:.1f}年，carry几乎为零（{carry*100:.2f}%）。"
-                f"收益完全依赖利率波动，无票息保护——利率不动就没有收益。"
-            )
-        else:
-            out['character'] = (
-                f"**{main_bond_tag}**。底层有效久期{dur_underlying:.1f}年{dur_note}，"
-                f"综合carry {carry*100:.2f}%，风险收益均处于中等水平。"
-            )
-
-        style_bond = [t for t in bond_tags[1:]]
-        if style_bond:
-            out['character'] += f" | 附加标签：{'、'.join(style_bond)}。"
-
-        # ============ 实力（carry + 凸性综合） ============
-        carry_label = '偏高（信用/流动性风险需关注）' if carry > 0.04 else '合理' if carry > 0.015 else '偏低（信用成分极少）'
-        out['skill'] = (
-            f"年化综合carry（票息+信用溢价+骑乘收益）{carry*100:.2f}%，{carry_label}；"
-            f"凸性 {conv:.1f}——{'正凸性，价格「涨得比跌得快」，有缓冲保护' if conv > 0 else '凸性偏低/负，利率大幅波动时缺乏缓冲保护'}。"
+        out['character'] = (
+            f"**久期型**债基，底层有效久期 {dur_underlying:.1f} 年{dur_note}，"
+            f"对利率变化{'非常敏感' if dur_underlying>7 else '中度敏感' if dur_underlying>3 else '不敏感'}。"
         )
 
-        # ============ 风险（定性结论，具体数据见 Part 2.5 久期压力测试）============
+        # skill：综合carry（不再单说"信用溢价"，改为更准确的"综合carry"）
+        carry_label = '偏高，需关注信用/流动性风险' if carry > 0.04 else '合理' if carry > 0.015 else '较低'
+        out['skill'] = (
+            f"年化综合carry（票息+信用溢价+骑乘收益）{carry*100:.2f}%，{carry_label}；"
+            f"凸性 {conv:.1f}，{'正凸性，价格\"涨得比跌得快\"，有缓冲保护' if conv>0 else '凸性偏低，利率保护有限'}。"
+        )
+
         risks = []
         if dur_underlying > 7:
-            risks.append("超长久期，利率小幅上行即可带来较大净值损失——降息周期的利器，加息周期的定时炸弹")
+            risks.append(f"底层久期{dur_underlying:.1f}年，利率若上行1%，债券头寸约损失{dur_underlying:.0f}%")
         if carry > 0.04:
-            risks.append("高carry策略，信用溢价偏高，需防范信用违约和流动性收缩双重冲击")
+            risks.append(f"综合carry偏高（{carry*100:.1f}%），可能含高票息信用债，需防范违约/流动性风险")
         if conv < 0:
-            risks.append("负凸性结构，利率大幅波动时缺乏自然缓冲，极端行情中的弱势品种")
-        out['risk'] = '；'.join(risks) if risks else "债券风险特征正常，无明显异常。具体压力测试数据见上方风险提示板块。"
-
-        # ============ 建议 + 评分 ============
-        if carry > 0.02 and dur_underlying < 4 and conv >= 0:
-            out['advice'] = "短久期+稳定carry，适合作为组合底仓，建议长期配置。"
-            out['score'] = 75
-        elif carry > 0.04:
-            out['advice'] = "高carry策略，警惕信用下沉风险，建议控制仓位，加息周期避免重仓。"
-            out['score'] = 60
-        elif dur_underlying > 6:
-            out['advice'] = "长久期赌利率，建议仅在降息周期配置，随时关注利率拐点。"
-            out['score'] = 55
-        else:
-            out['advice'] = "适合中低风险偏好投资者，注意利率周期配置时机。"
-            out['score'] = 65
+            risks.append("凸性为负，利率大幅波动时缺乏保护，注意极端行情风险")
+        out['risk'] = '；'.join(risks) if risks else "债券风险特征正常。"
+        out['advice'] = "适合中低风险偏好投资者，注意利率周期配置时机。"
+        out['score']  = 70 if carry > 0 and dur_underlying < 6 else 55
 
     elif model == 'mixed':
         alloc      = results.get('allocation_effect', 0)
@@ -2615,122 +1607,49 @@ def translate_results(model: str, results: dict,
         excess     = results.get('excess_return', 0)
         drift      = results.get('drift_info', {})
 
-        # ============ 性格标签（mixed三分类） ============
-        mixed_tags = []
-        alloc_pos  = alloc > 0.005
-        sel_pos    = sel_inter > 0.005
-        alloc_dom  = abs(alloc) > abs(sel_inter)
-        sel_dom    = abs(sel_inter) > abs(alloc)
+        # character：说明混合型基金的两条超额收益来源
+        out['character'] = (
+            "**混合型**，同时暴露股债两类风险，超额收益来自『站队』（配置）和『挑货』（选股）两条路。"
+        )
 
-        if alloc_pos and sel_pos:
-            if alloc_dom:
-                mixed_tags.append('🎯 择时达人')     # 配置为主 + 选股辅助
-            else:
-                mixed_tags.append('🔬 选股匠人')     # 选股为主 + 配置辅助
-        elif alloc_pos and not sel_pos:
-            mixed_tags.append('📡 择时驱动型')       # 配置挣钱但选股拖后腿
-        elif sel_pos and not alloc_pos:
-            mixed_tags.append('🎯 逆境选股型')       # 配置亏钱但选股救场
-        elif not alloc_pos and not sel_pos:
-            mixed_tags.append('😵 两头挨打型')       # 配置、选股双亏
+        # skill：只展示配置效应和选择效应（交互已并入选择），不用解释复杂的交互概念
+        if abs(alloc) > abs(sel_inter):
+            dominant = "经理的核心优势在于**大类资产配置**（择时站队），选股贡献相对次要"
+        elif abs(sel_inter) > abs(alloc):
+            dominant = "经理的核心优势在于**标的选择**（挑货选股），配置贡献相对次要"
         else:
-            mixed_tags.append('⚖️ 均衡混合型')
+            dominant = "配置与选股贡献相当，两方面能力均衡"
 
-        # 附加标签
-        if abs(alloc) > 0.02 and abs(sel_inter) > 0.02:
-            mixed_tags.append('🔥 双维度显著')
-        if drift.get('has_drift'):
-            mixed_tags.append('⚠️ 风格漂移')
+        # 择时/选股方向性分析
+        alloc_dir = "站队准确" if alloc > 0 else "站队失误"
+        sel_dir   = "挑货出色" if sel_inter > 0 else "挑货拖后腿"
 
-        out['tags'] = mixed_tags
-        main_mixed_tag = mixed_tags[0] if mixed_tags else ''
-
-        # ============ 性格文本 ============
-        if '择时达人' in main_mixed_tag:
-            out['character'] = (
-                f"**{main_mixed_tag}**。经理最强的牌是大类资产配置（择时站队）："
-                f"配置效应{alloc*100:+.2f}%是超额的主要来源，选股也有正贡献（{sel_inter*100:+.2f}%）。"
-                f"适合在市场大势不明朗时发挥，波动期表现更佳。"
-            )
-        elif '选股匠人' in main_mixed_tag:
-            out['character'] = (
-                f"**{main_mixed_tag}**。经理最强的牌是个股挑选："
-                f"选择效应{sel_inter*100:+.2f}%是超额的核心来源，"
-                f"配置也有正贡献（{alloc*100:+.2f}%）。"
-                f"在各种市场环境下选好票——这是稀缺的真本事。"
-            )
-        elif '择时驱动型' in main_mixed_tag:
-            out['character'] = (
-                f"**{main_mixed_tag}**。配置效应{alloc*100:+.2f}%，站队准确；"
-                f"但选股效应{sel_inter*100:+.2f}%为负，具体标的拖了后腿。"
-                f"经理能预判大势，但落地选股能力有待提升。"
-            )
-        elif '逆境选股型' in main_mixed_tag:
-            out['character'] = (
-                f"**{main_mixed_tag}**。选股效应{sel_inter*100:+.2f}%，个股选得好；"
-                f"但配置效应{alloc*100:+.2f}%为负，大类择时失误拖累。"
-                f"在仓位配置不利的情况下，靠选股能力硬撑——是「逆风飞翔」型选手。"
-            )
-        elif '两头挨打' in main_mixed_tag:
-            out['character'] = (
-                f"**{main_mixed_tag}** 😵。配置效应{alloc*100:+.2f}%，选择效应{sel_inter*100:+.2f}%，"
-                f"两条腿都在赔钱。既没有择时站对队，也没有挑到好标的，"
-                f"本期混合策略未能创造价值，建议持续观察并考虑替代选择。"
-            )
-        else:
-            out['character'] = (
-                "**混合型**，同时暴露股债两类风险，超额收益来自「站队」（配置）和「挑货」（选股）两条路。"
-            )
-
-        if len(mixed_tags) > 1:
-            out['character'] += f" | 附加标签：{'、'.join(mixed_tags[1:])}。"
-
-        # ============ 实力 ============
         out['skill'] = (
             f"配置效应（站队）{alloc*100:+.2f}%，选择效应（挑货）{sel_inter*100:+.2f}%；"
-            f"总超额{excess*100:+.2f}%。"
+            f"总超额{excess*100:+.2f}%。{dominant}。"
         )
-        # 特殊情况深度诊断
-        if alloc > 0.01 and sel_inter < -0.01:
-            out['skill'] += (
-                "⚡ 「择时准但选股弱」：经理能预判大势，但具体标的拖了后腿——"
-                "考虑是否在买票环节存在流动性限制或分散化执行问题。"
-            )
-        elif alloc < -0.01 and sel_inter > 0.01:
-            out['skill'] += (
-                "⚡ 「择时弱但选股强」：大类配置失误，但个股挑选能力可圈可点——"
-                "如果经理能改善择时，整体表现会明显提升。"
-            )
-        elif not alloc_pos and not sel_pos and excess < -0.02:
-            out['skill'] += "⚠️ 双维度均为负，本期主动管理全面落后于基准，需关注是否为系统性原因。"
 
-        # ============ 风险（定性结论，具体数据见 Part 2.5）============
+        # 特殊情况诊断
+        if alloc > 0.01 and sel_inter < -0.01:
+            out['skill'] += "⚡ 经理择时准但选股弱：能预判大势，但具体标的拖了后腿。"
+        elif alloc < -0.01 and sel_inter > 0.01:
+            out['skill'] += "⚡ 经理择时弱但选股强：大类配置失误，但个股挑选能力可圈可点。"
+
+        # risk：优先展示风格漂移预警
         drift_msg = drift.get('message', '')
         if drift_msg:
             out['risk'] = drift_msg
         elif excess < 0:
-            _main_cause = (
-                '配置择时失误是主因' if abs(alloc) > abs(sel_inter) and alloc < 0
-                else '选股能力不足是主因' if sel_inter < 0
-                else '配置与选股双向拖累'
+            out['risk'] = (
+                f"总超额收益为负（{excess*100:+.2f}%），"
+                f"{'配置失误是主因' if abs(alloc) > abs(sel_inter) else '选股能力不足是主因'}，"
+                f"需持续跟踪改善情况。"
             )
-            out['risk'] = f"本期超额为负，{_main_cause}，需持续跟踪改善情况。详细归因见上方风险提示板块。"
         else:
-            out['risk'] = "股债配置均衡，无明显风格漂移预警。详细估值与压测数据见上方风险提示板块。"
+            out['risk'] = "股债配置均衡，无明显风格漂移预警。"
 
-        # ============ 建议 + 评分 ============
-        if alloc_pos and sel_pos and excess > 0.02:
-            out['advice'] = "双轮驱动表现优秀，建议持有。配置+选股均贡献正超额，是混合型基金中的优质标的。"
-            out['score'] = 78
-        elif excess > 0:
-            out['advice'] = "有超额但单轮驱动，建议持有并关注基金季报了解最新仓位动向。"
-            out['score'] = 65
-        elif '两头挨打' in main_mixed_tag:
-            out['advice'] = "配置、选股双亏，建议降低仓位，寻找替代选择。持续持有需有明确的逻辑支撑。"
-            out['score'] = 42
-        else:
-            out['advice'] = "超额不明显，适合中等风险偏好，建议关注基金季报了解最新仓位动向。"
-            out['score'] = 55
+        out['advice'] = "适合中等风险偏好，建议关注基金季报了解最新仓位动向。"
+        out['score']  = 70 if excess > 0 else 50
 
     elif model == 'sector':
         # 读取 sector 子结果（M4已独立计算，results['sector'] 中）
@@ -2741,79 +1660,25 @@ def translate_results(model: str, results: dict,
         sw_nm  = sr.get('sw_name', '')
         bm_src = sr.get('bm_source', '行业基准')
 
-        # ============ 性格标签（sector四象限） ============
-        sec_tags = []
-        # 横轴：Alpha高低（0.05为界）
-        # 纵轴：IR高低（0.7为界）
-        # 象限1：高Alpha + 高IR → 赛道霸主（量又大质又好）
-        # 象限2：高Alpha + 低IR → 单押赌博（高alpha但靠集中押注赌出来）
-        # 象限3：低Alpha + 高IR → 行业潜水员（稳定跟踪，增强指数型）
-        # 象限4：低Alpha + 低IR → 行业随从（没有真Alpha，跟行业指数吃饭）
-
-        if na > 0.05 and ir >= 0.7:
-            sec_tags.append('👑 赛道霸主')
-        elif na > 0.05 and ir < 0.7:
-            sec_tags.append('🎲 单押赌博型')   # 高Alpha但高TE低IR → 靠集中度赌
-        elif na > 0.02 and ir >= 0.5:
-            sec_tags.append('🔍 精准潜水员')   # 低Alpha但IR高 → 稳定有效的小额超额
-        elif na > 0 and ir < 0.5:
-            sec_tags.append('🌊 行业随从')     # 微弱Alpha + 低IR
-        elif te > 0.15:
-            sec_tags.append('🎢 高集中押注型')  # 极高TE，主要特征是偏离
-        else:
-            sec_tags.append('🪞 行业影子')     # 紧跟行业指数
-
-        # 附加标签
-        if te < 0.04:
-            sec_tags.append('📊 增强指数风格')
-        if na < 0:
-            sec_tags.append('💸 选股拖累')
-
-        out['tags'] = sec_tags
-        main_sec_tag = sec_tags[0] if sec_tags else ''
-
-        # ============ 性格文本 ============
-        if '赛道霸主' in main_sec_tag:
+        # 性格
+        if te > 0.15:
             out['character'] = (
-                f"**{main_sec_tag}** 👑。在{'「'+sw_nm+'」' if sw_nm else '行业'}内部有统治级别的选股能力："
-                f"年化Alpha {na*100:.1f}%，信息比率IR={ir:.2f}——不仅能赚超额，还赚得高效稳定。"
-                f"这是行业主题基金中最理想的形态。"
+                f"**高集中押注型**行业基金。"
+                f"跟踪误差{te*100:.1f}%极高，经理在{'「'+sw_nm+'」' if sw_nm else '行业'}内部做了高度集中的细分赛道押注，"
+                f"波动剧烈，属于高风险主动管理策略。"
             )
-        elif '单押赌博' in main_sec_tag:
+        elif te < 0.04:
             out['character'] = (
-                f"**{main_sec_tag}** 🎲。Alpha看起来不错（{na*100:.1f}%），"
-                f"但信息比率只有IR={ir:.2f}，跟踪误差高达{te*100:.1f}%。"
-                f"这意味着超额收益是靠**极高的个股集中度「赌」出来的**——"
-                f"赢了是神，输了是坑。"
-            )
-        elif '精准潜水员' in main_sec_tag:
-            out['character'] = (
-                f"**{main_sec_tag}**。Alpha适中（{na*100:.1f}%），IR={ir:.2f}，"
-                f"稳扎稳打在{'「'+sw_nm+'」' if sw_nm else '行业'}内部做小额持续超额，"
-                f"是「增强型指数基金」的典型特征。"
-            )
-        elif '行业随从' in main_sec_tag:
-            out['character'] = (
-                f"**{main_sec_tag}**。Alpha仅{na*100:.1f}%，IR={ir:.2f}偏低，"
-                f"主要靠{'「'+sw_nm+'」' if sw_nm else '行业'}整体上涨赚钱，"
-                f"经理的选股能力没有显著体现——买行业ETF可能更划算。"
-            )
-        elif '高集中押注' in main_sec_tag:
-            out['character'] = (
-                f"**{main_sec_tag}**。跟踪误差{te*100:.1f}%极高，"
-                f"经理在{'「'+sw_nm+'」' if sw_nm else '行业'}内部做了高度集中的细分赛道押注。"
-                f"波动剧烈，Alpha={na*100:.1f}%，需谨慎评估集中度风险。"
+                f"**增强指数型**行业基金（跟踪误差{te*100:.1f}%极低）。"
+                f"经理几乎按行业指数持仓，主动偏离有限，更接近指数基金而非主动管理。"
             )
         else:
             out['character'] = (
-                f"**行业影子**（跟踪误差{te*100:.1f}%极低）。"
-                f"经理紧跟行业指数，主动管理痕迹很少，更像指数基金。"
+                f"**主动型**{'「'+sw_nm+'」' if sw_nm else '行业'}基金，"
+                f"Beta高度集中于特定行业，收益来源 = 行业Beta + 经理选股Alpha。"
             )
 
-        if len(sec_tags) > 1:
-            out['character'] += f" | 附加标签：{'、'.join(sec_tags[1:])}。"
-
-        # ============ 实力 ============
+        # 实力
         if na > 0.08 and ir > 1.0:
             out['skill'] = (
                 f"「窝里横」能力卓越💎：{'申万'+sw_nm+'内' if sw_nm else '行业内'}年化Alpha {na*100:.1f}%，"
@@ -2836,44 +1701,38 @@ def translate_results(model: str, results: dict,
                 f"买对应的行业ETF更划算。"
             )
 
-        # ============ 风险（定性结论，具体指标见 Part 2.5）============
-        risks = []
-        risks.append(
-            f"行业集中度高，需承担完整的{'「'+sw_nm+'」' if sw_nm else '特定行业'}系统性风险——行业景气下行时无分散保护"
+        # 风险
+        out['risk'] = (
+            f"行业集中度高，需承担完整的{'「'+sw_nm+'」' if sw_nm else '特定行业'}系统性风险。"
+            f"跟踪误差{te*100:.1f}%{'（偏高，个股集中风险大）' if te > 0.12 else '（适中）'}。"
         )
-        if '单押赌博' in main_sec_tag:
-            risks.append(
-                "🎲 **性价比预警**：表面Alpha不错，但来自于对少数个股的集中押注——"
-                "赢了是神，输了是坑。这类Alpha的可持续性极低，持有者需有承受极端行情的心理准备。"
-            )
-        if te > 0.12:
-            risks.append("跟踪误差极高，个股集中度风险大，实际波动可能远超行业指数")
-        out['risk'] = '；'.join(risks)
 
-        # ============ 建议 + 评分 ============
+        # 建议
         if na > 0.05 and ir > 0.7:
             out['advice'] = (
                 f"经理在行业内具备真实Alpha，适合对{'「'+sw_nm+'」' if sw_nm else '该行业'}有判断、"
                 f"且能承受行业集中风险的投资者。建议持有并观察行业景气度变化。"
             )
-            out['score'] = 82
-        elif '单押赌博' in main_sec_tag:
-            out['advice'] = (
-                "高Alpha但靠集中押注获得，可持续性存疑。"
-                "建议控制仓位（≤10%），并在季报更新后评估持仓是否仍集中。"
-            )
-            out['score'] = 62
         elif na > 0:
             out['advice'] = (
                 "超额不够显著，行业择时能力更关键。"
-                "建议将该基金作为卫星仓位（<20%），不适合作为核心配置。"
+                "建议将该基金作为卫星仓位（<20%），"
+                "不适合作为核心配置。"
             )
-            out['score'] = 58
         else:
             out['advice'] = (
                 f"建议优先考虑低费率的{'「'+sw_nm+'」' if sw_nm else '同行业'}ETF。"
                 "若坚持持有，需明确理由：是看好经理、还是看好行业？"
             )
+
+        # 评分：基于 IR 和 Alpha 双维度
+        if na > 0.05 and ir > 1.0:
+            out['score'] = 82
+        elif na > 0.03 and ir > 0.5:
+            out['score'] = 72
+        elif na > 0:
+            out['score'] = 58
+        else:
             out['score'] = 42
 
     return out
@@ -3260,105 +2119,11 @@ def main():
                 model_results['drift_info']  = drift_info
 
     # ----- 大白话翻译 -----
-    # 准备情绪指标所需的基金/基准收益率序列
-    _fund_ret_trend = nav_df.set_index('date')['ret'].dropna() if 'ret' in nav_df.columns else None
-    _bm_ret_trend   = bm_df.set_index('date')['bm_ret'].dropna() if not bm_df.empty else None
-    _rolling_df_for_translate = model_results.get('rolling_df', None)
-
-    translation = translate_results(
-        model_type, model_results, basic, holdings,
-        rolling_df=_rolling_df_for_translate,
-        bm_ret_for_trend=_bm_ret_trend,
-        fund_ret_for_trend=_fund_ret_trend
-    )
+    translation = translate_results(model_type, model_results, basic, holdings)
 
     # ============================================================
     # DISPLAY
     # ============================================================
-
-    # ---------- Part 0: 综合实力雷达图 ----------
-    st.markdown('<div class="section-title">🎯 综合实力透视图</div>', unsafe_allow_html=True)
-
-    # 计算5维评分
-    _rolling_for_radar = model_results.get('rolling_df', None)
-    _radar_scores = calc_radar_scores(
-        model_type, model_results, nav_df, bm_df, _rolling_for_radar
-    )
-    _radar_meta = _radar_scores.get('_meta', {})
-
-    # 雷达图 + 五维说明卡并排
-    _rc1, _rc2 = st.columns([1.1, 1])
-
-    with _rc1:
-        fig_radar = plot_fund_radar(basic['name'], _radar_scores)
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-    with _rc2:
-        # 5维评分卡片
-        _dim_info = [
-            ('超额能力', '超额能力',
-             f"年化Alpha {_radar_meta.get('alpha', 0)*100:.1f}%",
-             '经理剔除大盘/行业Beta后靠真本事多赚的收益'),
-            ('风险控制', '风险控制',
-             f"最大回撤 {_radar_meta.get('max_dd', 0)*100:.1f}% · 波动率 {_radar_meta.get('vol', 0)*100:.1f}%",
-             '净值曲线的稳定性，跌得少跌得慢是防守力的体现'),
-            ('性价比', '性价比',
-             f"夏普 {_radar_meta.get('sharpe', 0):.2f} · IR {_radar_meta.get('ir', 0):.2f}",
-             '冒每一分风险赚到多少超额，稳稳当当赚才算值'),
-            ('风格稳定', '风格稳定',
-             '滚动Beta波动 + R²解释度',
-             '经理是否言行一致，有没有偷偷换风格'),
-            ('业绩持续', '业绩持续',
-             f"胜率 {_radar_meta.get('win_rate', 0)*100:.0f}% · 盈亏比 {_radar_meta.get('plr', 0):.2f}",
-             '是一次性爆发还是持续稳定跑赢，常胜将军才算真本事'),
-        ]
-
-        st.markdown('<div style="font-size:0.82rem;color:#888;margin-bottom:8px">📊 各维度得分详解（满分100）</div>',
-                    unsafe_allow_html=True)
-
-        for _dkey, _dlabel, _metric, _desc in _dim_info:
-            _dscore = _radar_scores.get(_dkey, 50)
-            # 颜色语义化：≥80 绿色优秀 / 60-79 橙色及格 / <60 红色警告
-            _bar_color = '#27ae60' if _dscore >= 80 else '#e67e22' if _dscore >= 60 else '#e74c3c'
-            _bar_pct = _dscore  # 0-100
-            st.markdown(f"""
-<div style="background:white;border-radius:8px;padding:10px 14px;margin-bottom:7px;
-     box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:3px solid {_bar_color}">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-    <span style="font-size:0.85rem;font-weight:600;color:#333">{_dlabel}</span>
-    <span style="font-size:1.1rem;font-weight:700;color:{_bar_color}">{_dscore}</span>
-  </div>
-  <div style="background:#f0f2f5;border-radius:4px;height:5px;margin-bottom:5px">
-    <div style="background:{_bar_color};width:{_bar_pct}%;height:5px;border-radius:4px;transition:width .4s"></div>
-  </div>
-  <div style="font-size:0.75rem;color:{_bar_color};font-weight:500">{_metric}</div>
-  <div style="font-size:0.72rem;color:#aaa;margin-top:2px">{_desc}</div>
-</div>
-""", unsafe_allow_html=True)
-
-        # 快速结论
-        _avg_r = sum(_radar_scores.get(k, 50) for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']) / 5
-        _weak_dims = [k for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
-                      if _radar_scores.get(k, 50) < 45]
-        _strong_dims = [k for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
-                        if _radar_scores.get(k, 50) >= 75]
-
-        if _strong_dims and not _weak_dims:
-            _shape_type = '🔵 全能均衡型' if len(_strong_dims) >= 4 else f'⚡ 优势明显（{"/".join(_strong_dims[:2])}强）'
-        elif _weak_dims and not _strong_dims:
-            _shape_type = f'⚠️ 偏科生（{"/".join(_weak_dims[:2])}偏弱）'
-        elif _strong_dims and _weak_dims:
-            _shape_type = f'🎯 典型尖刺型（强：{_strong_dims[0]}，弱：{_weak_dims[0]}）'
-        else:
-            _shape_type = '📊 整体居中，均衡偏弱'
-
-        st.markdown(f"""
-<div style="background:#f8f9ff;border:1px solid #e0e4f5;border-radius:8px;
-     padding:10px 14px;margin-top:4px;font-size:0.83rem;color:#444;line-height:1.7">
-  <b>🖼️ 形状识别：</b>{_shape_type}<br>
-  <b>📈 综合均分：</b>{_avg_r:.0f}/100
-</div>
-""", unsafe_allow_html=True)
 
     # ---------- Part 1: 基本信息速览 ----------
     st.markdown('<div class="section-title">📋 第一部分：基本信息速览</div>', unsafe_allow_html=True)
@@ -3442,23 +2207,6 @@ def main():
 
     if hidden.get('alert'):
         st.markdown(f'<div class="drift-alert">{hidden["alert"]}</div>', unsafe_allow_html=True)
-
-    # ---------- Part 1.5: 业绩可视化（提前，先看结果再看拆解）----------
-    st.markdown('<div class="section-title">📈 业绩走势一览</div>', unsafe_allow_html=True)
-    _bm_str = '（蓝线为业绩基准）' if not bm_df.empty else ''
-    _vis_comment = ''
-    if _total_ret > 0:
-        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，最大回撤 {_max_dd:.1f}%{_bm_str}。"
-    else:
-        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，表现弱于预期{_bm_str}。"
-    st.markdown(f'<div style="font-size:0.85rem;color:#666;margin-bottom:8px">{_vis_comment}</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(plot_cumulative_return(nav_df, bm_df), use_container_width=True)
-    st.markdown(
-        f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
-        f'业绩基准：{bm_text}</div>',
-        unsafe_allow_html=True
-    )
 
     # ---------- Part 2: 量化分析结果 ----------
     st.markdown('<div class="section-title">📊 第二部分：深度量化分析</div>', unsafe_allow_html=True)
@@ -3588,16 +2336,6 @@ def main():
 
     # 债券类结果
     if 'bond' in model_results:
-        # 微文案：当权益基金触发债券扫描时，主动告知用户原因
-        if model_type == 'equity':
-            st.markdown(
-                f'<div style="background:#f0f8ff;border:1px solid #74b9ff;border-radius:8px;'
-                f'padding:10px 16px;font-size:0.86rem;color:#2980b9;margin:8px 0 10px;line-height:1.7">'
-                f'💡 <b>跨界扫描发现</b>：该权益基金实际持有超 20% 的债券头寸，'
-                f'已自动触发隐含久期与信用风险测评。以下数据反映的是债券端的风险敞口。'
-                f'</div>',
-                unsafe_allow_html=True
-            )
         br = model_results['bond']
         # 优先展示底层真实久期（已做仓位修正），回退到组合级久期
         d_underlying = br.get('duration_underlying', br.get('duration', 0))
@@ -4023,332 +2761,25 @@ def main():
                 unsafe_allow_html=True
             )
 
-    # ---------- Part 2.5: 风险提示板块 ----------
-    st.markdown('<div class="section-title">⚠️ 风险提示</div>', unsafe_allow_html=True)
+    # ---------- Part 3: 业绩可视化 ----------
+    st.markdown('<div class="section-title">📈 第三部分：业绩可视化</div>', unsafe_allow_html=True)
 
-    # ── 动态列宽兜底：预判左列/右列是否有内容 ──
-    # 左列有内容：mixed/sector（收益拆解） 或 equity（有持仓的估值预警）
-    _top10_for_check = holdings.get('top10', pd.DataFrame())
-    _has_left_content = (
-        model_type in ('mixed', 'sector')  # 收益拆解
-        or (model_type == 'equity' and _top10_for_check is not None and not _top10_for_check.empty)
-    )
-    # 右列有内容：bond_ratio>0.10（久期压测） 或 mixed/sector且stock_ratio>0.15（估值预警）
-    _has_right_content = (
-        bond_ratio > 0.10
-        or (model_type in ('mixed', 'sector') and stock_ratio > 0.15)
-    )
-    # 决定布局
-    if _has_left_content and _has_right_content:
-        _risk_col_l, _risk_col_r = st.columns([1, 1])
-        _use_single_left  = False
-        _use_single_right = False
-    elif _has_left_content:
-        _risk_col_l  = st.container()
-        _risk_col_r  = None  # 占位，实际不会渲染右列
-        _use_single_left  = True
-        _use_single_right = False
-    elif _has_right_content:
-        _risk_col_l  = None
-        _risk_col_r  = st.container()
-        _use_single_left  = False
-        _use_single_right = True
+    # 可视化点评
+    _bm_str = '（蓝线为业绩基准）' if not bm_df.empty else ''
+    _vis_comment = ''
+    if _total_ret > 0:
+        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，最大回撤 {_max_dd:.1f}%{_bm_str}。"
     else:
-        _risk_col_l  = st.container()
-        _risk_col_r  = None
-        _use_single_left  = True
-        _use_single_right = False
-
-    # ── 左列 A：收益拆解（混合/行业型）或 前十大估值预警（权益型）──────
-    if _risk_col_l is not None:
-     with _risk_col_l:
-
-        # A1. 收益拆解「功劳簿」（混合型 + 行业型）
-        if model_type in ('mixed', 'sector'):
-            _sector_res = model_results.get('sector') if model_type == 'sector' else None
-            _decomp = performance_decomposition(
-                model_results=model_results,
-                sector_results=_sector_res,
-                nav_df=nav_df,
-                bm_df=bm_df,
-            )
-
-            # 动态标题：用实际总收益，涨红跌绿
-            _decomp_ret_val = _total_ret  # _total_ret 已在 Part 1 KPI 区计算
-            _decomp_title_color = '#e74c3c' if _decomp_ret_val >= 0 else '#27ae60'
-            _decomp_title_verb  = '是怎么赚的？' if _decomp_ret_val >= 0 else '是怎么亏的？'
-            st.markdown(
-                f'<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">'
-                f'📦 收益拆解：这 '
-                f'<span style="color:{_decomp_title_color};font-size:1.05rem">'
-                f'{_decomp_ret_val:+.2f}%</span> {_decomp_title_verb}</div>',
-                unsafe_allow_html=True
-            )
-
-            # 一句话叙事
-            st.markdown(
-                f'<div style="background:#f0f4ff;border-left:3px solid #3498db;'
-                f'border-radius:6px;padding:10px 14px;font-size:0.86rem;'
-                f'color:#333;margin-bottom:10px;line-height:1.7">'
-                f'💬 {_decomp["narrative"]}</div>',
-                unsafe_allow_html=True
-            )
-
-            # 三段式可视化（迷你瀑布）
-            _d_alloc  = _decomp['allocation']  * 100
-            _d_sector = _decomp['sector_alpha'] * 100
-            _d_resid  = _decomp['residual']    * 100
-            _d_total  = _decomp['total_excess'] * 100
-            _seg_labels = ['仓位择时', _decomp.get('sector_label','行业选股'), '模型残差']
-            _seg_vals   = [_d_alloc, _d_sector, _d_resid]
-            _seg_colors = ['#27ae60' if v >= 0 else '#e74c3c' for v in _seg_vals]
-
-            # 用 CSS 进度条绘制简洁三段图
-            _max_abs = max(abs(v) for v in _seg_vals if abs(v) > 0.01) if any(abs(v) > 0.01 for v in _seg_vals) else 1.0
-            _decomp_html = '<div style="margin-bottom:4px">'
-            for _sl, _sv, _sc in zip(_seg_labels, _seg_vals, _seg_colors):
-                _bar_w = abs(_sv) / _max_abs * 85 if _max_abs > 0 else 5
-                _bar_w = max(_bar_w, 3)
-                _val_str = f'{_sv:+.2f}%'
-                _decomp_html += f'''
-<div style="display:flex;align-items:center;margin-bottom:6px;gap:6px">
-  <div style="width:80px;font-size:0.78rem;color:#555;text-align:right;flex-shrink:0">{_sl}</div>
-  <div style="flex:1;background:#f0f2f5;border-radius:4px;height:18px;position:relative">
-    <div style="background:{_sc};width:{_bar_w}%;height:18px;border-radius:4px;
-         display:flex;align-items:center;padding-left:4px">
-      <span style="font-size:0.73rem;color:white;font-weight:600;white-space:nowrap">{_val_str}</span>
-    </div>
-  </div>
-</div>'''
-            # 总超额合计
-            _total_color = '#27ae60' if _d_total >= 0 else '#e74c3c'
-            _decomp_html += f'''
-<div style="border-top:1px dashed #ddd;padding-top:6px;display:flex;justify-content:space-between;
-     font-size:0.82rem;color:#333;font-weight:600">
-  <span>总超额收益</span>
-  <span style="color:{_total_color}">{_d_total:+.2f}%</span>
-</div>
-<div style="font-size:0.7rem;color:#aaa;margin-top:3px">数据质量：{_decomp["data_quality"]}</div>
-'''
-            _decomp_html += '</div>'
-            st.markdown(_decomp_html, unsafe_allow_html=True)
-
-            # 功劳簿
-            if _decomp['credit_lines']:
-                st.markdown(
-                    '<div style="font-size:0.82rem;font-weight:600;color:#444;'
-                    'margin:10px 0 5px">🏆 功劳簿</div>',
-                    unsafe_allow_html=True
-                )
-                for _cl in _decomp['credit_lines']:
-                    st.markdown(
-                        f'<div style="background:white;border-radius:7px;padding:8px 12px;'
-                        f'margin-bottom:5px;font-size:0.82rem;color:#444;line-height:1.6;'
-                        f'box-shadow:0 1px 4px rgba(0,0,0,.05)">{_cl}</div>',
-                        unsafe_allow_html=True
-                    )
-
-        # A2. 对于权益型/行业型：显示前十大重仓股估值预警（放左列）
-        elif model_type in ('equity',):
-            _top10_df = holdings.get('top10', pd.DataFrame())
-            if _top10_df is not None and not _top10_df.empty:
-                _stock_col = next((c for c in ['股票代码', '代码', 'code', '证券代码']
-                                   if c in _top10_df.columns), None)
-                _name_col  = next((c for c in ['股票名称', '名称', 'name', '证券名称']
-                                   if c in _top10_df.columns), None)
-                if _stock_col:
-                    _codes = _top10_df[_stock_col].astype(str).head(10).tolist()
-                    _names = {}
-                    if _name_col:
-                        _names = dict(zip(
-                            _top10_df[_stock_col].astype(str),
-                            _top10_df[_name_col].astype(str)
-                        ))
-
-                    st.markdown(
-                        '<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">'
-                        '📊 前十大重仓股：估值风险预警</div>',
-                        unsafe_allow_html=True
-                    )
-                    with st.spinner("拉取历史估值数据（PE分位）..."):
-                        _valert = fetch_stock_valuation_alert(_codes)
-
-                    # 为各股填入名称
-                    for _v in _valert:
-                        if _v['code'] in _names:
-                            _v['name'] = _names[_v['code']]
-
-                    # 统计摘要
-                    _high_risk = [v for v in _valert if v['pe_percentile'] and v['pe_percentile'] >= 85]
-                    _low_risk  = [v for v in _valert if v['pe_percentile'] and v['pe_percentile'] <= 15]
-                    _summary_color = '#e74c3c' if len(_high_risk) >= 3 else '#e67e22' if len(_high_risk) >= 1 else '#27ae60'
-                    _summary_text  = (f'⚠️ {len(_high_risk)} 只重仓股估值处于历史高位（>85%分位）' if _high_risk
-                                      else f'✅ 重仓股整体估值合理，无高风险预警')
-
-                    st.markdown(
-                        f'<div style="background:#fff8f0;border-left:3px solid {_summary_color};'
-                        f'border-radius:6px;padding:8px 12px;font-size:0.84rem;color:#333;'
-                        f'margin-bottom:10px">{_summary_text}</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    # 显示估值分位图
-                    _val_fig = plot_valuation_alert_chart(_valert, _names)
-                    if _val_fig.data:
-                        st.plotly_chart(_val_fig, use_container_width=True)
-
-                    # 明细表
-                    _vt_html = '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
-                    _vt_html += '<tr style="background:#1a1a2e;color:white">'
-                    for _hh in ['股票', '当前PE', 'PE分位', 'PB', '风险级别']:
-                        _vt_html += f'<th style="padding:6px 8px;text-align:left">{_hh}</th>'
-                    _vt_html += '</tr>'
-                    for _i, _v in enumerate(_valert):
-                        _bg = '#fafafa' if _i % 2 == 0 else 'white'
-                        _nm = _v.get('name') or _v['code']
-                        _pe_str  = f"{_v['current_pe']:.1f}" if _v['current_pe'] else 'N/A'
-                        _pct_str = f"{_v['pe_percentile']:.0f}%" if _v['pe_percentile'] is not None else 'N/A'
-                        _pb_str  = f"{_v['current_pb']:.2f}" if _v['current_pb'] else 'N/A'
-                        _rl      = f"{_v['risk_icon']} {_v['risk_level']}"
-                        _vt_html += (f'<tr style="background:{_bg}">'
-                                     f'<td style="padding:5px 8px">{_nm[:8]}</td>'
-                                     f'<td style="padding:5px 8px">{_pe_str}</td>'
-                                     f'<td style="padding:5px 8px;font-weight:600">{_pct_str}</td>'
-                                     f'<td style="padding:5px 8px">{_pb_str}</td>'
-                                     f'<td style="padding:5px 8px">{_rl}</td>'
-                                     f'</tr>')
-                    _vt_html += '</table>'
-                    st.markdown(_vt_html, unsafe_allow_html=True)
-                else:
-                    st.info('持仓数据中未找到股票代码列，无法拉取估值数据。')
-            else:
-                st.info('暂无前十大持仓数据（季报尚未披露或无持仓信息）。')
-
-        else:
-            st.markdown(
-                '<div style="color:#aaa;font-size:0.83rem;padding:20px 0">当前基金类型暂无收益拆解数据。</div>',
-                unsafe_allow_html=True
-            )
-
-    # ── 右列 B：前十大估值预警（混合/行业型）+ 债券压力测试 ──────────
-    if _risk_col_r is not None:
-     with _risk_col_r:
-
-        # B1. 混合型/行业型的前十大估值预警（放右列）
-        if model_type in ('mixed', 'sector'):
-            _top10_df = holdings.get('top10', pd.DataFrame())
-            _has_valert = False
-            if _top10_df is not None and not _top10_df.empty:
-                _stock_col = next((c for c in ['股票代码', '代码', 'code', '证券代码']
-                                   if c in _top10_df.columns), None)
-                _name_col  = next((c for c in ['股票名称', '名称', 'name', '证券名称']
-                                   if c in _top10_df.columns), None)
-                if _stock_col and stock_ratio > 0.15:  # 股票仓位>15%才做估值预警
-                    _codes = _top10_df[_stock_col].astype(str).head(10).tolist()
-                    _names = {}
-                    if _name_col:
-                        _names = dict(zip(
-                            _top10_df[_stock_col].astype(str),
-                            _top10_df[_name_col].astype(str)
-                        ))
-                    st.markdown(
-                        '<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">'
-                        '📊 前十大重仓股：估值风险预警</div>',
-                        unsafe_allow_html=True
-                    )
-                    with st.spinner("拉取历史估值数据..."):
-                        _valert = fetch_stock_valuation_alert(_codes)
-                    for _v in _valert:
-                        if _v['code'] in _names:
-                            _v['name'] = _names[_v['code']]
-
-                    _high_risk = [v for v in _valert if v['pe_percentile'] and v['pe_percentile'] >= 85]
-                    _s_color = '#e74c3c' if len(_high_risk) >= 3 else '#e67e22' if _high_risk else '#27ae60'
-                    _s_text  = (f'⚠️ {len(_high_risk)} 只重仓股处于历史高估区' if _high_risk
-                                else '✅ 重仓股整体估值合理')
-                    st.markdown(
-                        f'<div style="background:#fff8f0;border-left:3px solid {_s_color};'
-                        f'border-radius:6px;padding:8px 12px;font-size:0.84rem;color:#333;'
-                        f'margin-bottom:10px">{_s_text}</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    _val_fig2 = plot_valuation_alert_chart(_valert, _names)
-                    if _val_fig2.data:
-                        st.plotly_chart(_val_fig2, use_container_width=True)
-                    _has_valert = True
-
-        # B2. 债券久期压力测试（债券型 + 混合型含债券仓位的情况）
-        _bond_res_for_stress = model_results.get('bond') if isinstance(model_results, dict) else None
-        if model_type == 'bond':
-            _bond_res_for_stress = model_results
-
-        if _bond_res_for_stress and bond_ratio > 0.10:
-            _eff_dur = _bond_res_for_stress.get('duration_underlying',
-                       _bond_res_for_stress.get('duration', 5.0)) or 5.0
-
-            st.markdown(
-                '<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px'
-                + (';margin-top:16px' if model_type in ('mixed', 'sector') else '') + '">'
-                '🧪 债券端：久期压力测试</div>',
-                unsafe_allow_html=True
-            )
-
-            _stress = bond_stress_test(_eff_dur, bond_ratio)
-
-            # 一句话叙事
-            st.markdown(
-                f'<div style="background:#f5f7ff;border-left:3px solid #3498db;'
-                f'border-radius:6px;padding:10px 14px;font-size:0.84rem;color:#333;'
-                f'margin-bottom:10px;line-height:1.7">'
-                f'🔬 {_stress["narrative"]}</div>',
-                unsafe_allow_html=True
-            )
-
-            # 三场景卡片（Flexbox 响应式，移动端自动折行）
-            _sc_html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
-            for _sc in _stress['scenarios']:
-                _bp = _sc['bp']
-                _fi = _sc['fund_impact'] * 100
-                _icon = _sc['risk_icon']
-                _rl   = _sc['risk_level']
-                _sc_bg = {'🟢':'#eafaf1','🟡':'#fffbea','🟠':'#fff4e5','🔴':'#fef0f0'}.get(_icon,'#f8f8f8')
-                _sc_border = {'🟢':'#27ae60','🟡':'#f39c12','🟠':'#e67e22','🔴':'#e74c3c'}.get(_icon,'#ccc')
-                _sc_html += f'''
-<div style="flex:1;min-width:120px;background:{_sc_bg};border:1px solid {_sc_border};
-     border-radius:8px;padding:10px;text-align:center">
-  <div style="font-size:1.3rem">{_icon}</div>
-  <div style="font-size:0.78rem;color:#666;margin:2px 0">利率↑{_bp}BP</div>
-  <div style="font-size:1.1rem;font-weight:700;color:{_sc_border}">{_fi:+.2f}%</div>
-  <div style="font-size:0.72rem;color:#888">净值影响</div>
-  <div style="font-size:0.75rem;font-weight:600;color:{_sc_border};margin-top:3px">{_rl}</div>
-</div>'''
-            _sc_html += '</div>'
-            st.markdown(_sc_html, unsafe_allow_html=True)
-
-            # 公式说明
-            st.markdown(
-                f'<div style="font-size:0.73rem;color:#aaa;padding:5px 0">'
-                f'📐 计算公式：净值影响 = −久期({_eff_dur:.1f}年) × ΔY × 债券仓位({bond_ratio*100:.0f}%)；'
-                f'仅为线性近似，实际因凸性有所保护。</div>',
-                unsafe_allow_html=True
-            )
-
-            # 综合预警（极端场景下股债双杀）
-            _max_stress = abs(_stress['max_impact']) * 100
-            if model_type in ('mixed', 'sector') and stock_ratio > 0.3:
-                _stock_dd = abs(model_results.get('allocation_effect', 0) - model_results.get('excess_return', 0)) * 100
-                if _max_stress > 1.5 and stock_ratio > 0.4:
-                    st.markdown(
-                        f'<div style="background:#fff0f0;border:1px solid #e74c3c;border-radius:8px;'
-                        f'padding:10px 14px;font-size:0.84rem;color:#c0392b;margin-top:8px;line-height:1.7">'
-                        f'⚠️ <b>股债双杀预警</b>：该基金股票仓位 {stock_ratio*100:.0f}%，'
-                        f'同时债券端久期较长（{_eff_dur:.1f}年）。'
-                        f'若市场同时出现股市下跌+利率上行（如流动性收紧），'
-                        f'股债两端均承压，预计利率每升100BP债券端净值影响约 {_max_stress:.1f}%，'
-                        f'需警惕双重风险叠加。</div>',
-                        unsafe_allow_html=True
-                    )
+        _vis_comment = f"该基金在{period_sel}区间累计收益 {_total_ret:+.1f}%，表现弱于预期{_bm_str}。"
+    st.markdown(f'<div style="font-size:0.85rem;color:#666;margin-bottom:8px">{_vis_comment}</div>',
+                unsafe_allow_html=True)
+    with st.expander("累计收益率对比图（基金 vs 业绩基准）", expanded=True):
+        st.plotly_chart(plot_cumulative_return(nav_df, bm_df), use_container_width=True)
+        st.markdown(
+            f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
+            f'业绩基准：{bm_text}</div>',
+            unsafe_allow_html=True
+        )
 
     # ---------- Part 4: 大白话诊断 ----------
     st.markdown('<div class="section-title">💬 第四部分：大白话诊断</div>', unsafe_allow_html=True)
@@ -4382,59 +2813,6 @@ def main():
         st.markdown(f'<div class="card card-info" style="margin-bottom:8px">'
                     f'<b>📝 综合摘要</b><br><span style="font-size:0.92rem">{_summary}</span></div>',
                     unsafe_allow_html=True)
-
-        # ---- 性格标签展示（新增）----
-        _tags = translation.get('tags', [])
-        if _tags:
-            _tag_html = ''.join([
-                f'<span style="display:inline-block;padding:3px 10px;margin:3px;'
-                f'background:#f0f4ff;border:1px solid #c5d0f5;border-radius:12px;'
-                f'font-size:0.8rem;color:#2c3e80;font-weight:500">{t}</span>'
-                for t in _tags
-            ])
-            st.markdown(
-                f'<div style="margin-top:6px">'
-                f'<span style="font-size:0.78rem;color:#888;margin-right:6px">性格标签：</span>'
-                f'{_tag_html}</div>',
-                unsafe_allow_html=True
-            )
-
-    # ---- 情绪指标 + 一致性预警（新增，在四维诊断之前）----
-    _emotion = translation.get('emotion_note', '')
-    _consist = translation.get('consistency_warn', '')
-
-    if _emotion:
-        # 根据趋势类型选择样式
-        _trend_data = translation.get('_trend_data', {})
-        _is_slump   = _trend_data.get('is_slump', False)
-        _is_recover = _trend_data.get('is_recovering', False)
-        if _is_slump:
-            _emo_style = 'card card-warn'
-            _emo_icon  = '📉 情绪指标 · 状态预警'
-        elif _is_recover:
-            _emo_style = 'card card-good'
-            _emo_icon  = '📈 情绪指标 · 状态好转'
-        else:
-            _emo_style = 'card'
-            _emo_icon  = '📊 情绪指标 · 近期走势'
-        st.markdown(
-            f'<div class="{_emo_style}" style="margin-bottom:8px;font-size:0.88rem">'
-            f'<b>{_emo_icon}</b>'
-            f'<div style="margin-top:6px;line-height:1.8">{_emotion}</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    if _consist:
-        _consist_is_warn = '无效加杠杆' in _consist
-        _consist_style = 'card card-warn' if _consist_is_warn else 'card card-info'
-        st.markdown(
-            f'<div class="{_consist_style}" style="margin-bottom:8px;font-size:0.88rem">'
-            f'<b>🔗 一致性分析</b>'
-            f'<div style="margin-top:6px;line-height:1.8">{_consist}</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
 
     # 四维诊断（详细版）
     _diag_config = [
