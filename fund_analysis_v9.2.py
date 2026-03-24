@@ -259,9 +259,9 @@ INDEX_MAP = {
     # CMA（投资保守因子）在A股无合适代理，降维用MOM替代（A股动能解释力更强）
 }
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_index_daily(symbol_code: str, start: str, end: str) -> pd.DataFrame:
-    """通用指数日行情获取，返回 date / ret（公共因子数据，全天缓存 86400s）"""
+    """通用指数日行情获取，返回 date / ret"""
     try:
         df = ak.stock_zh_index_daily_em(symbol=symbol_code)
         if df is None or df.empty:
@@ -276,10 +276,10 @@ def fetch_index_daily(symbol_code: str, start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame(columns=['date','ret'])
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
     """
-    构建 FF 因子代理序列（方案 A+C，扩展 RMW）【全天缓存，公共因子全市场通用】
+    构建 FF 因子代理序列（方案 A+C，扩展 RMW）
     因子列：date / Mkt / SMB / HML / Short_MOM / RMW（RMW失败时只有前4列）
 
     因子说明：
@@ -334,7 +334,7 @@ def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
 
 # ---------- 4. 国债收益率（用于久期回归） ----------
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_treasury_10y(start: str, end: str) -> pd.DataFrame:
     """
     获取 10 年期国债收益率日变动（Δy），单位：%
@@ -400,10 +400,10 @@ def fetch_treasury_10y(start: str, end: str) -> pd.DataFrame:
 
 # ---------- 5. 中债综合指数（债券基准） ----------
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_bond_index(start: str, end: str) -> pd.DataFrame:
     """
-    获取中债综合财富指数（indicator='财富'），返回 date / ret【全天缓存】
+    获取中债综合财富指数（indicator='财富'），返回 date / ret
     列结构：date / value
     """
     try:
@@ -540,10 +540,10 @@ FUND_NAME_TO_SW = {
 }
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_sw_industry_ret(sw_code: str, start: str, end: str) -> pd.Series:
     """
-    获取申万一级行业指数日收益率【全天缓存，公共行业数据】
+    获取申万一级行业指数日收益率
     sw_code: 如 '801150'（医药生物）
     返回 index=date, value=日收益率 Series
     """
@@ -967,7 +967,7 @@ def run_ff_model(fund_ret: pd.Series,
     if res_full is None:
         return _empty_ff_result('全期回归失败')
 
-    # ---------- 近126天（半年）回归，检测 Beta 漂移 + R² 突降 ----------
+    # ---------- 近126天（半年）回归，检测 Beta 漂移 ----------
     df_recent = df_full.tail(126)
     res_recent = _run_single_ff(df_recent, use_cols) if len(df_recent) >= 40 else None
 
@@ -984,29 +984,6 @@ def run_ff_model(fund_ret: pd.Series,
             drift_warn = (f'⚡ Beta漂移提示：近半年市场Beta {recent_mkt:.2f} '
                           f'vs 全期 {full_mkt:.2f}，偏差{beta_drift:+.2f}，'
                           f'经理近期可能{direction}。')
-
-    # ── R² 突降检测（第3条：残差分析） ──
-    r2_recent = res_recent['r_squared'] if res_recent else None
-    residual_insight = ''
-    if r2_recent is not None:
-        r2_drop = r2 - r2_recent   # 全期 - 近期，正值表示近期R²下降
-        if r2_drop > 0.25:
-            residual_insight = (
-                f'⚠️ 模型解释力近期明显下滑（全期R²={r2:.2f} → 近半年R²={r2_recent:.2f}）：'
-                f'常规因子已无法解释该基金近期的大部分波动，'
-                f'疑有非标资产收益（定增、大宗交易、原始股）或极端个股偏离，建议关注季报持仓变化。'
-            )
-        elif r2 < 0.4:
-            residual_insight = (
-                f'🔵 全期R²={r2:.2f}，该基金与市场相关性极低，风格高度独立，'
-                f'可能持有大量另类资产或采用对冲策略，常规因子分析仅供参考。'
-            )
-        elif r2 > 0.85:
-            residual_insight = (
-                f'📎 全期R²={r2:.2f}，高度贴合市场因子，'
-                f'主动管理价值需结合Alpha显著性综合判断。'
-            )
-
 
     # ---------- 生成解读文本 ----------
     alpha_annual = res_full['alpha']
@@ -1038,8 +1015,6 @@ def run_ff_model(fund_ret: pd.Series,
         'alpha':            alpha_annual,
         'alpha_pval':       alpha_pval,
         'r_squared':        r2,
-        'r_squared_recent': r2_recent,          # 新增：近半年R²，用于突降检测
-        'residual_insight': residual_insight,   # 新增：残差分析提示文案
         'factor_betas':     res_full['factor_betas'],         # 标准化，用于暴露图
         'factor_betas_raw': res_full['factor_betas_raw'],     # 原始，用于弹性解释
         'beta_drift':       beta_drift,                       # 近半年 vs 全期 Mkt Beta 差值
@@ -3639,9 +3614,7 @@ def main():
     st.plotly_chart(plot_cumulative_return(nav_df, bm_df), use_container_width=True)
     st.markdown(
         f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
-        f'业绩基准：{bm_text}'
-        f'&nbsp;·&nbsp;<span title="若基金历史上曾更换基准，本报告使用当前公开基准回溯，不代表历史所有时期的真实基准。">'
-        f'⚠️ 基于当前公开基准回溯，历史基准变更期间数据仅供参考</span></div>',
+        f'业绩基准：{bm_text}</div>',
         unsafe_allow_html=True
     )
 
@@ -3728,24 +3701,6 @@ def main():
         if _interp:
             st.markdown(f'<div class="card" style="font-size:0.88rem;color:#444">{_interp}</div>',
                         unsafe_allow_html=True)
-
-        # ── 第3条：残差分析 · 神秘超额提示 ──
-        _residual = model_results.get('residual_insight', '')
-        if _residual:
-            _r2_recent = model_results.get('r_squared_recent')
-            _r2_full   = model_results.get('r_squared', 0)
-            # R²突降（全期-近期 > 0.25）用橙色警告；其他用蓝色信息
-            _is_drop = _r2_recent is not None and (_r2_full - _r2_recent) > 0.25
-            _res_style = 'card card-warn' if _is_drop else 'card card-info'
-            _res_icon  = '🔍 残差分析 · 模型解释力预警' if _is_drop else '📐 残差分析 · 模型解释力说明'
-            st.markdown(
-                f'<div class="{_res_style}" style="margin-top:6px;font-size:0.86rem">'
-                f'<b>{_res_icon}</b>'
-                f'<div style="margin-top:6px;line-height:1.8">{_residual}</div>'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-
 
         # 因子暴露图
         betas = model_results.get('factor_betas', {})
@@ -4664,20 +4619,10 @@ def main():
             unsafe_allow_html=True
         )
 
-    # ---------- 合规补丁（第4条）----------
+    # ---------- 免责声明 ----------
     st.markdown("---")
-    st.markdown("""
-<div style="background:#f8f9fa;border-radius:10px;padding:16px 20px;
-     border-left:3px solid #bdc3c7;font-size:0.78rem;color:#777;line-height:1.8">
-<b>📋 合规声明与免责提示</b><br>
-本报告由 DeepInFund 基于公开市场数据与学术量化模型自动生成，<b>不构成任何投资建议或买卖依据</b>。<br>
-· <b>模型局限</b>：因子分析基于历史数据回溯，仅能反映过去的规律，不代表未来表现；估值预警与压力测试为数学模拟，不代表实际亏损必然发生。<br>
-· <b>前视偏差说明</b>：本报告使用基金当前公开的业绩基准进行回溯分析。若基金历史上曾变更基准，Alpha/Beta 计算在变更前区间仅供参考，不代表历史所有时期的真实超额收益。<br>
-· <b>数据来源</b>：净值数据来自天天基金，持仓数据来自季报公告，因子数据使用指数代理，与学术标准 Fama-French 因子可能存在偏差。<br>
-· <b>投资有风险，入市需谨慎。</b> 基金过往业绩不代表未来表现，请结合自身风险承受能力做出独立判断，必要时请咨询持牌投资顾问。
-</div>
-""", unsafe_allow_html=True)
-
+    st.caption("⚠️ DeepInFund 基于公开数据和学术量化模型自动生成报告，仅供参考，不构成投资建议。"
+               "因子数据使用指数代理，与学术标准FF因子可能存在偏差。投资有风险，入市需谨慎。")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,21 @@
   - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
+- **v9.3**（2026-03-24）：四项实战优化：
+  - **缓存升级**：`fetch_index_daily/fetch_ff_factors/fetch_treasury_10y/fetch_bond_index/fetch_sw_industry_ret` 全部升级为 `ttl=86400`（公共因子全天缓存），基金特有净值/持仓仍实时拉取
+  - **前视偏差标注**：业绩基准小字追加「基于当前公开基准回溯，历史基准变更期间数据仅供参考」
+  - **残差分析**：`run_ff_model()` 新增 `r_squared_recent` + `residual_insight`；全期-近期R²>0.25→橙色预警「疑有非标资产收益」；R²<0.4→蓝色独立风格说明；展示于Part 2权益解读卡下方
+  - **合规补丁**：Part 4 末尾完整免责卡片（不构成投资建议/模型局限/前视偏差/数据来源/风险提示）
+  - 文件：`fund_analysis.py` = `fund_analysis_v9.3.py`
+- **v9.2**（2026-03-24）：数据层全面修复，7项关键修复：
+  - **F1 致命修复**：fetch_nav 从「单位净值」→「累计净值」，彻底修复分红跳空假信号（原代码分红日会误算为单日暴跌33%）
+  - **F2 致命修复**：FF因子 RMW 改为列级降维：NaN>50%直接 drop 列，不再用 NaN 列污染全表导致样本清零；MOM→Short_MOM 避免与经典 Carhart 12月定义混淆
+  - **F3 高风险修复**：fetch_treasury_10y 将 bond_zh_us_rate 升为主力方案，原 bond_china_yield 降为备用；两方案均加 ffill() 填充非交易日
+  - **F4 高风险修复**：fetch_stock_valuation_alert 加新股（<250条）/亏损股（PE≤0）专项拦截，加 note 字段提示，单只失败不影响整批
+  - **F5 逻辑修复**：fetch_holdings 新增第0层 fund_portfolio_asset_allocation_em（历史季度资产配置表）；弃用粗暴1.4系数，改为按前十大集中度自适应（高集中×1.1/均衡×1.6/高分散×2.2）
+  - **F6 逻辑修复**：隐性费率废弃基于净值负自相关的玄学换手率估算（Roll模型不适用于基金净值），改为行业经验中位数兜底（权益0.15%/债券0.03%）
+  - **F7 工程修复**：全局 retry_on_failure 装饰器，所有 fetch_ 函数支持3次自动重试
+  - 文件：`fund_analysis.py` = `fund_analysis_v9.2.py`
 - **v9.1**（2026-03-24）：UI 全面重构，8项优化：
   - Part 3 收益曲线提前至 Part 1 后（先看结果再看拆解）+ 去掉 expander
   - Part 2.5 动态列宽兜底（预判左右列内容，避免空白块）
