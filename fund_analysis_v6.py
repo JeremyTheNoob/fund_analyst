@@ -838,8 +838,8 @@ def main():
     with st.expander("查看详细指标数据"):
         if perf:
             st.markdown("**业绩归因指标**")
-            perf_df = pd.DataFrame([{
-                "指标": ["年化收益率", "年化波动率", "夏普比率", "最大回撤", "卡玛比率", 
+            perf_df = pd.DataFrame({
+                "指标": ["年化收益率", "年化波动率", "夏普比率", "最大回撤", "卡玛比率",
                         "Alpha(年化)", "Alpha显著性", "Beta", "R²", "信息比率", "月度胜率", "跟踪误差"],
                 "数值": [
                     f"{perf['annual_ret']*100:.2f}%",
@@ -855,9 +855,7 @@ def main():
                     f"{perf['win_rate']*100:.1f}%",
                     f"{perf['tracking_error']*100:.2f}%"
                 ]
-            }]).T
-            perf_df.columns = perf_df.iloc[0]
-            perf_df = perf_df.iloc[1:]
+            })
             st.dataframe(perf_df, use_container_width=True)
         
         if style and style['holdings_df'] is not None:
