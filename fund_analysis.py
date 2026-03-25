@@ -1,5 +1,5 @@
 """
-基金穿透式诊断系统 v9.7 - 多类型兼容修复版
+基金穿透式诊断系统 v10.5 - 雷达图评分权重优化版
 FOF研究员级别的深度量化分析框架
 
 核心架构：
@@ -9,17 +9,12 @@ FOF研究员级别的深度量化分析框架
   翻译层  → 专业术语 → 大白话 + 综合评分
   展示层  → Streamlit UI
 
-v9.7 修复内容（2026-03-25）：
-  - ETF/次新基金识别失败：雪球接口失败后加 fund_name_em 兜底（ETF均可识别）
-  - QDII基金分类：新增 qdii 类型，走equity模型但加跨市场提示，不再走sector分支
-  - 次新基金：净值不足60天改为警告而非报错（20天以上可展示基础分析）
-  - 百度估值接口：加探测机制，整体不可用时快速返回「接口维护中」
-  - 估值市场识别：修复台股/韩股/日股被误识别为港股的问题
-  - 港股PE：加 period 参数，使用全部历史数据提高分位数精度
-  - QDII基准：无法拉取MSCI指数时用空DataFrame，图表只展示基金净值
-  - 债券凸性：|convexity|<2 时说明「样本内利率波动不足」而非误报「负凸性」
-  - 久期解读：fallback时不重复显示「已回退」文字
-  - 雷达图与大白话评分统一：Part 4 综合分改为直接用雷达图均分(_avg_r)
+v10.5 评分权重优化（2026-03-25）：
+  - 偏股型(主动权益):  超额30% 风控15% 性价比20% 稳定15% 持续20%（选股是核心）
+  - 纯债型(如000069):  超额15% 风控35% 性价比20% 稳定10% 持续20%（不能跌，风控最重要）
+  - 量化/指数增强:      超额35% 风控10% 性价比25% 稳定20% 持续10%（超额是核心，策略一致性极重要）
+  - 其他类型（qdii等）：等权重20%
+  - 综合分改为加权平均，Part 0/Part 4/雷达图tooltip统一显示权重占比
 
 作者：JeremyTheNoob
 日期：2026-03-25
@@ -2633,6 +2628,7 @@ def calc_radar_scores(
     nav_df: pd.DataFrame,
     bm_df: pd.DataFrame,
     rolling_df: pd.DataFrame = None,
+    fund_type_category: str = 'equity',
 ) -> dict:
     """
     计算基金综合实力雷达图5维评分（0-100分）。
@@ -2645,12 +2641,36 @@ def calc_radar_scores(
       Persist 业绩持续性 ← 月度胜率 + 盈亏比
 
     各维度均归一化到 0-100，50分为行业中位数水准。
+
+    权重策略：
+      偏股型(主动权益):  超额30% 风控15% 性价比20% 稳定15% 持续20%
+      纯债型(如000069):  超额15% 风控35% 性价比20% 稳定10% 持续20%
+      量化/指数增强:      超额35% 风控10% 性价比25% 稳定20% 持续10%
+      其他类型:           统一使用等权重20%
     """
 
     # ---- 基础收益率序列 ----
     ret = nav_df.set_index('date')['ret'].dropna() if 'ret' in nav_df.columns else pd.Series(dtype=float)
     nav_vals = nav_df['nav']
     ann_factor = 252
+
+    # ---- 权重配置 ----
+    def _get_weights(ftype: str) -> dict:
+        """根据基金类型返回五维权重（总和1.0）"""
+        # 偏股型：选股是核心
+        if ftype in ('equity', 'mixed'):
+            return {'超额能力': 0.30, '风险控制': 0.15, '性价比': 0.20, '风格稳定': 0.15, '业绩持续': 0.20}
+        # 纯债型：不能跌，风控最重要
+        elif ftype == 'bond':
+            return {'超额能力': 0.15, '风险控制': 0.35, '性价比': 0.20, '风格稳定': 0.10, '业绩持续': 0.20}
+        # 量化/指数增强：超额是核心，策略一致性极重要
+        elif ftype in ('index', 'sector'):
+            return {'超额能力': 0.35, '风险控制': 0.10, '性价比': 0.25, '风格稳定': 0.20, '业绩持续': 0.10}
+        # 其他类型（qdii等）：等权重
+        else:
+            return {'超额能力': 0.20, '风险控制': 0.20, '性价比': 0.20, '风格稳定': 0.20, '业绩持续': 0.20}
+
+    weights = _get_weights(fund_type_category)
 
     # --------------------------------------------------
     # 维度1：超额能力 Alpha（0-100）
@@ -2797,6 +2817,8 @@ def calc_radar_scores(
         '性价比':   int(score_eff),
         '风格稳定': int(score_stab),
         '业绩持续': int(score_persist),
+        # 权重配置（供综合分计算）
+        '_weights': weights,
         # 附加原始值供 tooltip 展示
         '_meta': {
             'alpha':     alpha_raw,
@@ -2818,24 +2840,26 @@ def plot_fund_radar(fund_name: str, scores: dict) -> go.Figure:
         fund_name: 基金名称（用于标题）
         scores:    calc_radar_scores 返回的5维评分字典
                    键：'超额能力' / '风险控制' / '性价比' / '风格稳定' / '业绩持续'
+                   _weights: 各维度权重配置
 
     Returns:
         plotly Figure 对象
     """
     _meta = scores.get('_meta', {})
+    _weights = scores.get('_weights', {})
 
     dim_labels = ['超额能力', '风险控制', '性价比',
                   '风格稳定', '业绩持续']
     dim_keys   = ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
     values     = [scores.get(k, 50) for k in dim_keys]
 
-    # 构建 tooltip 说明
+    # 构建带权重提示的 tooltip 说明
     _tip_lines = [
-        f"超额能力：年化超额 {_meta.get('alpha', 0)*100:.1f}% → {values[0]}分",
-        f"风险控制：回撤{_meta.get('max_dd', 0)*100:.1f}% · 波动{_meta.get('vol', 0)*100:.1f}% → {values[1]}分",
-        f"性价比：夏普{_meta.get('sharpe', 0):.2f} · 信息比率{_meta.get('ir', 0):.2f} → {values[2]}分",
-        f"风格稳定：模型解释度 + 市场敏感度 → {values[3]}分",
-        f"业绩持续：胜率{_meta.get('win_rate', 0)*100:.0f}% · 盈亏比{_meta.get('plr', 0):.2f} → {values[4]}分",
+        f"超额能力：年化超额 {_meta.get('alpha', 0)*100:.1f}% → {values[0]}分 (权重{int(_weights.get('超额能力', 0.2)*100)}%)",
+        f"风险控制：回撤{_meta.get('max_dd', 0)*100:.1f}% · 波动{_meta.get('vol', 0)*100:.1f}% → {values[1]}分 (权重{int(_weights.get('风险控制', 0.2)*100)}%)",
+        f"性价比：夏普{_meta.get('sharpe', 0):.2f} · 信息比率{_meta.get('ir', 0):.2f} → {values[2]}分 (权重{int(_weights.get('性价比', 0.2)*100)}%)",
+        f"风格稳定：模型解释度 + 市场敏感度 → {values[3]}分 (权重{int(_weights.get('风格稳定', 0.2)*100)}%)",
+        f"业绩持续：胜率{_meta.get('win_rate', 0)*100:.0f}% · 盈亏比{_meta.get('plr', 0):.2f} → {values[4]}分 (权重{int(_weights.get('业绩持续', 0.2)*100)}%)",
     ]
     tooltip_text = '<br>'.join(_tip_lines)
 
@@ -2843,8 +2867,8 @@ def plot_fund_radar(fund_name: str, scores: dict) -> go.Figure:
     theta_labels = dim_labels + [dim_labels[0]]
     r_values     = values + [values[0]]
 
-    # 颜色：综合均值 ≥80→绿，≥60→橙，<60→红（语义化阈值）
-    avg_score = sum(values) / 5
+    # 综合分：加权平均（根据基金类型权重）
+    avg_score = sum(v * _weights.get(k, 0.2) for v, k in zip(values, dim_keys))
     if avg_score >= 80:
         fill_color  = 'rgba(39,174,96,0.25)'
         line_color  = '#27ae60'
@@ -4680,9 +4704,20 @@ def main():
     if model_type == 'bond' and 'bond' in model_results:
         _radar_model_results = model_results['bond']
     _radar_scores = calc_radar_scores(
-        model_type, _radar_model_results, nav_df, bm_df, _rolling_for_radar
+        model_type, _radar_model_results, nav_df, bm_df, _rolling_for_radar,
+        fund_type_category=basic['type_category']
     )
     _radar_meta = _radar_scores.get('_meta', {})
+    _radar_weights = _radar_scores.get('_weights', {})
+
+    # 加权平均综合分（用于 Part 4 统一评分）
+    _weighted_avg_score = sum(
+        _radar_scores.get(k, 50) * _radar_weights.get(k, 0.2)
+        for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
+    )
+
+    # 覆盖 translation 的 score 为加权平均分
+    translation['score'] = round(_weighted_avg_score)
 
     # 雷达图 + 五维说明卡并排
     _rc1, _rc2 = st.columns([1.1, 1])
@@ -4759,7 +4794,9 @@ def main():
 """, unsafe_allow_html=True)
 
         # 快速结论
-        _avg_r = sum(_radar_scores.get(k, 50) for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']) / 5
+        _weights = _radar_scores.get('_weights', {})
+        # 综合均分：加权平均（根据基金类型权重）
+        _avg_r = sum(_radar_scores.get(k, 50) * _weights.get(k, 0.2) for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续'])
         _weak_dims = [k for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
                       if _radar_scores.get(k, 50) < 45]
         _strong_dims = [k for k in ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
@@ -4784,9 +4821,10 @@ def main():
             if _weak_dims:
                 _drag_dim = min(_weak_dims, key=lambda k: _radar_scores.get(k, 50))
                 _drag_score = _radar_scores.get(_drag_dim, 0)
+                _weight = _weights.get(_drag_dim, 0.2)
                 _avg_comment = (
-                    f'总分由五维平均决定。即使某维度有优势，'
-                    f'<b>「{_drag_dim}」仅{_drag_score}分</b>严重拖低了均分——'
+                    f'总分按基金类型权重计算。即使某维度有优势，'
+                    f'<b>「{_drag_dim}」仅{_drag_score}分</b>（权重{int(_weight*100)}%）严重拖低综合分——'
                     f'这代表该基金"能赚钱但赚得险"或"超额有限"，综合性价比偏低。'
                 )
             else:
@@ -6301,10 +6339,7 @@ def main():
     st.markdown('<div class="section-title">💬 第四部分：大白话诊断</div>', unsafe_allow_html=True)
 
     score = translation.get('score', 60)
-    # ── 评分统一：Part 4 的综合分与雷达图均分保持一致 ──
-    # _avg_r 在 Part 0 计算（calc_radar_scores 5维均值），此处直接复用
-    if '_avg_r' in dir():  # 防止 Part 0 被跳过时 _avg_r 未定义
-        score = round(_avg_r)
+    # score 已在雷达图计算后更新为加权平均分（见 Part 0）
     score_color = '#27ae60' if score >= 75 else '#e67e22' if score >= 55 else '#e74c3c'
     score_label = '优秀' if score >= 80 else '良好' if score >= 65 else '一般' if score >= 50 else '谨慎'
 
