@@ -325,6 +325,8 @@ def _parse_fee(text: str) -> float:
 def _classify_fund(info: dict) -> str:
     t = info.get('type_raw', '')
     name = info.get('name', '')
+    # 货币基金：直接归类为 money，跳过量化分析
+    if any(k in t for k in ['货币', '现金', '活期']): return 'money'
     # QDII 单独识别（跨市场基金，需要特殊分析逻辑）
     if 'QDII' in t or 'QDII' in name:           return 'qdii'
     # 指数/ETF 优先（避免"指数型-股票"被误识别为股票型）
@@ -2822,17 +2824,17 @@ def plot_fund_radar(fund_name: str, scores: dict) -> go.Figure:
     """
     _meta = scores.get('_meta', {})
 
-    dim_labels = ['超额能力\n(Alpha)', '风险控制\n(Risk)', '性价比\n(Efficiency)',
-                  '风格稳定\n(Stability)', '业绩持续\n(Persistence)']
+    dim_labels = ['超额能力', '风险控制', '性价比',
+                  '风格稳定', '业绩持续']
     dim_keys   = ['超额能力', '风险控制', '性价比', '风格稳定', '业绩持续']
     values     = [scores.get(k, 50) for k in dim_keys]
 
     # 构建 tooltip 说明
     _tip_lines = [
-        f"超额能力：{_meta.get('alpha', 0)*100:.1f}% 年化Alpha → {values[0]}分",
+        f"超额能力：年化超额 {_meta.get('alpha', 0)*100:.1f}% → {values[0]}分",
         f"风险控制：回撤{_meta.get('max_dd', 0)*100:.1f}% · 波动{_meta.get('vol', 0)*100:.1f}% → {values[1]}分",
-        f"性价比：夏普{_meta.get('sharpe', 0):.2f} · IR={_meta.get('ir', 0):.2f} → {values[2]}分",
-        f"风格稳定：R²稳健性+Beta波动 → {values[3]}分",
+        f"性价比：夏普{_meta.get('sharpe', 0):.2f} · 信息比率{_meta.get('ir', 0):.2f} → {values[2]}分",
+        f"风格稳定：模型解释度 + 市场敏感度 → {values[3]}分",
         f"业绩持续：胜率{_meta.get('win_rate', 0)*100:.0f}% · 盈亏比{_meta.get('plr', 0):.2f} → {values[4]}分",
     ]
     tooltip_text = '<br>'.join(_tip_lines)
@@ -4427,11 +4429,19 @@ def main():
     # ============================================================
     # STEP 1  基本信息
     # ============================================================
-    with st.spinner("获取基金基本信息..."):
+    with st.spinner("⏳ 获取基金信息..."):
         basic = fetch_basic_info(fund_code)
 
     if basic['name'] == fund_code:
         st.error("基金信息获取失败，请检查代码是否正确。")
+        return
+
+    # 货币基金：跳过量化分析，显示友好提示
+    if basic['type_category'] == 'money':
+        st.info(f"🪙 **这是货币基金**（{basic['type_raw']}）。\n\n"
+                "货币基金主要投资短期银行存款、同业存单等现金类资产，每日收益波动极小，"
+                "不适用于股票/债券量化模型分析。\n\n"
+                "如需查看该基金的7日年化收益率、万份收益等指标，请参考第三方基金平台。")
         return
 
     # ============================================================
@@ -4443,7 +4453,7 @@ def main():
     _since_manager   = (period_sel == '现任经理以来')
     _years = _period_year_map.get(period_sel, 5)
 
-    with st.spinner("加载历史净值..."):
+    with st.spinner("⏳ 获取收益数据..."):
         nav_df = fetch_nav(
             fund_code,
             years=_years,
@@ -4481,10 +4491,10 @@ def main():
         }
         parsed_bm = defaults.get(basic['type_category'], defaults['equity'])
 
-    with st.spinner("获取持仓数据..."):
+    with st.spinner("⏳ 分析持仓..."):
         holdings = fetch_holdings(fund_code, basic['type_category'])
 
-    with st.spinner("构建业绩基准..."):
+    with st.spinner("⏳ 计算基准..."):
         if parsed_bm:
             bm_df = build_benchmark_ret(parsed_bm, start_str, end_str)
         else:
@@ -4579,7 +4589,7 @@ def main():
                                              bond_structure.get('convert_ratio', 0)) * \
                                             bond_structure.get('total_weight', 0) / 100
 
-        with st.spinner("获取国债期限结构和信用利差数据..."):
+        with st.spinner("⏳ 计算债券收益..."):
             treasury     = fetch_treasury_10y(start_str, end_str)
             three_factor = fetch_bond_three_factors(start_str, end_str)
 
@@ -4688,7 +4698,7 @@ def main():
             if dim == '超额能力':
                 if score >= 80: return '✦ 超额显著，真本事赚钱'
                 if score >= 60: return '↑ 有一定超额，但不够稳定'
-                if score >= 40: return '→ 超额微弱，主要靠市场Beta'
+                if score >= 40: return '→ 超额微弱，主要靠市场'
                 return '↓ 几乎无超额，被动持有更划算'
             elif dim == '风险控制':
                 if score >= 80: return '✦ 回撤小、波动低，防守能力强'
@@ -4699,12 +4709,12 @@ def main():
                 if score >= 80: return '✦ 每单位风险回报突出，高效赚钱'
                 if score >= 60: return '↑ 风险收益比合理，值得持有'
                 if score >= 40: return '→ 冒了较大风险，超额收益不够匹配'
-                return '↓ 低夏普+低IR，风险没有得到有效回报'
+                return '↓ 风险回报效率偏低'
             elif dim == '风格稳定':
                 if score >= 80: return '✦ 风格高度一致，说到做到'
                 if score >= 60: return '↑ 风格基本稳定，偶有偏移'
                 if score >= 40: return '→ 风格存在一定漂移，需关注'
-                return '↓ 风格不稳，当心名不副实的「换装秀」'
+                return '↓ 风格不稳，当心名不副实'
             else:  # 业绩持续
                 if score >= 80: return '✦ 胜率高、盈亏比优，常胜将军'
                 if score >= 60: return '↑ 业绩较持续，偶有落后期'
@@ -4713,13 +4723,13 @@ def main():
 
         _dim_info = [
             ('超额能力', '超额能力',
-             f"年化Alpha {_radar_meta.get('alpha', 0)*100:.1f}%"),
+             f"年化超额 {_radar_meta.get('alpha', 0)*100:.1f}%"),
             ('风险控制', '风险控制',
              f"最大回撤 {_radar_meta.get('max_dd', 0)*100:.1f}% · 波动率 {_radar_meta.get('vol', 0)*100:.1f}%"),
             ('性价比', '性价比',
-             f"夏普 {_radar_meta.get('sharpe', 0):.2f} · IR {_radar_meta.get('ir', 0):.2f}"),
+             f"夏普比率 {_radar_meta.get('sharpe', 0):.2f} · 信息比率 {_radar_meta.get('ir', 0):.2f}"),
             ('风格稳定', '风格稳定',
-             '滚动Beta波动 + R²解释度'),
+             '模型解释度 + 市场敏感度'),
             ('业绩持续', '业绩持续',
              f"胜率 {_radar_meta.get('win_rate', 0)*100:.0f}% · 盈亏比 {_radar_meta.get('plr', 0):.2f}"),
         ]
