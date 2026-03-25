@@ -2,7 +2,7 @@
 
 ## 项目目标
 - 产品：基金穿透式分析工具，对外运营，含付费功能
-- 当前状态：v8.0 专业量化版已完成，待推送到GitHub部署
+- 当前状态：v10.1 债券持仓穿透分析版已完成，commit b57cd92，待 git push
 
 ## 技术栈（当前）
 - 前端/后端：Python + Streamlit
@@ -10,13 +10,46 @@
 - 正确 API（已验证）：
   - `fund_open_fund_info_em(symbol, indicator="单位净值走势")` - 历史净值，列名：净值日期/单位净值/日增长率（取前两列）
   - `fund_individual_basic_info_xq(symbol)` - 雪球基础信息（基准文本）
-  - `fund_portfolio_hold_em(symbol, date="2024")` - 持仓
+  - `fund_portfolio_hold_em(symbol, date="2024")` - 持仓（股票前十大）
+  - `fund_portfolio_bond_hold_em(symbol, date="2024")` - 债券全部持仓明细（列：序号/债券代码/债券名称/占净值比例/持仓市值/季度），bond/mixed 基金可用，返回全量非前十大
+  - `bond_zh_cov_info(symbol, indicator='基本信息')` - 可转债基本信息（72字段，含 EXPIRE_DATE/RATING/COUPON_IR/INITIAL_TRANSFER_PRICE 等）
   - `stock_zh_index_daily_em(symbol="sh000300")` - 指数日行情（沪深300/中证1000等）
   - `bond_new_composite_index_cbond(indicator="财富")` - 中债综合指数（注意参数是"财富"不是"总值"）
   - `bond_zh_us_rate(start_date=xxx)` - 10年国债收益率（列名：日期/中国国债收益率10年）
   - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
+- **v10.4**（2026-03-25）：性能全面优化，预计提速3-5倍：
+  - `_get_fund_name_list()/_get_fund_scale_sina()` 封装全量列表为86400s全局缓存
+  - `fetch_ff_factors` 4指数并行（ThreadPoolExecutor max_workers=4）
+  - STEP3+4 持仓+基准并行、债券三因子两接口并行
+  - `fetch_bond_three_factors` 按年分段改并行
+  - retry delay 从 2s→1s
+  - commit: eaf31e4，待 push
+- **v10.3**（2026-03-25）：修复权益基金两大Bug：
+  - **Bug1**：`stock_zh_index_daily_em` 接口挂掉 → `fetch_index_daily` 主力切换为 `stock_zh_index_daily`，备用保留 em 接口
+  - **Bug2**：恒生指数基准缺失（001875等沪港深基金） → 新增 `fetch_hk_index_daily()`（用 `stock_hk_index_daily_sina`），`_INDEX_NAME_CODE` 加 `hk:HSI` 前缀，`build_benchmark_ret` 识别 `hk:` 前缀路由
+  - commit: 09f045c，待 push
+- **v10.2**（2026-03-25）：深度量化板块文字全面白话化：
+  - fund_type_note/interpretation/convexity/信用利差提示/KPI卡标签/模型标签/底部公式说明/指标解释全部简化
+  - 去掉所有 β_short/β_credit/α/carry/T-Model/Adj.R²/存单/短融/端/期限结构/利差扩大/下沉等专业词
+  - 大段分号解读改为 bullet 列表，去掉凸性重复
+  - commit: dced4d9，待 push
+  - `fetch_holdings` 新增 `bond_holdings` 字段：bond/mixed 基金自动拉取 `fund_portfolio_bond_hold_em` 全部债券持仓（非仅前十大）
+  - 新增 `_classify_bond()` + `_bond_credit_tier()`：9种债券类型识别+信用层级分层
+  - 新增 `analyze_bond_structure()`：穿透引擎 - 可转债精确查询评级/到期日/票面利率，其他品种启发式期限估算，输出 rate_ratio/credit_ratio/convert_ratio
+  - 展示层「🔍 债券持仓穿透」板块：Plotly 甜甜圈图+可转债评级 Bar+折叠明细表+三因子联动解读
+  - 000069 实测：政策性金融债 51.1%+可转债 24.8%+国债 13.3%，β_credit 与信用结构相互印证
+  - commit: b57cd92，待 push
+- **v10.0**（2026-03-25）：债基三因子模型全面升级：
+  - 新增 `fetch_bond_three_factors()`：2年期国债+10年期国债+中短期票据AAA信用利差（按年分段拉取）
+  - `run_duration_model()` 升级为三因子回归 Rₚ = α + β_short·(-ΔY_2Y) + β_long·(-ΔY_10Y) + β_credit·ΔCS + ε
+  - 三因子降级策略：信用数据不足→双因子；三因子数据不可用→单因子T-Model
+  - 凸性改为 `_convexity_from_holdings()` 静态穿透法（回归法对日频不准）
+  - 展示层：三因子专属KPI卡（4列）+ 信用利差方向图 + Adj.R²
+  - 压力测试升级为场景化矩阵：资金面收紧/债市熊平/信用风险/极端冲击（含短端/长端/信用三分量拆解）
+  - 000069实测：Adj.R² 0.03→0.079，β_short=0.619(p<0.001)，β_credit=-0.653(p<0.001)
+  - 债券基金仓位标签修复：model_type='bond'时不显示股票仓位（季报默认5%不代表真实持股）
 - **v9.7**（2026-03-25）：多类型兼容修复，10项修复：
   - ETF/次新基金识别失败：`fetch_basic_info` 加 `fund_name_em()` 兜底
   - QDII基金：新增 `qdii` type_category（雪球返回`QDII-股票`即识别），走 equity 模型+跨市场警告，不走 sector 分支
