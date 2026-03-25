@@ -19,13 +19,12 @@
   - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
-- **v10.4**（2026-03-25）：性能全面优化，预计提速3-5倍：
-  - `_get_fund_name_list()/_get_fund_scale_sina()` 封装全量列表为86400s全局缓存
-  - `fetch_ff_factors` 4指数并行（ThreadPoolExecutor max_workers=4）
-  - STEP3+4 持仓+基准并行、债券三因子两接口并行
-  - `fetch_bond_three_factors` 按年分段改并行
-  - retry delay 从 2s→1s
-  - commit: eaf31e4，待 push
+- **v10.4 紧急修复**（2026-03-25）：并行化导致 Streamlit 静默失败 → **回滚并行，仅保留缓存优化**：
+  - ✅ `_get_fund_name_list()/_get_fund_scale_sina()` 封装全量列表为86400s全局缓存（保留）
+  - ✅ retry delay 从 2s→1s（保留）
+  - ❌ **回滚**：`fetch_ff_factors` 内部并行、STEP3+4并行、债券模型并行（`st.cache_data` 不能在子线程调用）
+  - **问题根因**：`ThreadPoolExecutor` 子线程调用 `@st.cache_data` 函数 → `missing ScriptRunContext` → 静默失败，点击按钮无反应
+  - commit: c12847f，待 push
 - **v10.3**（2026-03-25）：修复权益基金两大Bug：
   - **Bug1**：`stock_zh_index_daily_em` 接口挂掉 → `fetch_index_daily` 主力切换为 `stock_zh_index_daily`，备用保留 em 接口
   - **Bug2**：恒生指数基准缺失（001875等沪港深基金） → 新增 `fetch_hk_index_daily()`（用 `stock_hk_index_daily_sina`），`_INDEX_NAME_CODE` 加 `hk:HSI` 前缀，`build_benchmark_ret` 识别 `hk:` 前缀路由
