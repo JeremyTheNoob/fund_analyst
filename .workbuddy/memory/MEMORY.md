@@ -17,7 +17,18 @@
   - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
-- **v9.5**（2026-03-25）：全面代码审查，8项潜在Bug修复：
+- **v9.7**（2026-03-25）：多类型兼容修复，10项修复：
+  - ETF/次新基金识别失败：`fetch_basic_info` 加 `fund_name_em()` 兜底
+  - QDII基金：新增 `qdii` type_category（雪球返回`QDII-股票`即识别），走 equity 模型+跨市场警告，不走 sector 分支
+  - 次新基金：净值不足60天改为警告（>=20天可展示基础分析）
+  - 百度估值接口：加探测机制，整体故障时快速返回「接口维护中」
+  - 估值市场识别：台股/韩股/日股等归 OTHER，避免误识别为港股
+  - 港股PE：加 period 参数与A股保持一致
+  - QDII基准：无法拉取MSCI时用空 bm_df，不用沪深300伪基准
+  - 债券凸性：|convexity|<2 时提示「样本内利率波动不足」
+  - 久期解读：fallback 分支不重复显示
+  - 雷达图/大白话评分统一：Part4 直接用雷达图均分 `_avg_r`
+  - 文件：`fund_analysis.py` = `fund_analysis_v9.7.py`
   - **致命Bug**：bond模式下translate_results/calc_radar_scores传入的是`{'bond': bond_res}`嵌套字典，直接`results.get('duration')`取不到值→修复为调用前展开子字典
   - **高风险**：fetch_ff_factors内部inner join（small/val/grw），某个指数停牌一天截断全部因子数据→改为left join+ffill(3天)
   - **中风险**：_empty_ff_result缺少r_squared_recent/residual_insight字段→补全
