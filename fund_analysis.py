@@ -5352,9 +5352,13 @@ def main():
             _wtd_dur       = _bs.get('wtd_duration_est', 0)
             _rate_r        = _bs.get('rate_ratio', 0)
             _credit_r      = _bs.get('credit_ratio', 0)
-            _conv_r        = _bs.get('convert_ratio', 0)
-            _type_dist     = _bs.get('type_dist', pd.DataFrame())
-            _conv_detail   = _bs.get('conv_detail', pd.DataFrame())
+        _conv_r        = _bs.get('convert_ratio', 0)
+        _type_dist     = _bs.get('type_dist', pd.DataFrame())
+        _conv_detail   = _bs.get('conv_detail', pd.DataFrame())
+
+        # === 修复数据一致性问题：统一使用"债券持仓占净值比"作为唯一口径 ===
+        # 右侧评级分布标题改为直接显示占净值比（非乘算）
+        _conv_total_nav_pct = _conv_detail['占净值'].sum() if not _conv_detail.empty and '占净值' in _conv_detail.columns else 0
 
             st.markdown(
                 f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
