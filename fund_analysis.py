@@ -469,30 +469,11 @@ def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
                   若全部备用指数拉取失败 → 直接 drop 此列，降维至三/四因子，
                   绝不用 NaN 列污染整个 DataFrame（NaN 列会让 dropna 清零全表）
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    # ── 并行拉取 4 个基础指数（相互独立，无依赖） ──
-    _codes = {
-        'mkt':   'sh000300',
-        'small': 'sh000852',
-        'val':   'sz399371',
-        'grw':   'sz399370',
-    }
-    _results = {}
-    with ThreadPoolExecutor(max_workers=4) as _ex:
-        _futures = {_ex.submit(fetch_index_daily, code, start, end): name
-                    for name, code in _codes.items()}
-        for _fut in as_completed(_futures):
-            _name = _futures[_fut]
-            try:
-                _results[_name] = _fut.result()
-            except Exception:
-                _results[_name] = pd.DataFrame(columns=['date', 'ret'])
-
-    mkt   = _results.get('mkt',   pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'Mkt'})
-    small = _results.get('small', pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'ret_small'})
-    val   = _results.get('val',   pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'ret_val'})
-    grw   = _results.get('grw',   pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'ret_grw'})
+    # ── 串行拉取 4 个基础指数（st.cache_data 函数不能在子线程调用） ──
+    mkt   = fetch_index_daily('sh000300', start, end).rename(columns={'ret': 'Mkt'})
+    small = fetch_index_daily('sh000852', start, end).rename(columns={'ret': 'ret_small'})
+    val   = fetch_index_daily('sz399371', start, end).rename(columns={'ret': 'ret_val'})
+    grw   = fetch_index_daily('sz399370', start, end).rename(columns={'ret': 'ret_grw'})
     large = mkt[['date']].copy().assign(ret_large=mkt['Mkt'])
 
     # ── 以沪深300(Mkt)日期为基准，其余指数 left join + ffill(3天) ──
@@ -4480,20 +4461,14 @@ def main():
         }
         parsed_bm = defaults.get(basic['type_category'], defaults['equity'])
 
-    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with st.spinner("获取持仓数据..."):
+        holdings = fetch_holdings(fund_code, basic['type_category'])
 
-    with st.spinner("获取持仓与基准数据..."):
-        with _TPE(max_workers=2) as _ex:
-            _fut_hold = _ex.submit(fetch_holdings, fund_code, basic['type_category'])
-            if parsed_bm:
-                _fut_bm = _ex.submit(build_benchmark_ret, parsed_bm, start_str, end_str)
-            else:
-                _fut_bm = None
-            holdings = _fut_hold.result()
-            if _fut_bm is not None:
-                bm_df = _fut_bm.result()
-            else:
-                bm_df = pd.DataFrame(columns=['date', 'bm_ret'])
+    with st.spinner("构建业绩基准..."):
+        if parsed_bm:
+            bm_df = build_benchmark_ret(parsed_bm, start_str, end_str)
+        else:
+            bm_df = pd.DataFrame(columns=['date', 'bm_ret'])
 
     stock_ratio = holdings.get('stock_ratio', 0.8)
     bond_ratio  = holdings.get('bond_ratio',  0.1)
@@ -4585,11 +4560,8 @@ def main():
                                             bond_structure.get('total_weight', 0) / 100
 
         with st.spinner("获取国债期限结构和信用利差数据..."):
-            with _TPE(max_workers=2) as _ex2:
-                _fut_t  = _ex2.submit(fetch_treasury_10y, start_str, end_str)
-                _fut_tf = _ex2.submit(fetch_bond_three_factors, start_str, end_str)
-                treasury     = _fut_t.result()
-                three_factor = _fut_tf.result()
+            treasury     = fetch_treasury_10y(start_str, end_str)
+            three_factor = fetch_bond_three_factors(start_str, end_str)
 
         if not treasury.empty:
             fund_ret_s = nav_df.set_index('date')['ret'].dropna()
