@@ -17,6 +17,16 @@
   - `bond_china_yield(start_date, end_date)` - 国债收益率曲线（行数可能为空，有备用方案）
 
 ## 当前版本
+- **v9.5**（2026-03-25）：全面代码审查，8项潜在Bug修复：
+  - **致命Bug**：bond模式下translate_results/calc_radar_scores传入的是`{'bond': bond_res}`嵌套字典，直接`results.get('duration')`取不到值→修复为调用前展开子字典
+  - **高风险**：fetch_ff_factors内部inner join（small/val/grw），某个指数停牌一天截断全部因子数据→改为left join+ffill(3天)
+  - **中风险**：_empty_ff_result缺少r_squared_recent/residual_insight字段→补全
+  - **中风险**：estimate_hidden_cost未接收type_category参数，所有基金永远用equity隐性费率0.15%→修复函数签名+调用传参
+  - **中风险**：run_brinson用`dir()`判断变量存在（Python反模式）→改为直接引用
+  - **中风险**：fetch_bond_index首行NaN未填0（与fetch_index_daily不一致）→补fillna(0)
+  - **低风险**：sector基金在bond_ratio≤0.10时右列不渲染，估值预警不显示→修复判断条件
+  - **Bug修复（09:26）**：显性费率永远为0→根因是原用的雪球接口和天天`fund_open_fund_info_em(indicator='基金概况')`均不返回费率字段；改用 `fund_fee_em(indicator='运作费用')` 主方案 + `fund_individual_detail_info_xq`兜底，实测正确
+  - 文件：`fund_analysis.py` = `fund_analysis_v9.5.py`
 - **v9.3**（2026-03-24）：四项实战优化 + 累计收益图三项修复：
   - **缓存升级**：`fetch_index_daily/fetch_ff_factors/fetch_treasury_10y/fetch_bond_index/fetch_sw_industry_ret` 全部升级为 `ttl=86400`（公共因子全天缓存），基金特有净值/持仓仍实时拉取
   - **前视偏差标注**：业绩基准小字追加「基于当前公开基准回溯，历史基准变更期间数据仅供参考」

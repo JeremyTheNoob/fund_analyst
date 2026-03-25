@@ -146,39 +146,20 @@ def fetch_basic_info(symbol: str) -> dict:
     except Exception:
         pass
 
-    # ── 天天基金「运作费用」接口（最可靠的费率来源）──────────────────────────
-    # fund_fee_em(indicator='运作费用') 返回：
-    #   col0=管理费率  col1=1.20%(每年)  col2=托管费率  col3=0.20%(每年)  col4=销售服务费率  col5=---
+    # 天天基金补充
     try:
-        df_fee = ak.fund_fee_em(symbol=symbol, indicator='运作费用')
-        if not df_fee.empty:
-            row0 = df_fee.iloc[0]
-            # 列序固定：0管理费率名,1管理费率值, 2托管费率名,3托管费率值, 4销售服务费率名,5销售服务费率值
-            if not r['fee_manage'] and len(row0) > 1:
-                r['fee_manage']  = _parse_fee(str(row0.iloc[1]))
-            if not r['fee_custody'] and len(row0) > 3:
-                r['fee_custody'] = _parse_fee(str(row0.iloc[3]))
-            if not r['fee_sale'] and len(row0) > 5:
-                r['fee_sale']    = _parse_fee(str(row0.iloc[5]))
+        df2 = ak.fund_open_fund_info_em(symbol=symbol, indicator="基金概况")
+        info2 = dict(zip(df2.iloc[:, 0], df2.iloc[:, 1]))
+        if not r['type_raw']:
+            r['type_raw'] = info2.get('基金类型', '')
+        if not r['name'] or r['name'] == symbol:
+            r['name'] = info2.get('基金名称', symbol)
+        if not r['fee_manage']:
+            r['fee_manage'] = _parse_fee(info2.get('管理费率', ''))
+        if not r['fee_sale']:
+            r['fee_sale'] = _parse_fee(info2.get('销售服务费率', ''))
     except Exception:
         pass
-
-    # ── 兜底：雪球详细费用（含管理费+托管费）────────────────────────────────
-    # fund_individual_detail_info_xq 返回「其他费用」行，含基金管理费/基金托管费
-    if not r['fee_manage'] or not r['fee_custody']:
-        try:
-            df_xq2 = ak.fund_individual_detail_info_xq(symbol=symbol)
-            if not df_xq2.empty and '费用类型' in df_xq2.columns:
-                other = df_xq2[df_xq2['费用类型'] == '其他费用']
-                for _, row in other.iterrows():
-                    name_val = str(row.get('条件或名称', ''))
-                    fee_val  = str(row.get('费用', ''))
-                    if '管理' in name_val and not r['fee_manage']:
-                        r['fee_manage']  = _parse_fee(fee_val + '%')  # 值已是百分数数字
-                    if '托管' in name_val and not r['fee_custody']:
-                        r['fee_custody'] = _parse_fee(fee_val + '%')
-        except Exception:
-            pass
 
     r['benchmark_parsed'] = _parse_benchmark(r['benchmark_text'])
     r['type_category']    = _classify_fund(r)
@@ -319,17 +300,11 @@ def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
     val   = fetch_index_daily('sz399371', start, end).rename(columns={'ret': 'ret_val'})
     grw   = fetch_index_daily('sz399370', start, end).rename(columns={'ret': 'ret_grw'})
 
-    # ── 以沪深300(Mkt)日期为基准，其余指数 left join + ffill(3天) ──
-    # 避免单个指数停牌/数据缺失导致整个因子矩阵被 inner join 截断
     df = mkt.copy()
-    df = df.merge(small, on='date', how='left')
-    df = df.merge(large, on='date', how='left', suffixes=('', '_dup'))
-    df = df.merge(val,   on='date', how='left')
-    df = df.merge(grw,   on='date', how='left')
-    # 前向填充（节假日/停牌等短暂缺口，限3天）
-    for _fc in ['ret_small', 'ret_large', 'ret_val', 'ret_grw']:
-        if _fc in df.columns:
-            df[_fc] = df[_fc].ffill(limit=3)
+    df = df.merge(small, on='date', how='inner')
+    df = df.merge(large, on='date', how='inner', suffixes=('', '_dup'))
+    df = df.merge(val,   on='date', how='inner')
+    df = df.merge(grw,   on='date', how='inner')
 
     df['SMB']       = df['ret_small'] - df['ret_large']
     df['HML']       = df['ret_val']   - df['ret_grw']
@@ -442,8 +417,8 @@ def fetch_bond_index(start: str, end: str) -> pd.DataFrame:
         df['date']  = pd.to_datetime(df['date'])
         df = df.sort_values('date')
         df = df[(df['date'] >= pd.to_datetime(start)) & (df['date'] <= pd.to_datetime(end))]
-        df['ret'] = df['close'].pct_change().fillna(0)  # 首行NaN→0，与fetch_index_daily保持一致
-        return df[['date','ret']].reset_index(drop=True)
+        df['ret'] = df['close'].pct_change()
+        return df[['date','ret']].dropna().reset_index(drop=True)
     except Exception:
         return pd.DataFrame(columns=['date','ret'])
 
@@ -796,8 +771,7 @@ def _parse_pct(text: str) -> float:
 # ---------- 9. 隐性费率估算 ----------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def estimate_hidden_cost(symbol: str, nav_df: pd.DataFrame,
-                         type_category: str = 'equity') -> dict:
+def estimate_hidden_cost(symbol: str, nav_df: pd.DataFrame) -> dict:
     """
     估算隐性费率（交易成本+其他费用）
     方案A：年报倒推法（从利润表的"交易费用"科目）
@@ -852,7 +826,8 @@ def estimate_hidden_cost(symbol: str, nav_df: pd.DataFrame,
             'index':  0.0003,   # 指数型：约0.03%（被动低换手）
         }
         _tc = _type_default.get(
-            type_category, 0.0015  # 传入类型不在映射表时用0.15%通用中位数
+            # 尝试用持仓数据判断，实在没有就用0.15%通用中位数
+            'equity', 0.0015
         )
         result['hidden_cost_rate'] = _tc
         result['method'] = f'行业经验中位数（{_tc*100:.2f}%/年，无利润表数据时使用）'
@@ -1122,8 +1097,6 @@ def run_ff_model(fund_ret: pd.Series,
 def _empty_ff_result(reason: str) -> dict:
     return {
         'alpha': None, 'alpha_pval': 1.0, 'r_squared': 0,
-        'r_squared_recent': None,          # 展示层会读这个字段，必须存在
-        'residual_insight': '',            # 展示层会读这个字段，必须存在
         'factor_betas': {}, 'factor_betas_raw': {},
         'beta_drift': None, 'recent_betas_raw': {},
         'n_obs': 0, 'model_type': 'unknown', 'interpretation': reason
@@ -1484,8 +1457,8 @@ def run_brinson(fund_ret: pd.Series,
         'interaction_effect':      inter,         # 纯交互效应（内部）
         'total_active':            alloc + sel_inter,
         'excess_return':           excess,        # 基金vs基准总超额（年化）
-        'r_bm':                    r_bm_ann,
-        'fund_annual':             fund_ann,
+        'r_bm':                    r_bm_ann if 'r_bm_ann' in dir() else 0.0,
+        'fund_annual':             fund_ann if 'fund_ann' in dir() else 0.0,
         'interpretation':          '；'.join(parts)
     }
 
@@ -3622,14 +3595,8 @@ def main():
     _bm_ret_trend   = bm_df.set_index('date')['bm_ret'].dropna() if not bm_df.empty else None
     _rolling_df_for_translate = model_results.get('rolling_df', None)
 
-    # ── Bond 模式特殊处理：translate_results('bond') 读的是展平字段
-    #    但 model_results = {'bond': bond_res}，需要展开 bond 子字典传入
-    _translate_results = model_results
-    if model_type == 'bond' and 'bond' in model_results:
-        _translate_results = model_results['bond']
-
     translation = translate_results(
-        model_type, _translate_results, basic, holdings,
+        model_type, model_results, basic, holdings,
         rolling_df=_rolling_df_for_translate,
         bm_ret_for_trend=_bm_ret_trend,
         fund_ret_for_trend=_fund_ret_trend
@@ -3644,12 +3611,8 @@ def main():
 
     # 计算5维评分
     _rolling_for_radar = model_results.get('rolling_df', None)
-    # bond 模式需要展开子字典（与 translate_results 保持一致）
-    _radar_model_results = model_results
-    if model_type == 'bond' and 'bond' in model_results:
-        _radar_model_results = model_results['bond']
     _radar_scores = calc_radar_scores(
-        model_type, _radar_model_results, nav_df, bm_df, _rolling_for_radar
+        model_type, model_results, nav_df, bm_df, _rolling_for_radar
     )
     _radar_meta = _radar_scores.get('_meta', {})
 
@@ -3767,7 +3730,7 @@ def main():
     st.markdown('<div style="font-size:0.85rem;font-weight:600;color:#555;margin:16px 0 8px">💰 费用概览</div>', unsafe_allow_html=True)
 
     with st.spinner("估算隐性费率..."):
-        hidden = estimate_hidden_cost(fund_code, nav_df, basic['type_category'])
+        hidden = estimate_hidden_cost(fund_code, nav_df)
 
     _explicit_total = basic['fee_manage'] + basic['fee_custody'] + basic['fee_sale']
     _manage_str  = f"{basic['fee_manage']*100:.2f}%"  if basic['fee_manage']  else '—'
@@ -4420,12 +4383,10 @@ def main():
         model_type in ('mixed', 'sector')  # 收益拆解
         or (model_type == 'equity' and _top10_for_check is not None and not _top10_for_check.empty)
     )
-    # 右列有内容：bond_ratio>0.10（久期压测） 或 mixed/sector有持仓数据（估值预警）
-    _top10_for_right = holdings.get('top10', pd.DataFrame())
+    # 右列有内容：bond_ratio>0.10（久期压测） 或 mixed/sector且stock_ratio>0.15（估值预警）
     _has_right_content = (
         bond_ratio > 0.10
-        or (model_type in ('mixed', 'sector') and stock_ratio > 0.15
-            and _top10_for_right is not None and not _top10_for_right.empty)
+        or (model_type in ('mixed', 'sector') and stock_ratio > 0.15)
     )
     # 决定布局
     if _has_left_content and _has_right_content:
