@@ -455,6 +455,26 @@ def fetch_index_daily(symbol_code: str, start: str, end: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def fetch_hk_index_daily(sina_symbol: str, start: str, end: str) -> pd.DataFrame:
+    """港股指数日行情获取（恒生/国企/科技等），返回 date / ret（全天缓存）"""
+    def _build(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=['date', 'ret'])
+        df = df[['date', 'close']].copy()
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+        df = df[(df['date'] >= pd.to_datetime(start)) & (df['date'] <= pd.to_datetime(end))]
+        df['ret'] = df['close'].pct_change().fillna(0)
+        return df[['date', 'ret']].reset_index(drop=True)
+
+    try:
+        raw = ak.stock_hk_index_daily_sina(symbol=sina_symbol)
+        return _build(raw)
+    except Exception:
+        return pd.DataFrame(columns=['date', 'ret'])
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
     """
     构建 FF 因子代理序列（方案 A+C，扩展 RMW）【全天缓存，公共因子全市场通用】
