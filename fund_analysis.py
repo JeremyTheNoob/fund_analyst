@@ -4430,7 +4430,7 @@ def main():
     st.markdown("""
 <div class="hero">
   <h1>🔬 DeepInFund</h1>
-  <p>deep in fund, seek for truth</p>
+  <p>买基之前搜一搜</p>
 </div>
 """, unsafe_allow_html=True)
 
