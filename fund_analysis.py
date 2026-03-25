@@ -175,6 +175,86 @@ def fetch_basic_info(symbol: str) -> dict:
         except Exception:
             pass
 
+    # ── 雪球兜底2：ETF/指数型基金补充信息 ────────────────────────────────────
+    # 优先用新浪开放式基金规模表：一次拉取可补全「规模+经理+成立日」三字段
+    # fund_scale_open_sina 列：基金代码/基金简称/单位净值/总募集规模/最近总份额/成立日期/基金经理/更新日期
+    _is_etf = 'ETF' in r.get('name', '') or 'ETF' in r.get('type_raw', '') or 'etf' in r.get('name', '').lower()
+    _need_scale   = not r['scale']
+    _need_manager = not r['manager']
+    _need_estdate = not r['establish_date']
+
+    if _need_scale or _need_manager or _need_estdate:
+        try:
+            _df_sina = ak.fund_scale_open_sina()
+            if _df_sina is not None and not _df_sina.empty:
+                # symbol 可能是 int 或 str，做宽松匹配
+                _row_sina = _df_sina[_df_sina['基金代码'].astype(str).str.zfill(6) == str(symbol).zfill(6)]
+                if not _row_sina.empty:
+                    _r_sina = _row_sina.iloc[0]
+                    # 规模：最近总份额(份) × 单位净值 → 转为 亿元
+                    if _need_scale:
+                        _shares = float(_r_sina.get('最近总份额', 0) or 0)
+                        _nav_v  = float(_r_sina.get('单位净值', 1) or 1)
+                        if _shares > 0:
+                            _scale_yi = _shares * _nav_v / 1e8
+                            if _scale_yi >= 100:
+                                r['scale'] = f'{_scale_yi:.1f}亿元'
+                            elif _scale_yi >= 1:
+                                r['scale'] = f'{_scale_yi:.2f}亿元'
+                            else:
+                                r['scale'] = f'{_scale_yi*100:.1f}百万元'
+                    # 基金经理
+                    if _need_manager:
+                        _mgr = str(_r_sina.get('基金经理', '') or '')
+                        if _mgr and _mgr != 'nan':
+                            r['manager'] = _mgr
+                    # 成立日期
+                    if _need_estdate:
+                        _est = _r_sina.get('成立日期', None)
+                        if _est is not None and str(_est) not in ('NaT', 'nan', ''):
+                            try:
+                                r['establish_date'] = pd.to_datetime(_est).strftime('%Y-%m-%d')
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+    # ETF兜底：若规模/成立日仍为空，从净值历史最早日期推断成立日
+    if _is_etf and not r['establish_date']:
+        try:
+            _nav_hist = ak.fund_open_fund_info_em(symbol=symbol, indicator='单位净值走势')
+            if not _nav_hist.empty and '净值日期' in _nav_hist.columns:
+                _earliest = pd.to_datetime(_nav_hist['净值日期']).min()
+                if not pd.isna(_earliest):
+                    r['establish_date'] = _earliest.strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    if _is_etf and not r['manager']:
+        r['manager'] = '被动跟踪（指数型）'
+
+    # ── 兜底：从基金名称推断公司名 ──────────────────────────────────────────
+    # 基金名称通常以公司简称打头（国泰、华夏、易方达等），雪球接口失败时从名称推断
+    if not r['company'] and r['name'] and r['name'] != symbol:
+        _known_companies = [
+            '华夏', '易方达', '嘉实', '南方', '博时', '富国', '汇添富', '广发',
+            '鹏华', '招商', '工银瑞信', '建信', '农银汇理', '交银施罗德',
+            '中欧', '兴全', '景顺长城', '华安', '大成', '万家', '海富通',
+            '国泰', '天弘', '华宝', '国联安', '诺安', '长城', '上投摩根',
+            '东方', '平安', '银华', '光大保德信', '太平洋', '浦银安盛',
+            '摩根士丹利', '泰康', '华泰柏瑞', '国寿安保', '中银', '前海开源',
+            '创金合信', '永赢', '中泰', '信达澳亚', '财通', '西部利得',
+            # 补充：中字头券商系基金公司
+            '中金', '中信建投', '中信保诚', '中邮', '中融', '中海', '中航',
+            # 补充：其他常见
+            '汇泉', '睿远', '东证', '基石', '安信', '方正富邦', '长安',
+            '德邦', '国投瑞银', '申万菱信', '民生加银', '金鹰', '上银',
+        ]
+        _fname = r['name']
+        for _co in _known_companies:
+            if _fname.startswith(_co):
+                r['company'] = _co + '基金'
+                break
+
     # ── 天天基金「运作费用」接口（最可靠的费率来源）──────────────────────────
     # fund_fee_em(indicator='运作费用') 返回：
     #   col0=管理费率  col1=1.20%(每年)  col2=托管费率  col3=0.20%(每年)  col4=销售服务费率  col5=---
@@ -461,6 +541,284 @@ def fetch_treasury_10y(start: str, end: str) -> pd.DataFrame:
         pass
 
     return pd.DataFrame(columns=['date', 'yield_pct', 'delta_y'])
+
+
+# ---------- 4b. 债基三因子数据：期限结构 + 信用利差 ----------
+
+# ---------- 4b-1. 债券持仓穿透分析 ----------
+
+def _classify_bond(name: str, code: str) -> str:
+    """从债券名称+代码推断债券类型"""
+    if '转债' in name or '转2' in name or '转3' in name:
+        return '可转债'
+    if 'EB' in name and '债' not in name:
+        return '可交换债'
+    if '国开' in name or '国发' in name or '农发' in name or '进出口' in name:
+        return '政策性金融债'
+    if '国债' in name:
+        return '国债'
+    if 'MTN' in name or '中票' in name:
+        return '中期票据'
+    if 'CP' in name or 'SCP' in name or '短融' in name:
+        return '短期融资券'
+    if 'ABN' in name or 'ABS' in name or '资产支持' in name:
+        return '资产支持证券'
+    if 'CD' in name or '存单' in name:
+        return '同业存单'
+    if 'PPN' in name:
+        return '非公开定向债'
+    if '地方' in name or '省债' in name or '市债' in name:
+        return '地方政府债'
+    # 从代码前缀辅助判断
+    code_str = str(code)
+    if code_str.startswith('10') or code_str.startswith('019') or code_str.startswith('018'):
+        return '利率债（交易所）'
+    return '信用债'
+
+
+def _bond_credit_tier(bond_type: str) -> str:
+    """将债券类型映射到信用层级"""
+    if bond_type in ('国债', '政策性金融债', '地方政府债'):
+        return '利率债（零信用风险）'
+    if bond_type in ('可转债', '可交换债'):
+        return '含权债（股性+债性）'
+    if bond_type in ('同业存单',):
+        return '货币市场（极低风险）'
+    if bond_type in ('短期融资券', '资产支持证券'):
+        return '短端信用债'
+    return '中长端信用债'
+
+
+def analyze_bond_structure(bond_holdings_df: pd.DataFrame) -> dict:
+    """
+    对季报债券持仓明细做穿透分析，返回：
+    - type_dist:    按债券类型分组统计（DataFrame，含 只数/占净值/占比）
+    - tier_dist:    按信用层级分组（DataFrame）
+    - conv_detail:  可转债详情（DataFrame，含评级/到期日/剩余年限）
+    - total_weight: 债券持仓总占净值比例
+    - quarter:      数据所属季度
+    - wtd_duration_est: 加权估算剩余期限（年，启发式）
+    - credit_ratio:  信用债占全部债券持仓比例（0-1）
+    - convert_ratio: 可转债占全部债券持仓比例（0-1）
+    - rate_ratio:    利率债占全部债券持仓比例（0-1）
+    """
+    if bond_holdings_df is None or bond_holdings_df.empty:
+        return {}
+
+    # 取最新季度
+    df = bond_holdings_df.copy()
+    latest_q = df['季度'].iloc[0]
+    df = df[df['季度'] == latest_q].copy()
+
+    # 标准化列名
+    df['占净值比例'] = pd.to_numeric(df['占净值比例'], errors='coerce').fillna(0)
+    df['bond_type'] = df.apply(lambda r: _classify_bond(r['债券名称'], r['债券代码']), axis=1)
+    df['credit_tier'] = df['bond_type'].apply(_bond_credit_tier)
+
+    # 总占净值
+    total_weight = df['占净值比例'].sum()
+    if total_weight <= 0:
+        return {}
+
+    # 类型分组
+    type_dist = df.groupby('bond_type').agg(
+        只数=('债券名称', 'count'),
+        占净值=('占净值比例', 'sum')
+    ).sort_values('占净值', ascending=False).reset_index()
+    type_dist['占比%'] = (type_dist['占净值'] / total_weight * 100).round(1)
+
+    # 信用层级分组
+    tier_dist = df.groupby('credit_tier').agg(
+        只数=('债券名称', 'count'),
+        占净值=('占净值比例', 'sum')
+    ).sort_values('占净值', ascending=False).reset_index()
+    tier_dist['占比%'] = (tier_dist['占净值'] / total_weight * 100).round(1)
+
+    # 可转债详情（从 bond_zh_cov_info 批量查询评级和到期日）
+    conv_rows = df[df['bond_type'].isin(['可转债', '可交换债'])].copy()
+    conv_detail_list = []
+    if not conv_rows.empty:
+        current_year_f = datetime.now().year + datetime.now().month / 12.0
+        for _, row in conv_rows.iterrows():
+            code = str(row['债券代码']).zfill(6)
+            info = {'债券代码': code, '债券名称': row['债券名称'],
+                    '占净值比例': row['占净值比例'],
+                    '评级': '—', '到期日': '—', '剩余年限': None,
+                    '票面利率': '—'}
+            try:
+                cov_df = ak.bond_zh_cov_info(symbol=code, indicator='基本信息')
+                if not cov_df.empty:
+                    r = cov_df.iloc[0]
+                    # 评级
+                    info['评级'] = str(r.get('RATING', '—') or '—')
+                    # 到期日
+                    expire_raw = r.get('EXPIRE_DATE', None)
+                    if expire_raw and str(expire_raw) not in ('None', 'NaT', ''):
+                        expire_dt = pd.to_datetime(expire_raw, errors='coerce')
+                        if pd.notna(expire_dt):
+                            info['到期日'] = expire_dt.strftime('%Y-%m-%d')
+                            remaining = expire_dt.year + expire_dt.month/12.0 - current_year_f
+                            info['剩余年限'] = round(max(0, remaining), 2)
+                    # 票面利率（最后一年）
+                    coupon = r.get('COUPON_IR', None)
+                    if coupon and str(coupon) not in ('None', ''):
+                        info['票面利率'] = f"{coupon}%"
+            except Exception:
+                pass
+            conv_detail_list.append(info)
+        conv_detail = pd.DataFrame(conv_detail_list)
+    else:
+        conv_detail = pd.DataFrame()
+
+    # 加权估算剩余期限（启发式，仅供参考）
+    # 可转债用精确到期日；其他用类型经验值
+    tenor_map = {
+        '可转债': None,  # 从精确到期日算
+        '可交换债': None,
+        '国债': 7.0, '政策性金融债': 5.0, '地方政府债': 5.0,
+        '中期票据': 3.0, '信用债': 3.0, '非公开定向债': 3.0,
+        '短期融资券': 0.5, '同业存单': 0.5,
+        '资产支持证券': 2.0, '利率债（交易所）': 5.0,
+    }
+    total_dur_contrib = 0.0
+    for _, row in df.iterrows():
+        btype = row['bond_type']
+        wt = row['占净值比例']
+        if btype in ('可转债', '可交换债') and not conv_detail.empty:
+            match = conv_detail[conv_detail['债券名称'] == row['债券名称']]
+            if not match.empty and pd.notna(match.iloc[0].get('剩余年限')):
+                total_dur_contrib += wt * float(match.iloc[0]['剩余年限'])
+                continue
+        tenor = tenor_map.get(btype, 3.0)
+        # 从名称提取发行年份修正
+        ym = re.match(r'^(\d{2})', str(row['债券名称']))
+        if ym:
+            issue_yr = int('20' + ym.group(1))
+            expire_yr = issue_yr + tenor
+            current_yr_f = datetime.now().year + datetime.now().month / 12.0
+            remaining = max(0.1, expire_yr - current_yr_f)
+            total_dur_contrib += wt * remaining
+        else:
+            total_dur_contrib += wt * tenor
+    wtd_dur_est = round(total_dur_contrib / total_weight, 2) if total_weight > 0 else 0.0
+
+    # 各类别占比
+    rate_types = {'国债', '政策性金融债', '地方政府债', '利率债（交易所）'}
+    credit_types = {'中期票据', '信用债', '非公开定向债', '短期融资券', '资产支持证券', '同业存单'}
+    convert_types = {'可转债', '可交换债'}
+
+    rate_w  = df[df['bond_type'].isin(rate_types)]['占净值比例'].sum()
+    credit_w= df[df['bond_type'].isin(credit_types)]['占净值比例'].sum()
+    conv_w  = df[df['bond_type'].isin(convert_types)]['占净值比例'].sum()
+
+    return {
+        'type_dist':      type_dist,
+        'tier_dist':      tier_dist,
+        'conv_detail':    conv_detail,
+        'total_weight':   round(total_weight, 2),
+        'quarter':        latest_q,
+        'wtd_duration_est': wtd_dur_est,
+        'rate_ratio':     rate_w / total_weight if total_weight > 0 else 0,
+        'credit_ratio':   credit_w / total_weight if total_weight > 0 else 0,
+        'convert_ratio':  conv_w / total_weight if total_weight > 0 else 0,
+        'n_bonds':        len(df),
+        'raw_df':         df,
+    }
+
+
+# ---------- 4b. 债基三因子数据：期限结构 + 信用利差 ----------
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_bond_three_factors(start: str, end: str) -> pd.DataFrame:
+    """
+    获取债基三因子日度变动序列，用于三因子回归：
+        R_p = α + β_short·ΔY_1Y + β_long·ΔY_10Y + β_credit·ΔCS + ε
+
+    因子来源（双轨策略）：
+      短端 (ΔY_2Y)  ← bond_zh_us_rate「中国国债收益率2年」（最稳定，每日更新）
+      长端 (ΔY_10Y) ← bond_zh_us_rate「中国国债收益率10年」（同上）
+      信用利差 (ΔCS) ← bond_china_yield 中短期票据(AAA) 3年 - 国债 3年
+                       （按自然年分段拉取，拼合后差分）
+
+    返回列：date / delta_y2 / delta_y10 / delta_spread
+    （均为日变动量，单位 %，即百分比变动，与 fetch_treasury_10y 保持一致）
+    """
+    # ── 步骤1：获取期限结构（2年 + 10年）──
+    term_df = pd.DataFrame()
+    try:
+        raw = ak.bond_zh_us_rate(start_date=start)
+        if raw is not None and not raw.empty:
+            raw['日期'] = pd.to_datetime(raw['日期'], errors='coerce')
+            raw = raw.dropna(subset=['日期']).sort_values('日期')
+            raw = raw[(raw['日期'] >= pd.to_datetime(start)) &
+                      (raw['日期'] <= pd.to_datetime(end))]
+            for col in ['中国国债收益率2年', '中国国债收益率10年']:
+                raw[col] = pd.to_numeric(raw[col], errors='coerce').ffill()
+            term_df = raw[['日期', '中国国债收益率2年', '中国国债收益率10年']].copy()
+            term_df.columns = ['date', 'y2', 'y10']
+    except Exception:
+        pass
+
+    if term_df.empty:
+        return pd.DataFrame(columns=['date', 'delta_y2', 'delta_y10', 'delta_spread'])
+
+    # ── 步骤2：按年分段获取信用利差 ──
+    # bond_china_yield 必须按整年请求（跨年数据异常），分段后拼合
+    start_yr = pd.to_datetime(start).year
+    end_yr   = pd.to_datetime(end).year
+
+    gov_frames = []
+    cre_frames = []
+    for yr in range(start_yr, end_yr + 1):
+        s = f"{yr}0101"
+        e = f"{yr}1231"
+        try:
+            df_yr = ak.bond_china_yield(start_date=s, end_date=e)
+            if df_yr is None or df_yr.empty:
+                continue
+            # 国债3年
+            gov_yr = df_yr[df_yr['曲线名称'] == '中债国债收益率曲线'][['日期', '3年']].copy()
+            gov_yr.columns = ['date', 'g_3y']
+            gov_frames.append(gov_yr)
+            # 中短期票据AAA 3年
+            cre_yr = df_yr[df_yr['曲线名称'] == '中债中短期票据收益率曲线(AAA)'][['日期', '3年']].copy()
+            cre_yr.columns = ['date', 'c_3y']
+            cre_frames.append(cre_yr)
+        except Exception:
+            continue
+
+    # 组装信用利差序列
+    spread_df = pd.DataFrame()
+    if gov_frames and cre_frames:
+        gov_all = pd.concat(gov_frames).drop_duplicates('date')
+        cre_all = pd.concat(cre_frames).drop_duplicates('date')
+        gov_all['date'] = pd.to_datetime(gov_all['date'])
+        cre_all['date'] = pd.to_datetime(cre_all['date'])
+        gov_all['g_3y'] = pd.to_numeric(gov_all['g_3y'], errors='coerce')
+        cre_all['c_3y'] = pd.to_numeric(cre_all['c_3y'], errors='coerce')
+        merged = gov_all.merge(cre_all, on='date', how='inner')
+        merged = merged.sort_values('date')
+        merged['spread'] = merged['c_3y'] - merged['g_3y']  # 信用利差（%）
+        spread_df = merged[['date', 'spread']].copy()
+
+    # ── 步骤3：合并 + 计算日变动量 ──
+    term_df['date'] = pd.to_datetime(term_df['date'])
+    term_df = term_df.sort_values('date').reset_index(drop=True)
+
+    if not spread_df.empty:
+        result = term_df.merge(spread_df, on='date', how='left')
+        result['spread'] = result['spread'].ffill(limit=5)  # 信用利差数据更稀疏，填3→5天
+    else:
+        result = term_df.copy()
+        result['spread'] = np.nan  # 降级：无信用利差数据
+
+    # 差分（日变动量）
+    result['delta_y2']     = result['y2'].diff()
+    result['delta_y10']    = result['y10'].diff()
+    result['delta_spread'] = result['spread'].diff() if 'spread' in result.columns else np.nan
+
+    result = result.dropna(subset=['delta_y2', 'delta_y10'])
+    return result[['date', 'delta_y2', 'delta_y10', 'delta_spread']].reset_index(drop=True)
 
 
 # ---------- 5. 中债综合指数（债券基准） ----------
@@ -890,6 +1248,29 @@ def fetch_holdings(symbol: str, type_category: str = 'equity') -> dict:
     except Exception:
         pass
 
+    # ── 债券持仓明细（债基/混合基专用）──
+    # 拉取 fund_portfolio_bond_hold_em，用于债券穿透分析
+    if type_category in ('bond', 'mixed'):
+        try:
+            _current_year = datetime.now().year
+            _bond_hold_df = None
+            for _yr in [str(_current_year - 1), str(_current_year), str(_current_year - 2)]:
+                try:
+                    _tmp = ak.fund_portfolio_bond_hold_em(symbol=symbol, date=_yr)
+                    if _tmp is not None and not _tmp.empty:
+                        _bond_hold_df = _tmp
+                        break
+                except Exception:
+                    continue
+            if _bond_hold_df is not None and not _bond_hold_df.empty:
+                result['bond_holdings'] = _bond_hold_df
+            else:
+                result['bond_holdings'] = pd.DataFrame()
+        except Exception:
+            result['bond_holdings'] = pd.DataFrame()
+    else:
+        result['bond_holdings'] = pd.DataFrame()
+
     return result
 
 
@@ -1270,53 +1651,241 @@ def select_equity_model(fund_name: str) -> str:
 
 def run_duration_model(fund_ret: pd.Series,
                        treasury_df: pd.DataFrame,
-                       bond_ratio: float = 1.0) -> dict:
+                       bond_ratio: float = 1.0,
+                       three_factor_df: pd.DataFrame = None,
+                       holdings: dict = None) -> dict:
     """
-    从净值反推有效久期（T-Model）
+    债基三因子归因模型（v10.0 升级）
 
-    回归方程：
-        fund_ret = α + β₁·(-ΔY) + β₂·(0.5·ΔY²)
+    回归方程（三因子）：
+        R_p = α + β_short·(-ΔY_2Y) + β_long·(-ΔY_10Y) + β_credit·ΔCS + ε
         其中：
-          β₁ = 组合有效久期（Duration_portfolio）
-          β₂ = 组合有效凸性（Convexity_portfolio）
-          α  = 综合 carry（票息收入 + 信用溢价 + 骑乘收益），非纯信用风险
+          β_short  = 短端敏感度（对应短端久期，短债/存单为主基金此项显著）
+          β_long   = 长端敏感度（对应长端久期，利率债基金此项显著）
+          β_credit = 信用利差敏感度（负值=信用下沉；利差扩大净值跌）
+          α        = 综合carry（票息+骑乘+杠杆溢价，扣除三因子后的截距）
 
-    ΔY 单位说明：
-        保持原始百分比（如 0.05 代表当日利率变动 0.05%）。
-        这样 β₁（久期）的系数单位为"基金日收益 / 利率变动%"，
-        即 Duration_portfolio ≈ β₁（可直接读为"年"）。
-        ⚠️ 不转为小数，避免 ΔY² 极小（0.0001²）导致凸性系数失真。
+    降级策略：
+      如果 three_factor_df 为空（接口异常），自动降级为单因子T-Model（保持向后兼容）
+
+    凸性静态穿透法（回归凸性不显著时）：
+      根据持仓结构判断凸性质量：
+        国债+政策性金融债 > 50% → 凸性强（正凸性保护好）
+        信用债+存单 > 50%       → 凸性弱（几乎为0，含权债有负凸性风险）
 
     bond_ratio 仓位修正：
-        若基金非纯债（如混合型债券仓位 20%），回归出的久期是组合级。
-        底层债券头寸真实久期 = Duration_portfolio / bond_ratio
-        （仅当 bond_ratio < 0.8 时才做此修正并展示）
+        组合级久期 → 底层债券真实久期 = 总久期 / bond_ratio（仓位<80%时展示）
     """
-    df = pd.DataFrame({'fund_ret': fund_ret}).reset_index()
-    df.columns = ['date', 'fund_ret']
-    df['date'] = pd.to_datetime(df['date'])
+    DURATION_FALLBACK = 2.5  # 国内偏债型基金历史经验中值
 
-    # ΔY 保持百分比单位（不 ÷100），原始 treasury_df 中 delta_y 已是百分比变动
+    def _build_base(fr: pd.Series) -> pd.DataFrame:
+        """把fund_ret转为date/fund_ret DataFrame"""
+        d = pd.DataFrame({'fund_ret': fr}).reset_index()
+        d.columns = ['date', 'fund_ret']
+        d['date'] = pd.to_datetime(d['date'])
+        return d
+
+    # ════════════════════════════════════════════════════════════
+    # 路径A：三因子回归（short端久期 + long端久期 + 信用利差）
+    # ════════════════════════════════════════════════════════════
+    three_factor_ok = (three_factor_df is not None and
+                       not three_factor_df.empty and
+                       'delta_y2' in three_factor_df.columns)
+
+    if three_factor_ok:
+        df = _build_base(fund_ret)
+        tf = three_factor_df[['date', 'delta_y2', 'delta_y10', 'delta_spread']].copy()
+        tf['date'] = pd.to_datetime(tf['date'])
+
+        df = df.merge(tf, on='date', how='left')
+        for col in ['delta_y2', 'delta_y10', 'delta_spread']:
+            df[col] = df[col].ffill(limit=3)
+        df = df.dropna(subset=['fund_ret', 'delta_y2', 'delta_y10'])
+
+        has_spread = df['delta_spread'].notna().sum() >= 60
+
+        if len(df) >= 60:
+            # 构建回归矩阵：系数符号约定同单因子（-ΔY → 正久期）
+            df['neg_dy2']  = -df['delta_y2']
+            df['neg_dy10'] = -df['delta_y10']
+
+            if has_spread:
+                # 完整三因子（含信用利差）
+                X = sm.add_constant(df[['neg_dy2', 'neg_dy10', 'delta_spread']].dropna())
+                y = df.loc[X.index, 'fund_ret']
+                factor_mode = '三因子（短端+长端+信用利差）'
+            else:
+                # 降级到双因子（无信用利差）
+                X = sm.add_constant(df[['neg_dy2', 'neg_dy10']])
+                y = df['fund_ret']
+                factor_mode = '双因子（短端+长端，信用利差数据不足）'
+
+            try:
+                model3 = sm.OLS(y, X).fit()
+            except Exception as e:
+                three_factor_ok = False  # 回归失败，降级到单因子
+
+        else:
+            three_factor_ok = False  # 样本不足，降级
+
+    if three_factor_ok:
+        r2_adj = float(model3.rsquared_adj)
+        r2     = float(model3.rsquared)
+        alpha_daily = float(model3.params.get('const', 0.0))
+        carry_alpha = (1 + alpha_daily) ** 252 - 1
+
+        dur_short  = float(model3.params.get('neg_dy2',  0.0))
+        dur_long   = float(model3.params.get('neg_dy10', 0.0))
+        dur_short  = float(np.clip(dur_short,  -15.0, 15.0))
+        dur_long   = float(np.clip(dur_long,   -15.0, 15.0))
+        credit_beta = float(model3.params.get('delta_spread', 0.0)) if has_spread else 0.0
+
+        # p值（显著性检验）
+        p_short  = float(model3.pvalues.get('neg_dy2',        1.0))
+        p_long   = float(model3.pvalues.get('neg_dy10',       1.0))
+        p_credit = float(model3.pvalues.get('delta_spread',   1.0)) if has_spread else 1.0
+
+        # 组合有效久期（短端+长端加总，忽略信用利差贡献）
+        duration_portfolio   = abs(dur_short) + abs(dur_long)
+        duration_portfolio   = float(np.clip(duration_portfolio, 0.1, 20.0))
+        duration_source      = 'three_factor' if r2_adj > 0.05 else 'fallback_low_r2'
+
+        if duration_source == 'fallback_low_r2':
+            duration_portfolio = DURATION_FALLBACK
+
+        # 仓位修正
+        bond_ratio_clamp = max(bond_ratio, 0.05)
+        if bond_ratio < 0.80:
+            duration_underlying = duration_portfolio / bond_ratio_clamp
+            position_note = (f'（组合久期 {duration_portfolio:.1f}年 ÷ '
+                             f'债券仓位 {bond_ratio*100:.0f}% = '
+                             f'底层债券真实久期 {duration_underlying:.1f}年）')
+        else:
+            duration_underlying = duration_portfolio
+            position_note = ''
+
+        # ── 凸性：静态穿透法 ──
+        # 三因子模式下，凸性改用持仓结构判断（回归法对日频数据不准）
+        convexity = 0.0  # 向后兼容字段
+        convexity_quality, convexity_note = _convexity_from_holdings(holdings)
+
+        # ── 基金类型诊断 ──
+        fund_type_note = ''
+        if p_short < 0.05 and abs(dur_short) > abs(dur_long) * 1.5:
+            fund_type_note = '【短债特征】基金对短端资金面（1-2年期）高度敏感，典型存单/短融策略。'
+        elif p_long < 0.05 and abs(dur_long) > abs(dur_short) * 1.5:
+            fund_type_note = '【利率债特征】基金主要暴露于长端利率（7-10年），对货币政策和经济预期敏感。'
+        elif p_short < 0.05 and p_long < 0.05:
+            fund_type_note = '【哑铃策略特征】同时持有短端和长端，对两端利率波动均有敏感度。'
+
+        credit_note = ''
+        if has_spread and p_credit < 0.05:
+            if credit_beta < -1.0:
+                credit_note = f'【信用下沉确认】β_credit={credit_beta:.2f}（p={p_credit:.3f}），利差扩大净值显著受损，高Carry来自信用风险溢价。'
+            elif credit_beta > 1.0:
+                credit_note = f'【信用受益型】β_credit={credit_beta:.2f}（p={p_credit:.3f}），基金在信用利差收窄时受益（可能持有大量信用债）。'
+        elif has_spread:
+            credit_note = f'信用利差β={credit_beta:.2f}（p={p_credit:.3f}，不显著），超额carry可能来自骑乘收益或杠杆套利，而非信用下沉。'
+
+        # ── 解读文本 ──
+        parts = []
+
+        # 回归质量
+        if duration_source == 'fallback_low_r2':
+            parts.append(
+                f'⚠️ {factor_mode}回归 Adj.R²={r2_adj:.3f}（偏低），期限结构对该基金净值解释力弱，'
+                f'久期已回退至行业经验值 {DURATION_FALLBACK:.1f}年，压力测试仅供参考'
+            )
+        else:
+            parts.append(
+                f'✅ {factor_mode}回归 Adj.R²={r2_adj:.3f}，模型解释力{"良好" if r2_adj > 0.3 else "一般"}'
+            )
+
+        # 基金类型诊断
+        if fund_type_note:
+            parts.append(fund_type_note)
+
+        # 久期分解
+        dur_display = duration_underlying
+        dur_src_note = '（行业经验估算）' if duration_source == 'fallback_low_r2' else position_note
+        if dur_display > 7:
+            parts.append(f"组合有效久期 {dur_display:.1f}年（**偏长**）{dur_src_note}，加息环境高风险")
+        elif dur_display < 2:
+            parts.append(f"组合有效久期 {dur_display:.1f}年（**较短**）{dur_src_note}，对利率变动不敏感，偏货币/短债策略")
+        else:
+            parts.append(f"组合有效久期 {dur_display:.1f}年（中等）{dur_src_note}，利率中性")
+
+        if duration_source != 'fallback_low_r2':
+            if p_short < 0.1:
+                parts.append(f"  → 短端贡献 {abs(dur_short):.2f}年（β={dur_short:.2f}, p={p_short:.3f}）")
+            if p_long < 0.1:
+                parts.append(f"  → 长端贡献 {abs(dur_long):.2f}年（β={dur_long:.2f}, p={p_long:.3f}）")
+
+        # 信用利差诊断
+        if credit_note:
+            parts.append(credit_note)
+
+        # 凸性（静态穿透）
+        parts.append(convexity_note)
+
+        # Carry
+        if carry_alpha > 0.04:
+            parts.append(f"年化综合carry {carry_alpha*100:.1f}%（**偏高**），需关注信用风险和流动性")
+        elif carry_alpha > 0.015:
+            parts.append(f"年化综合carry {carry_alpha*100:.1f}%，整体合理（包含票息+信用溢价+骑乘）")
+        elif carry_alpha > 0:
+            parts.append(f"年化综合carry {carry_alpha*100:.2f}%，收益主要来自利率敞口")
+        else:
+            parts.append("综合carry为负，纯利率博弈型策略，信用成分极低")
+
+        return {
+            'duration':             duration_portfolio,
+            'duration_underlying':  duration_underlying,
+            'dur_short':            dur_short,
+            'dur_long':             dur_long,
+            'p_short':              p_short,
+            'p_long':               p_long,
+            'credit_beta':          credit_beta,
+            'p_credit':             p_credit,
+            'has_credit_factor':    has_spread,
+            'convexity':            convexity,
+            'convexity_quality':    convexity_quality,
+            'carry_alpha':          carry_alpha,
+            'credit_spread_alpha':  carry_alpha,
+            'r_squared':            r2,
+            'r_squared_adj':        r2_adj,
+            'factor_mode':          factor_mode,
+            'bond_ratio_used':      bond_ratio,
+            'duration_source':      duration_source,
+            'fund_type_note':       fund_type_note,
+            'interpretation':       '；'.join(parts),
+        }
+
+    # ════════════════════════════════════════════════════════════
+    # 路径B：单因子T-Model降级（三因子数据不可用时）
+    # ════════════════════════════════════════════════════════════
+    df = _build_base(fund_ret)
     t = treasury_df[['date', 'delta_y']].copy()
     t['date'] = pd.to_datetime(t['date'])
-
-    # left join + ffill：以基金净值为准，国债收益率前向填充3天（节假日等）
     df = df.merge(t, on='date', how='left')
     df['delta_y'] = df['delta_y'].ffill(limit=3)
     df = df.dropna(subset=['fund_ret', 'delta_y'])
 
     if len(df) < 60:
         return {
-            'duration': 2.5, 'duration_underlying': 2.5,
-            'convexity': 0.0, 'carry_alpha': 0.0,
-            'r_squared': 0.0, 'bond_ratio_used': bond_ratio,
-            'duration_source': 'default',
-            'interpretation': '数据不足，无法回归，使用经验默认久期2.5年（国内债基中位数）'
+            'duration': DURATION_FALLBACK, 'duration_underlying': DURATION_FALLBACK,
+            'dur_short': 0.0, 'dur_long': 0.0,
+            'p_short': 1.0, 'p_long': 1.0,
+            'credit_beta': 0.0, 'p_credit': 1.0, 'has_credit_factor': False,
+            'convexity': 0.0, 'convexity_quality': 'unknown',
+            'carry_alpha': 0.0, 'credit_spread_alpha': 0.0,
+            'r_squared': 0.0, 'r_squared_adj': 0.0,
+            'factor_mode': 'default（数据不足）',
+            'bond_ratio_used': bond_ratio, 'duration_source': 'default',
+            'fund_type_note': '',
+            'interpretation': f'数据不足，无法回归，使用经验默认久期{DURATION_FALLBACK:.1f}年'
         }
 
-    # X 矩阵说明：
-    #   neg_dy       = -ΔY         → 系数即 Duration_portfolio（正数直觉）
-    #   dy_sq_half   = 0.5 × ΔY²  → 系数即 Convexity_portfolio
     df['neg_dy']     = -df['delta_y']
     df['dy_sq_half'] = 0.5 * df['delta_y'] ** 2
 
@@ -1324,37 +1893,36 @@ def run_duration_model(fund_ret: pd.Series,
     y = df['fund_ret']
 
     try:
-        model = sm.OLS(y, X).fit()
+        model1 = sm.OLS(y, X).fit()
     except Exception as e:
-        return {'duration': 2.5, 'duration_underlying': 2.5,
-                'convexity': 0.0, 'carry_alpha': 0.0,
-                'r_squared': 0.0, 'bond_ratio_used': bond_ratio,
-                'duration_source': 'default',
-                'interpretation': f'回归失败: {e}，使用经验默认久期2.5年'}
+        return {'duration': DURATION_FALLBACK, 'duration_underlying': DURATION_FALLBACK,
+                'dur_short': 0.0, 'dur_long': 0.0,
+                'p_short': 1.0, 'p_long': 1.0,
+                'credit_beta': 0.0, 'p_credit': 1.0, 'has_credit_factor': False,
+                'convexity': 0.0, 'convexity_quality': 'unknown',
+                'carry_alpha': 0.0, 'credit_spread_alpha': 0.0,
+                'r_squared': 0.0, 'r_squared_adj': 0.0,
+                'factor_mode': 'fallback（回归失败）',
+                'bond_ratio_used': bond_ratio, 'duration_source': 'default',
+                'fund_type_note': '',
+                'interpretation': f'回归失败: {e}，使用经验默认久期{DURATION_FALLBACK:.1f}年'}
 
-    duration_portfolio = float(model.params.get('neg_dy', 0.0))
-    convexity          = float(model.params.get('dy_sq_half', 0.0))
-    alpha_daily        = float(model.params.get('const', 0.0))
+    duration_portfolio = float(model1.params.get('neg_dy', 0.0))
+    convexity          = float(model1.params.get('dy_sq_half', 0.0))
+    alpha_daily        = float(model1.params.get('const', 0.0))
+    carry_alpha        = (1 + alpha_daily) ** 252 - 1
+    r2                 = float(model1.rsquared)
+    r2_adj             = float(model1.rsquared_adj)
+    factor_mode        = '单因子（10年期国债，三因子数据不可用）'
 
-    # Alpha 年化用复利公式（与 M1 保持一致）
-    carry_alpha = (1 + alpha_daily) ** 252 - 1
-
-    r2 = float(model.rsquared)
-
-    # ── 双轨制久期（v9.4 核心修复）──
-    # 如果 R² < 0.3，回归不显著，久期数字是噪音，回退到行业经验中值
-    # 防止"久期接近0"或"久期忽大忽小"进入压力测试导致结果失真
-    DURATION_FALLBACK = 2.5   # 国内偏债型基金历史经验中值（比硬编码5年更接近现实）
     duration_source = 'regression'
     if r2 < 0.3:
         duration_portfolio = DURATION_FALLBACK
         duration_source    = 'fallback_low_r2'
     else:
-        # 限制合理范围：防止极端值（<0.1年或>15年）进入压力测试
         duration_portfolio = float(np.clip(duration_portfolio, 0.1, 15.0))
 
-    # 仓位修正：底层债券头寸真实久期
-    bond_ratio_clamp = max(bond_ratio, 0.05)   # 防止除零
+    bond_ratio_clamp = max(bond_ratio, 0.05)
     if bond_ratio < 0.80:
         duration_underlying = duration_portfolio / bond_ratio_clamp
         position_note = (f'（组合久期 {duration_portfolio:.1f}年 ÷ '
@@ -1364,74 +1932,95 @@ def run_duration_model(fund_ret: pd.Series,
         duration_underlying = duration_portfolio
         position_note = ''
 
-    # -------- 解读文本 --------
-    parts = []
+    convexity_quality, convexity_note = _convexity_from_holdings(holdings)
 
-    # 久期诊断前加回归质量提示（R²低时提醒用户）
+    parts = []
     if duration_source == 'fallback_low_r2':
         parts.append(
-            f'⚠️ 回归R²={r2:.2f}偏低，利率敏感度难以精确估计（可能含大量存单/短融等低久期资产），'
+            f'⚠️ 单因子回归R²={r2:.2f}偏低（{factor_mode}），利率敏感度难以精确估计，'
             f'久期已回退至行业经验值 {DURATION_FALLBACK:.1f}年，压力测试仅供参考'
         )
-
-    # 久期诊断（展示底层真实久期）
-    dur_display = duration_underlying
-    # fallback 情况下久期已在上方说明，这里只需简短描述
-    dur_source_note = '（行业经验估算）' if duration_source == 'fallback_low_r2' else position_note
-    if dur_display > 7:
-        parts.append(
-            f"有效久期 {dur_display:.1f}年（**偏长**）{dur_source_note}，"
-            f"利率每上行 1%，底层债券约损失 {dur_display:.1f}%，加息环境下风险较高"
-        )
-    elif dur_display < 2:
-        parts.append(
-            f"有效久期 {dur_display:.1f}年（**较短**）{dur_source_note}，"
-            f"对利率变动不敏感，偏货币/短债策略，适合稳健配置"
-        )
+    dur_src_note = '（行业经验估算）' if duration_source == 'fallback_low_r2' else position_note
+    if duration_underlying > 7:
+        parts.append(f"有效久期 {duration_underlying:.1f}年（**偏长**）{dur_src_note}，加息环境高风险")
+    elif duration_underlying < 2:
+        parts.append(f"有效久期 {duration_underlying:.1f}年（**较短**）{dur_src_note}，对利率变动不敏感")
     else:
-        parts.append(
-            f"有效久期 {dur_display:.1f}年（中等）{dur_source_note}，"
-            f"利率中性，兼顾收益与波动"
-        )
+        parts.append(f"有效久期 {duration_underlying:.1f}年（中等）{dur_src_note}，利率中性")
 
-    # 凸性诊断（注：凸性回归需要较大利率波动才能精确估计；
-    #   |convexity| < 2 通常是样本内利率波动不足导致，不应下"负凸性"结论）
-    if abs(convexity) < 2.0:
-        parts.append(f"凸性估计量（{convexity:.1f}）接近0，因样本内利率波动幅度有限，回归难以精确区分凸性效应，暂不作定性判断")
-    elif convexity > 30:
-        parts.append(f"凸性{convexity:.0f}（**较高**），价格'涨得比跌得快'，利率大幅波动时有缓冲保护")
-    elif convexity > 0:
-        parts.append(f"凸性{convexity:.1f}，正常正凸性，有一定减震效果")
-    else:
-        parts.append(f"凸性{convexity:.1f}（**负凸性**），对利率冲击缺乏缓冲，注意利率风险")
+    parts.append(convexity_note)
 
-    # 综合 carry 诊断（α 包含票息+信用溢价+骑乘收益）
     if carry_alpha > 0.04:
-        parts.append(
-            f"年化综合carry {carry_alpha*100:.1f}%（**偏高**），"
-            f"可能含高票息信用债或骑乘收益，需关注信用风险和流动性"
-        )
+        parts.append(f"年化综合carry {carry_alpha*100:.1f}%（**偏高**），可能含信用债或骑乘收益")
     elif carry_alpha > 0.015:
-        parts.append(
-            f"年化综合carry {carry_alpha*100:.1f}%，"
-            f"包含票息+信用溢价+骑乘收益，整体合理"
-        )
+        parts.append(f"年化综合carry {carry_alpha*100:.1f}%，整体合理")
     elif carry_alpha > 0:
-        parts.append(f"年化综合carry {carry_alpha*100:.2f}%，收益主要来自利率敞口，信用暴露较低")
+        parts.append(f"年化综合carry {carry_alpha*100:.2f}%，收益主要来自利率敞口")
     else:
-        parts.append("综合carry为负，纯利率博弈型策略，信用成分极低")
+        parts.append("综合carry为负，纯利率博弈型策略")
 
     return {
-        'duration':            duration_portfolio,    # 组合级久期（含仓位）
-        'duration_underlying': duration_underlying,   # 底层债券真实久期（仓位修正后）
-        'convexity':           convexity,
-        'carry_alpha':         carry_alpha,           # 年化综合carry（票息+信用+骑乘）
-        'credit_spread_alpha': carry_alpha,           # 旧字段名保留兼容
-        'r_squared':           r2,
-        'bond_ratio_used':     bond_ratio,
-        'duration_source':     duration_source,       # 'regression' | 'fallback_low_r2' | 'default'
-        'interpretation':      '；'.join(parts)
+        'duration':             duration_portfolio,
+        'duration_underlying':  duration_underlying,
+        'dur_short':            0.0,
+        'dur_long':             duration_portfolio,
+        'p_short':              1.0,
+        'p_long':               1.0,
+        'credit_beta':          0.0,
+        'p_credit':             1.0,
+        'has_credit_factor':    False,
+        'convexity':            convexity,
+        'convexity_quality':    convexity_quality,
+        'carry_alpha':          carry_alpha,
+        'credit_spread_alpha':  carry_alpha,
+        'r_squared':            r2,
+        'r_squared_adj':        r2_adj,
+        'factor_mode':          factor_mode,
+        'bond_ratio_used':      bond_ratio,
+        'duration_source':      duration_source,
+        'fund_type_note':       '',
+        'interpretation':       '；'.join(parts),
     }
+
+
+def _convexity_from_holdings(holdings: dict) -> tuple:
+    """
+    凸性静态穿透法：根据持仓结构判断凸性质量。
+    回归法在日频小波动下不准，改用定性判断。
+
+    Returns: (quality_str, display_note)
+      quality_str: 'strong' | 'weak' | 'unknown'
+      display_note: 供展示层使用的文字说明
+    """
+    if not holdings:
+        return 'unknown', '凸性：持仓数据不足，无法穿透估算'
+
+    # 尝试从持仓中提取债券类别占比
+    # fund_portfolio_hold_em 返回的是股票持仓，不含债券明细
+    # 这里根据 bond_ratio / 资产配置粗分
+    bond_ratio = holdings.get('bond_ratio', 0.0)
+    stock_ratio = holdings.get('stock_ratio', 0.0)
+
+    # 如果有持仓债券类型数据（未来扩展）
+    gov_bond_ratio = holdings.get('gov_bond_ratio', None)  # 国债+政金债占净值比
+    credit_ratio   = holdings.get('credit_bond_ratio', None)  # 信用债占净值比
+
+    if gov_bond_ratio is not None:
+        if gov_bond_ratio > 0.5:
+            return 'strong', (f'凸性：**强**（穿透估算，利率债占比~{gov_bond_ratio*100:.0f}%），'
+                              f'国债/政金债凸性保护好，利率大幅波动有缓冲')
+        elif credit_ratio is not None and credit_ratio > 0.5:
+            return 'weak', (f'凸性：**弱**（穿透估算，信用债/存单占比~{credit_ratio*100:.0f}%），'
+                            f'信用债凸性接近0，含权债（可转债等）可能有负凸性风险')
+        else:
+            return 'moderate', '凸性：中等（国债+信用债混合持仓），有一定正凸性保护'
+    else:
+        # 无细分数据，根据bond_ratio给出通用说明
+        if bond_ratio > 0.8:
+            return 'unknown', ('凸性：受限于季报数据无债券类别明细，无法精确穿透；'
+                               '若以利率债为主则正凸性保护较好，信用债为主则凸性偏弱')
+        else:
+            return 'unknown', '凸性：混合仓位基金，债券部分凸性取决于利率债/信用债比例'
 
 
 # ---------- M3. 混合模型：Brinson 归因 + 动态漂移监控 ----------
@@ -1865,6 +2454,7 @@ def run_sector_model(fund_ret: pd.Series,
         'info_ratio':       info_ratio,
         'bm_source':        bm_source,
         'excess_series':    excess.rename('excess'),
+        'excess_return':    neutral_alpha,   # 与 performance_decomposition 接口对齐
         'sw_code':          '',              # 由上层填入
         'sw_name':          sw_industry_name,
         'interpretation':   '；'.join(parts)
@@ -2290,10 +2880,23 @@ def performance_decomposition(
         'data_quality':     数据质量说明（str），
       }
     """
-    allocation   = model_results.get('allocation_effect', 0.0) or 0.0
-    sel_inter    = model_results.get('selection_inter_effect',
-                                     model_results.get('selection_effect', 0.0)) or 0.0
-    total_excess = model_results.get('excess_return', 0.0) or 0.0
+    # sector 类型的结果存在 model_results['sector'] 子字典中
+    # 需要先展开，再读 excess_return/allocation_effect 等字段
+    _mr = model_results
+    if sector_results and isinstance(sector_results, dict):
+        # 行业型：sector_results 本身就是 run_sector_model 的返回
+        # 它有 neutral_alpha/excess_return，但没有 allocation_effect
+        # total_excess 直接用 neutral_alpha（行业型无Brinson分解）
+        _mr = sector_results
+    elif 'sector' in model_results:
+        _mr = model_results['sector']
+
+    allocation   = _mr.get('allocation_effect', 0.0) or 0.0
+    sel_inter    = _mr.get('selection_inter_effect',
+                           _mr.get('selection_effect', 0.0)) or 0.0
+    # 行业型：优先取 neutral_alpha（即 excess_return），fallback 再取 excess_return
+    total_excess = (_mr.get('neutral_alpha') or _mr.get('excess_return', 0.0)) or 0.0
+
     data_quality = '正常'
 
     # 行业选股贡献 ─────────────────────────────────────────────────
@@ -2591,6 +3194,11 @@ def fetch_stock_valuation_alert(stock_codes: list, period: str = '全部') -> li
             # 有 PE 跳过原因但 PB 也无数据（真次新股）
             item['risk_level'] = '缺乏历史'
             item['risk_icon']  = '⚪'
+        elif market == 'HK' and item['current_pe'] is None:
+            # 港股：百度接口未返回数据（非亏损/次新），标注「港股暂缺」
+            item['risk_level'] = '港股暂缺'
+            item['risk_icon']  = '🌐'
+            item['note']       = '港股估值接口暂时无数据，请在港交所官网查询'
 
         results.append(item)
 
@@ -2687,62 +3295,196 @@ def plot_valuation_alert_chart(alert_data: list, stock_names: dict = None) -> go
 # ------------------------------------------------------------------
 
 def bond_stress_test(eff_duration: float, bond_weight: float,
-                     bp_scenarios: list = None) -> dict:
+                     bp_scenarios: list = None,
+                     dur_short: float = 0.0,
+                     dur_long: float = 0.0,
+                     credit_beta: float = 0.0,
+                     has_credit_factor: bool = False) -> dict:
     """
-    债券久期压力测试：模拟利率上行对净值的冲击。
+    债券压力测试（v10.0 升级：场景化矩阵）
 
-    公式：ΔPrice ≈ -Duration × ΔY（修正久期近似，ΔY单位为小数）
+    当有三因子数据时，使用分场景压测矩阵：
+      场景A（资金面收紧）：短端Y2年上行50BP
+      场景B（债市熊平）：  长端Y10年上行50BP
+      场景C（信用风险）：  信用利差扩大20BP
+      场景D（极端冲击）：  短端+长端同时上行100BP
+
+    当仅有单因子数据时，退化为原有的3场景压测（10/50/100BP）
+
+    公式：
+      ΔP_short  = -dur_short × ΔY_short  × bond_weight
+      ΔP_long   = -dur_long  × ΔY_long   × bond_weight
+      ΔP_credit = credit_beta × ΔCS       × bond_weight（利差扩大对净值的影响）
 
     Args:
-        eff_duration:  底层债券有效久期（年），来自 T-Model 回归
-        bond_weight:   组合中债券仓位权重（如 0.35 = 35%）
-        bp_scenarios:  自定义利率变动幅度（BP列表），默认 [10, 50, 100]
-
-    Returns:
-        {
-          'scenarios': [{'bp': 10, 'dy': 0.001, 'bond_impact': -0.03,
-                         'fund_impact': -0.01, 'risk_level': '低'}],
-          'max_impact': -0.05,       # 最大压力场景的净值影响
-          'narrative':  '一句话说明',
-        }
+        eff_duration:      底层债券有效久期（总，年）
+        bond_weight:       债券仓位权重
+        bp_scenarios:      单因子模式下的压测BP列表
+        dur_short:         短端久期贡献（三因子模式）
+        dur_long:          长端久期贡献（三因子模式）
+        credit_beta:       信用利差敏感度β（三因子模式）
+        has_credit_factor: 是否有信用利差因子
     """
+    _dur   = max(abs(eff_duration), 0.1)
+    _wt    = max(min(bond_weight, 1.0), 0.0)
+    _ds    = abs(dur_short)
+    _dl    = abs(dur_long)
+
+    use_three_factor = has_credit_factor or (_ds > 0.1 and _dl > 0.1)
+
+    if use_three_factor:
+        # ── 三因子场景化矩阵 ──
+        scenarios = []
+
+        scene_defs = [
+            {
+                'id': 'A',
+                'name': '资金面收紧',
+                'desc': '短端Y2↑50BP（央行收紧/跨季资金紧张）',
+                'dy_short': 50,   # BP
+                'dy_long':  0,
+                'dcs':      0,
+                'icon_pos': '🟠',
+                'icon_neg': '🟢',
+            },
+            {
+                'id': 'B',
+                'name': '债市熊平',
+                'desc': '长端Y10↑50BP（经济复苏预期/供给压力）',
+                'dy_short': 0,
+                'dy_long':  50,
+                'dcs':      0,
+                'icon_pos': '🟠',
+                'icon_neg': '🟢',
+            },
+            {
+                'id': 'C',
+                'name': '信用风险爆发',
+                'desc': '信用利差CS扩大20BP（违约担忧/流动性冲击）',
+                'dy_short': 0,
+                'dy_long':  0,
+                'dcs':      20 if has_credit_factor else 0,
+                'icon_pos': '🔴',
+                'icon_neg': '🟢',
+            },
+            {
+                'id': 'D',
+                'name': '极端冲击（熊市）',
+                'desc': '短端+长端同时↑100BP',
+                'dy_short': 100,
+                'dy_long':  100,
+                'dcs':      0,
+                'icon_pos': '🔴',
+                'icon_neg': '🟢',
+            },
+        ]
+
+        for sc in scene_defs:
+            _dy_s = sc['dy_short'] / 10000.0    # BP→小数
+            _dy_l = sc['dy_long']  / 10000.0
+            _dcs  = sc['dcs']      / 10000.0
+
+            # 各分量对基金净值的冲击（已含债券仓位）
+            impact_short  = -_ds * _dy_s * _wt
+            impact_long   = -_dl * _dy_l * _wt
+            impact_credit = credit_beta * _dcs * _wt  # β_credit × ΔCS × 债券仓位
+            impact_total  = impact_short + impact_long + impact_credit
+
+            # 风险等级（按基金净值绝对影响）
+            abs_impact = abs(impact_total)
+            if abs_impact < 0.003:
+                risk_level, risk_icon = '低', '🟢'
+            elif abs_impact < 0.01:
+                risk_level, risk_icon = '中', '🟡'
+            elif abs_impact < 0.03:
+                risk_level, risk_icon = '较高', '🟠'
+            else:
+                risk_level, risk_icon = '高', '🔴'
+
+            # 如果该场景对应的因子不存在则标注「—」
+            _skip = (sc['id'] == 'C' and not has_credit_factor)
+
+            scenarios.append({
+                'id':            sc['id'],
+                'name':          sc['name'],
+                'desc':          sc['desc'],
+                'impact_short':  impact_short,
+                'impact_long':   impact_long,
+                'impact_credit': impact_credit,
+                'fund_impact':   impact_total,
+                'risk_level':    risk_level,
+                'risk_icon':     risk_icon,
+                'skip':          _skip,
+                # 拆解用
+                'dy_short_bp':   sc['dy_short'],
+                'dy_long_bp':    sc['dy_long'],
+                'dcs_bp':        sc['dcs'],
+            })
+
+        max_impact = min(sc['fund_impact'] for sc in scenarios)
+
+        # 叙事：根据主敏感因子选描述
+        if _ds > _dl * 1.5:
+            fund_char = f'短端主导型（β_short={_ds:.2f}年 >> β_long={_dl:.2f}年），对资金面收紧最敏感'
+        elif _dl > _ds * 1.5:
+            fund_char = f'长端主导型（β_long={_dl:.2f}年 >> β_short={_ds:.2f}年），对经济预期和供给压力最敏感'
+        else:
+            fund_char = f'哑铃型（β_short={_ds:.2f}年 + β_long={_dl:.2f}年），两端利率均有暴露'
+
+        narrative = (
+            f'三因子场景分析：{fund_char}。'
+            f'极端冲击（短端+长端均↑100BP）下，预计净值影响约 {max_impact*100:.2f}%。'
+            + (f'信用利差扩大20BP影响约 {scenarios[2]["fund_impact"]*100:.2f}%。'
+               if has_credit_factor else '')
+        )
+
+        return {
+            'scenarios':           scenarios,
+            'max_impact':          max_impact,
+            'narrative':           narrative,
+            'eff_duration':        _dur,
+            'bond_weight':         _wt,
+            'mode':                'three_factor',
+            'dur_short':           _ds,
+            'dur_long':            _dl,
+            'credit_beta':         credit_beta,
+            'has_credit_factor':   has_credit_factor,
+        }
+
+    # ── 单因子降级：原有3场景压测 ──
     if bp_scenarios is None:
         bp_scenarios = [10, 50, 100]
 
-    _dur  = max(abs(eff_duration), 0.1)   # 防零
-    _wt   = max(min(bond_weight, 1.0), 0.0)
-
     scenarios = []
     for bp in bp_scenarios:
-        dy          = bp / 10000.0            # BP → 小数（0.001 = 10BP = 0.1%）
-        bond_impact = -_dur * dy              # 债券头寸跌幅（近似）
-        fund_impact = bond_impact * _wt       # 对整个基金净值的冲击
+        dy          = bp / 10000.0
+        bond_impact = -_dur * dy
+        fund_impact = bond_impact * _wt
 
         if abs(fund_impact) < 0.003:
-            risk_level = '低'
-            risk_icon  = '🟢'
+            risk_level, risk_icon = '低', '🟢'
         elif abs(fund_impact) < 0.01:
-            risk_level = '中'
-            risk_icon  = '🟡'
+            risk_level, risk_icon = '中', '🟡'
         elif abs(fund_impact) < 0.03:
-            risk_level = '较高'
-            risk_icon  = '🟠'
+            risk_level, risk_icon = '较高', '🟠'
         else:
-            risk_level = '高'
-            risk_icon  = '🔴'
+            risk_level, risk_icon = '高', '🔴'
 
         scenarios.append({
-            'bp':           bp,
-            'dy':           dy,
-            'bond_impact':  bond_impact,
-            'fund_impact':  fund_impact,
-            'risk_level':   risk_level,
-            'risk_icon':    risk_icon,
+            'id':          str(bp),
+            'name':        f'利率↑{bp}BP',
+            'desc':        f'利率上行{bp}BP',
+            'bp':          bp,
+            'dy':          dy,
+            'bond_impact': bond_impact,
+            'fund_impact': fund_impact,
+            'risk_level':  risk_level,
+            'risk_icon':   risk_icon,
+            'skip':        False,
         })
 
-    max_impact = scenarios[-1]['fund_impact']  # 最大压力场景
+    max_impact = scenarios[-1]['fund_impact']
 
-    # 一句话叙事
     if _wt < 0.20:
         _wt_desc = '债券仓位较低，利率风险对整体净值影响有限'
     elif _dur > 7:
@@ -2758,11 +3500,12 @@ def bond_stress_test(eff_duration: float, bond_weight: float,
     )
 
     return {
-        'scenarios':  scenarios,
-        'max_impact': max_impact,
-        'narrative':  narrative,
+        'scenarios':   scenarios,
+        'max_impact':  max_impact,
+        'narrative':   narrative,
         'eff_duration': _dur,
         'bond_weight':  _wt,
+        'mode':         'single_factor',
     }
 
 
@@ -3295,10 +4038,17 @@ def translate_results(model: str, results: dict,
                 f"「窝里横」能力卓越💎：{'申万'+sw_nm+'内' if sw_nm else '行业内'}年化Alpha {na*100:.1f}%，"
                 f"信息比率IR={ir:.2f}，选股又准又稳，是真正的行业内超额。"
             )
-        elif na > 0.03:
+        elif na > 0.03 and ir > 0.5:
+            # 与表格「✅具备选股能力」对齐
             out['skill'] = (
                 f"具备行业内选股能力✅：Alpha {na*100:.1f}%，"
-                f"信息比率IR={ir:.2f}{'（效率尚可）' if ir > 0.5 else '（效率偏低，注意集中度风险）'}。"
+                f"信息比率IR={ir:.2f}（效率达标），在{'申万'+sw_nm if sw_nm else '行业'}内选股占优。"
+            )
+        elif na > 0.03:
+            # Alpha>3%但IR≤0.5：与性格诊断「行业随从」对齐，不说「具备选股」
+            out['skill'] = (
+                f"Alpha {na*100:.1f}%略有超额，但信息比率IR={ir:.2f}偏低，"
+                f"超额收益不稳定——主要是行业整体Beta赚钱，经理选股贡献有限。"
             )
         elif na > 0:
             out['skill'] = (
@@ -3643,6 +4393,13 @@ def main():
     stock_ratio = holdings.get('stock_ratio', 0.8)
     bond_ratio  = holdings.get('bond_ratio',  0.1)
 
+    # 债券持仓穿透分析（bond/mixed 基金才做）
+    bond_structure = {}
+    if basic['type_category'] in ('bond', 'mixed'):
+        _bh_df = holdings.get('bond_holdings', pd.DataFrame())
+        if not _bh_df.empty:
+            bond_structure = analyze_bond_structure(_bh_df)
+
     # 逻辑网关（漏斗式，返回 tuple）
     _convertible_ratio = holdings.get('convertible_ratio', 0.0)
     model_type, _gateway_warn = detect_fund_model(
@@ -3739,19 +4496,33 @@ def main():
 
     # ----- 债券模型 -----
     if model_type == 'bond' or also_duration:
-        with st.spinner("获取国债收益率数据..."):
-            treasury = fetch_treasury_10y(start_str, end_str)
+        with st.spinner("获取国债期限结构和信用利差数据..."):
+            treasury     = fetch_treasury_10y(start_str, end_str)
+            three_factor = fetch_bond_three_factors(start_str, end_str)
 
         if not treasury.empty:
             fund_ret_s = nav_df.set_index('date')['ret'].dropna()
-            # 传入 bond_ratio 用于仓位修正（底层债券真实久期 = 组合久期 / 债券仓位）
-            bond_res   = run_duration_model(fund_ret_s, treasury, bond_ratio=bond_ratio)
+            # v10.0：传入三因子数据 + holdings（用于凸性静态穿透）
+            bond_res = run_duration_model(
+                fund_ret_s, treasury,
+                bond_ratio=bond_ratio,
+                three_factor_df=three_factor if not three_factor.empty else None,
+                holdings=holdings
+            )
         else:
-            bond_res = {'duration': 5.0, 'duration_underlying': 5.0,
-                        'convexity': 0.0, 'carry_alpha': 0.0,
-                        'credit_spread_alpha': 0.0, 'r_squared': 0.0,
-                        'bond_ratio_used': bond_ratio,
-                        'interpretation': '国债收益率数据获取失败'}
+            bond_res = {
+                'duration': 5.0, 'duration_underlying': 5.0,
+                'dur_short': 0.0, 'dur_long': 5.0,
+                'p_short': 1.0, 'p_long': 1.0,
+                'credit_beta': 0.0, 'p_credit': 1.0, 'has_credit_factor': False,
+                'convexity': 0.0, 'convexity_quality': 'unknown',
+                'carry_alpha': 0.0, 'credit_spread_alpha': 0.0,
+                'r_squared': 0.0, 'r_squared_adj': 0.0,
+                'factor_mode': 'fallback（数据获取失败）',
+                'bond_ratio_used': bond_ratio, 'duration_source': 'default',
+                'fund_type_note': '',
+                'interpretation': '国债收益率数据获取失败'
+            }
         model_results['bond'] = bond_res
 
     # ----- 混合模型 -----
@@ -3828,30 +4599,54 @@ def main():
         st.plotly_chart(fig_radar, use_container_width=True)
 
     with _rc2:
-        # 5维评分卡片
+        # 5维评分卡片 — 小字根据得分动态生成定性评价
+        def _score_label(score: int, dim: str) -> str:
+            """根据得分和维度生成人话评价（替代固定小字）"""
+            if dim == '超额能力':
+                if score >= 80: return '✦ 超额显著，真本事赚钱'
+                if score >= 60: return '↑ 有一定超额，但不够稳定'
+                if score >= 40: return '→ 超额微弱，主要靠市场Beta'
+                return '↓ 几乎无超额，被动持有更划算'
+            elif dim == '风险控制':
+                if score >= 80: return '✦ 回撤小、波动低，防守能力强'
+                if score >= 60: return '↑ 波动中等，下行控制尚可'
+                if score >= 40: return '→ 波动较大，持有体验一般'
+                return '↓ 回撤深/波动高，大幅震荡时压力大'
+            elif dim == '性价比':
+                if score >= 80: return '✦ 每单位风险回报突出，高效赚钱'
+                if score >= 60: return '↑ 风险收益比合理，值得持有'
+                if score >= 40: return '→ 冒了较大风险，超额收益不够匹配'
+                return '↓ 低夏普+低IR，风险没有得到有效回报'
+            elif dim == '风格稳定':
+                if score >= 80: return '✦ 风格高度一致，说到做到'
+                if score >= 60: return '↑ 风格基本稳定，偶有偏移'
+                if score >= 40: return '→ 风格存在一定漂移，需关注'
+                return '↓ 风格不稳，当心名不副实的「换装秀」'
+            else:  # 业绩持续
+                if score >= 80: return '✦ 胜率高、盈亏比优，常胜将军'
+                if score >= 60: return '↑ 业绩较持续，偶有落后期'
+                if score >= 40: return '→ 胜率/盈亏比一般，表现时好时坏'
+                return '↓ 业绩缺乏持续性，可能靠运气'
+
         _dim_info = [
             ('超额能力', '超额能力',
-             f"年化Alpha {_radar_meta.get('alpha', 0)*100:.1f}%",
-             '经理剔除大盘/行业Beta后靠真本事多赚的收益'),
+             f"年化Alpha {_radar_meta.get('alpha', 0)*100:.1f}%"),
             ('风险控制', '风险控制',
-             f"最大回撤 {_radar_meta.get('max_dd', 0)*100:.1f}% · 波动率 {_radar_meta.get('vol', 0)*100:.1f}%",
-             '净值曲线的稳定性，跌得少跌得慢是防守力的体现'),
+             f"最大回撤 {_radar_meta.get('max_dd', 0)*100:.1f}% · 波动率 {_radar_meta.get('vol', 0)*100:.1f}%"),
             ('性价比', '性价比',
-             f"夏普 {_radar_meta.get('sharpe', 0):.2f} · IR {_radar_meta.get('ir', 0):.2f}",
-             '冒每一分风险赚到多少超额，稳稳当当赚才算值'),
+             f"夏普 {_radar_meta.get('sharpe', 0):.2f} · IR {_radar_meta.get('ir', 0):.2f}"),
             ('风格稳定', '风格稳定',
-             '滚动Beta波动 + R²解释度',
-             '经理是否言行一致，有没有偷偷换风格'),
+             '滚动Beta波动 + R²解释度'),
             ('业绩持续', '业绩持续',
-             f"胜率 {_radar_meta.get('win_rate', 0)*100:.0f}% · 盈亏比 {_radar_meta.get('plr', 0):.2f}",
-             '是一次性爆发还是持续稳定跑赢，常胜将军才算真本事'),
+             f"胜率 {_radar_meta.get('win_rate', 0)*100:.0f}% · 盈亏比 {_radar_meta.get('plr', 0):.2f}"),
         ]
 
         st.markdown('<div style="font-size:0.82rem;color:#888;margin-bottom:8px">📊 各维度得分详解（满分100）</div>',
                     unsafe_allow_html=True)
 
-        for _dkey, _dlabel, _metric, _desc in _dim_info:
+        for _dkey, _dlabel, _metric in _dim_info:
             _dscore = _radar_scores.get(_dkey, 50)
+            _ddesc  = _score_label(_dscore, _dkey)   # 动态定性评价
             # 颜色语义化：≥80 绿色优秀 / 60-79 橙色及格 / <60 红色警告
             _bar_color = '#27ae60' if _dscore >= 80 else '#e67e22' if _dscore >= 60 else '#e74c3c'
             _bar_pct = _dscore  # 0-100
@@ -3866,7 +4661,7 @@ def main():
     <div style="background:{_bar_color};width:{_bar_pct}%;height:5px;border-radius:4px;transition:width .4s"></div>
   </div>
   <div style="font-size:0.75rem;color:{_bar_color};font-weight:500">{_metric}</div>
-  <div style="font-size:0.72rem;color:#aaa;margin-top:2px">{_desc}</div>
+  <div style="font-size:0.72rem;color:#aaa;margin-top:2px">{_ddesc}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -3886,18 +4681,49 @@ def main():
         else:
             _shape_type = '📊 整体居中，均衡偏弱'
 
+        # 综合均分解读（重点解释为何有优势维度但总分仍低）
+        if _avg_r >= 75:
+            _avg_comment = '整体较优秀，各维度均衡。'
+        elif _avg_r >= 55:
+            _avg_comment = '整体中等水准。'
+        else:
+            # 总分低时，明确指出是哪个维度拖了后腿
+            if _weak_dims:
+                _drag_dim = min(_weak_dims, key=lambda k: _radar_scores.get(k, 50))
+                _drag_score = _radar_scores.get(_drag_dim, 0)
+                _avg_comment = (
+                    f'总分由五维平均决定。即使某维度有优势，'
+                    f'<b>「{_drag_dim}」仅{_drag_score}分</b>严重拖低了均分——'
+                    f'这代表该基金"能赚钱但赚得险"或"超额有限"，综合性价比偏低。'
+                )
+            else:
+                _avg_comment = '各维度均偏中等，整体均衡但缺乏亮点。'
+
         st.markdown(f"""
 <div style="background:#f8f9ff;border:1px solid #e0e4f5;border-radius:8px;
      padding:10px 14px;margin-top:4px;font-size:0.83rem;color:#444;line-height:1.7">
   <b>🖼️ 形状识别：</b>{_shape_type}<br>
-  <b>📈 综合均分：</b>{_avg_r:.0f}/100
+  <b>📈 综合均分：</b>{_avg_r:.0f}/100 &nbsp;
+  <span style="font-size:0.78rem;color:#666">{_avg_comment}</span>
 </div>
 """, unsafe_allow_html=True)
 
     # ---------- Part 1: 基本信息速览 ----------
     st.markdown('<div class="section-title">📋 第一部分：基本信息速览</div>', unsafe_allow_html=True)
 
-    bm_text = _sector_bm_label if _sector_bm_label else (basic['benchmark_text'] or '未获取到业绩基准')
+    # 业绩基准文本：优先用行业基金申万覆写，其次招募说明书原文，最后用类型默认基准
+    _default_bm_names = {
+        'equity': '沪深300（默认）', 'bond': '中债综合指数（默认）',
+        'mixed': '沪深300 60% + 中债 40%（默认）', 'sector': '沪深300（默认）',
+        'qdii': '境外基准（无法自动获取）', 'index': '沪深300（默认）',
+    }
+    if _sector_bm_label:
+        bm_text = _sector_bm_label
+    elif basic['benchmark_text']:
+        bm_text = basic['benchmark_text']
+    else:
+        # 无基准文本：标注「默认使用」，让用户知道这是推断值
+        bm_text = _default_bm_names.get(basic['type_category'], '沪深300（默认）')
     st.markdown(f"""
 <div class="card">
   <b>{basic['name']}</b> &nbsp;
@@ -3979,6 +4805,7 @@ def main():
 
     # ---------- Part 1.5: 业绩可视化（提前，先看结果再看拆解）----------
     st.markdown('<div class="section-title">📈 业绩走势一览</div>', unsafe_allow_html=True)
+    _is_qdii_fund = (basic.get('type_category') == 'qdii')
     _bm_str = '（蓝线为业绩基准）' if not bm_df.empty else ''
     _vis_comment = ''
     if _total_ret > 0:
@@ -3988,13 +4815,25 @@ def main():
     st.markdown(f'<div style="font-size:0.85rem;color:#666;margin-bottom:8px">{_vis_comment}</div>',
                 unsafe_allow_html=True)
     st.plotly_chart(plot_cumulative_return(nav_df, bm_df, bm_label=bm_text), use_container_width=True)
-    st.markdown(
-        f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
-        f'业绩基准：{bm_text}'
-        f'&nbsp;·&nbsp;<span title="若基金历史上曾更换基准，本报告使用当前公开基准回溯，不代表历史所有时期的真实基准。">'
-        f'⚠️ 基于当前公开基准回溯，历史基准变更期间数据仅供参考</span></div>',
-        unsafe_allow_html=True
-    )
+
+    # QDII基金：基准是境外指数（如MSCI系列），AkShare暂不提供历史行情，图中只显示基金净值
+    if _is_qdii_fund and bm_df.empty:
+        st.markdown(
+            f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
+            f'业绩基准：{bm_text}'
+            f'&nbsp;·&nbsp;🌐 <b>境外指数暂无法自动获取</b>，图中仅展示基金净值走势。'
+            f'如需对比，可在<a href="https://cn.investing.com/" target="_blank">investing.com</a>手动查询MSCI指数走势。'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f'<div style="font-size:0.75rem;color:#999;margin-top:-8px">'
+            f'业绩基准：{bm_text}'
+            f'&nbsp;·&nbsp;<span title="若基金历史上曾更换基准，本报告使用当前公开基准回溯，不代表历史所有时期的真实基准。">'
+            f'⚠️ 基于当前公开基准回溯，历史基准变更期间数据仅供参考</span></div>',
+            unsafe_allow_html=True
+        )
 
     # ---------- Part 2: 量化分析结果 ----------
     st.markdown('<div class="section-title">📊 第二部分：深度量化分析</div>', unsafe_allow_html=True)
@@ -4012,11 +4851,53 @@ def main():
         'qdii':   ('QDII跨市场型', '核心关注：超额收益趋势（相对MSCI基准）、汇率风险、境外市场Beta'),
     }
     _type_name, _type_focus_text = _type_focus.get(model_type, ('主动权益型', ''))
+    # 仓位标签：
+    # - ETF/指数型：「满仓跟踪」，季报仓位仅供参考（ETF有5-10%备付金，季报仓位不代表真实策略意图）
+    # - 行业/主题主动型：只显示股票仓位，加「行业集中」说明
+    # - 权益型：只显示股票仓位
+    # - 混合/债券：显示股债双仓位
+    _is_index_fund = ('ETF' in basic.get('name', '') or 'ETF' in basic.get('type_raw', '') or
+                      '指数' in basic.get('type_raw', '') or '联接' in basic.get('name', ''))
+    _alloc_src  = holdings.get('alloc_source', '')
+    _report_date = holdings.get('report_date', '')
+    _report_note = f'（{_report_date}季报）' if _report_date else ''
+
+    if _is_index_fund and model_type == 'sector':
+        # ETF行业指数基金：满仓跟踪，括注季报仓位供参考
+        _stock_tag = (f'<span class="tag tag-blue">满仓跟踪指数</span>'
+                      f'<span class="tag tag-gray" title="ETF通常有5-10%的备付金用于应对赎回，季报仓位≠真实运作意图">'
+                      f'季报股票仓位 {stock_ratio*100:.0f}%{_report_note}</span>')
+        _bond_tag  = ''
+    elif model_type == 'sector':
+        # 主动行业/主题型：高仓位集中，只显股票仓位
+        _stock_tag = f'<span class="tag tag-blue">股票仓位 {stock_ratio*100:.0f}%（行业集中型）</span>'
+        _bond_tag  = ''
+    elif model_type == 'equity':
+        # 次新基金建仓期（股票仓位<75%）：明确标注「建仓中」避免用户误解为保守型
+        if _is_new_fund and stock_ratio < 0.75:
+            _stock_tag = (f'<span class="tag tag-orange" '
+                          f'title="次新基金通常有3-6个月建仓期，股票仓位逐步提升至目标仓位，不代表保守运作风格">'
+                          f'建仓中 {stock_ratio*100:.0f}%</span>')
+        else:
+            _stock_tag = f'<span class="tag tag-blue">股票仓位 {stock_ratio*100:.0f}%</span>'
+        _bond_tag  = ''  # 权益型债券仓位通常可忽略
+    elif model_type == 'bond':
+        # 纯债/固收型：不显示股票仓位（季报默认5%是占比极低的现金替代，不代表真实持股）
+        _stock_tag = ''
+        _bond_tag  = f'<span class="tag tag-gray">债券仓位 {bond_ratio*100:.0f}%</span>'
+    else:
+        # 混合型：股票仓位>2%才显示（避免显示意义不大的极小值）
+        if stock_ratio > 0.02:
+            _stock_tag = f'<span class="tag tag-blue">股票仓位 {stock_ratio*100:.0f}%</span>'
+        else:
+            _stock_tag = ''
+        _bond_tag  = f'<span class="tag tag-gray">债券仓位 {bond_ratio*100:.0f}%</span>'
+
     st.markdown(f"""
 <div class="card card-info">
   <b>🎯 {_type_name}</b> &nbsp;
-  <span class="tag tag-blue">股票仓位 {stock_ratio*100:.0f}%</span>
-  <span class="tag tag-gray">债券仓位 {bond_ratio*100:.0f}%</span>
+  {_stock_tag}
+  {_bond_tag}
   <br><span style="font-size:0.88rem;color:#555;margin-top:6px;display:block">{_type_focus_text}</span>
 </div>
 """, unsafe_allow_html=True)
@@ -4077,7 +4958,34 @@ def main():
 
         # 量化解读点评
         _interp = model_results.get('interpretation', '')
-        if _interp:
+        _alpha_is_none = model_results.get('alpha') is None
+        if _is_qdii_fund:
+            # QDII基金：A股FF因子对境外持仓无意义，展示专属提示
+            st.markdown(
+                f'<div class="card card-info" style="font-size:0.88rem;color:#444">'
+                f'🌐 <b>QDII基金因子说明</b>：该基金主要投资境外市场（港股/美股/台股等），'
+                f'当前A股FF因子（SMB/HML/MOM）对其净值变动解释力极低，Alpha/Beta数值仅供趋势参考。'
+                f'<br><br>📌 <b>建议重点关注</b>：'
+                f'<br>① <b>夏普比率</b>（风险调整后收益）'
+                f'<br>② <b>最大回撤</b>（境外市场波动通常更大）'
+                f'<br>③ <b>汇率风险</b>（人民币升值会侵蚀境外资产收益）'
+                f'<br>④ <b>MSCI基准相对表现</b>（需在基金公司官网查询）'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+        elif _alpha_is_none and _is_new_fund:
+            # 次新基金：数据不足导致因子模型无法运行，给专属说明
+            _days_of_data = len(nav_df)
+            st.markdown(
+                f'<div class="card card-info" style="font-size:0.88rem;color:#444">'
+                f'⏳ <b>次新基金因子模型受限</b>：该基金净值历史仅 {_days_of_data} 天，'
+                f'Fama-French因子回归需要至少60个有效交易日。'
+                f'<br>当前可展示：累计收益走势、回撤分析、基本面诊断。'
+                f'<br>建议 <b>{max(0, 60-_days_of_data)} 个交易日后</b>再次分析，届时可获得完整量化报告。'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+        elif _interp:
             st.markdown(f'<div class="card" style="font-size:0.88rem;color:#444">{_interp}</div>',
                         unsafe_allow_html=True)
 
@@ -4154,24 +5062,86 @@ def main():
             )
         br = model_results['bond']
         # 优先展示底层真实久期（已做仓位修正），回退到组合级久期
-        d_underlying = br.get('duration_underlying', br.get('duration', 0))
-        d_portfolio  = br.get('duration', 0)
+        d_underlying    = br.get('duration_underlying', br.get('duration', 0))
+        d_portfolio     = br.get('duration', 0)
         bond_ratio_used = br.get('bond_ratio_used', 1.0)
-        carry        = br.get('carry_alpha', br.get('credit_spread_alpha', 0))
+        carry           = br.get('carry_alpha', br.get('credit_spread_alpha', 0))
+        dur_short       = br.get('dur_short', 0.0)
+        dur_long        = br.get('dur_long', 0.0)
+        p_short         = br.get('p_short', 1.0)
+        p_long          = br.get('p_long', 1.0)
+        credit_beta     = br.get('credit_beta', 0.0)
+        p_credit        = br.get('p_credit', 1.0)
+        has_credit      = br.get('has_credit_factor', False)
+        r2_adj          = br.get('r_squared_adj', br.get('r_squared', 0.0))
+        factor_mode     = br.get('factor_mode', '单因子')
+        convexity_qual  = br.get('convexity_quality', 'unknown')
+        fund_type_note  = br.get('fund_type_note', '')
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            # 展示底层真实久期，tooltip 说明仓位修正逻辑
-            dur_label = '底层有效久期（年）' if bond_ratio_used < 0.80 else '有效久期（年）'
-            st.markdown(_kpi(dur_label, fmt_f(d_underlying),
-                             'kpi-orange' if d_underlying > 7 else ''), unsafe_allow_html=True)
-        with c2:
-            conv = br.get('convexity', 0)
-            st.markdown(_kpi('有效凸性', fmt_f(conv),
-                             'kpi-green' if conv > 0 else 'kpi-orange'), unsafe_allow_html=True)
-        with c3:
-            st.markdown(_kpi('年化综合carry', fmt_pct(carry),
-                             'kpi-orange' if carry > 0.04 else ''), unsafe_allow_html=True)
+        _is_three_factor = 'three_factor' in br.get('duration_source', '') or '三因子' in factor_mode or '双因子' in factor_mode
+
+        # ── 模型标签 + 基金类型诊断 ──
+        _model_badge_color = '#27ae60' if _is_three_factor else '#e67e22'
+        _model_label = '🔬 三因子期限结构归因' if _is_three_factor else '📐 单因子T-Model归因'
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+            f'<span style="background:{_model_badge_color};color:white;font-size:0.75rem;'
+            f'padding:2px 10px;border-radius:12px;font-weight:600">{_model_label}</span>'
+            f'<span style="color:#888;font-size:0.76rem">模型: {factor_mode} | Adj.R²={r2_adj:.3f}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+        if fund_type_note:
+            st.markdown(
+                f'<div style="background:#f0f7ff;border-left:3px solid #3498db;border-radius:5px;'
+                f'padding:6px 12px;font-size:0.83rem;color:#2c3e50;margin-bottom:8px">'
+                f'💡 {fund_type_note}</div>',
+                unsafe_allow_html=True
+            )
+
+        # ── KPI 指标卡（三因子模式 vs 单因子模式）──
+        if _is_three_factor and (p_short < 0.2 or p_long < 0.2):
+            # 三因子模式：展示短端久期 + 长端久期 + 信用敏感度 + carry
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                _s_sig = ' *' if p_short < 0.05 else (' ~' if p_short < 0.1 else '')
+                st.markdown(_kpi(f'短端久期（2年期）{_s_sig}', f'{abs(dur_short):.2f}年',
+                                 'kpi-orange' if abs(dur_short) > 3 else ''), unsafe_allow_html=True)
+            with c2:
+                _l_sig = ' *' if p_long < 0.05 else (' ~' if p_long < 0.1 else '')
+                st.markdown(_kpi(f'长端久期（10年期）{_l_sig}', f'{abs(dur_long):.2f}年',
+                                 'kpi-orange' if abs(dur_long) > 5 else ''), unsafe_allow_html=True)
+            with c3:
+                if has_credit:
+                    _c_sig = ' *' if p_credit < 0.05 else ''
+                    _c_color = 'kpi-orange' if credit_beta < -1.5 else ('kpi-green' if credit_beta > 1.0 else '')
+                    st.markdown(_kpi(f'信用利差β{_c_sig}', f'{credit_beta:.2f}',
+                                     _c_color), unsafe_allow_html=True)
+                else:
+                    st.markdown(_kpi('信用利差β', '—', ''), unsafe_allow_html=True)
+            with c4:
+                st.markdown(_kpi('年化综合carry', fmt_pct(carry),
+                                 'kpi-orange' if carry > 0.04 else ''), unsafe_allow_html=True)
+            # 显著性图例
+            st.markdown(
+                '<div style="font-size:0.72rem;color:#aaa;padding:2px 0 6px">'
+                '* p&lt;0.05 显著 &nbsp;~ p&lt;0.1 弱显著</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            # 单因子/降级模式：沿用原有3列展示
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                dur_label = '底层有效久期（年）' if bond_ratio_used < 0.80 else '有效久期（年）'
+                st.markdown(_kpi(dur_label, fmt_f(d_underlying),
+                                 'kpi-orange' if d_underlying > 7 else ''), unsafe_allow_html=True)
+            with c2:
+                conv = br.get('convexity', 0)
+                st.markdown(_kpi('有效凸性', fmt_f(conv),
+                                 'kpi-green' if conv > 0 else 'kpi-orange'), unsafe_allow_html=True)
+            with c3:
+                st.markdown(_kpi('年化综合carry', fmt_pct(carry),
+                                 'kpi-orange' if carry > 0.04 else ''), unsafe_allow_html=True)
 
         # 仓位修正说明小字（仅当非纯债基金时展示）
         if bond_ratio_used < 0.80:
@@ -4183,10 +5153,35 @@ def main():
                 unsafe_allow_html=True
             )
 
+        # 信用利差方向图（三因子模式下有信用因子时展示）
+        if _is_three_factor and has_credit and p_credit < 0.1:
+            _c_dir = '利差扩大时净值下跌（信用下沉型）' if credit_beta < 0 else '利差扩大时净值上涨（反向操作）'
+            _c_bg  = '#fff8f0' if credit_beta < 0 else '#f0fff8'
+            _c_bd  = '#e67e22' if credit_beta < 0 else '#27ae60'
+            st.markdown(
+                f'<div style="background:{_c_bg};border-left:3px solid {_c_bd};border-radius:5px;'
+                f'padding:7px 12px;font-size:0.82rem;color:#333;margin-bottom:6px">'
+                f'📊 <b>信用利差敏感度 β={credit_beta:.2f}</b>（p={p_credit:.3f}）：{_c_dir}。'
+                f'{"高Carry主要来自信用风险溢价，需关注评级下沉风险。" if credit_beta < -1.0 else "信用利差收窄时该基金获益。"}'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        # 凸性静态穿透
+        _conv_icon = {'strong': '🛡️', 'weak': '⚠️', 'moderate': '🔵', 'unknown': 'ℹ️'}.get(convexity_qual, 'ℹ️')
+        _conv_note = br.get('interpretation', '')
+        _conv_parts = [p for p in _conv_note.split('；') if '凸性' in p]
+        if _conv_parts:
+            st.markdown(
+                f'<div style="font-size:0.8rem;color:#666;padding:4px 10px;'
+                f'background:#f8f9fa;border-radius:5px;margin:2px 0 6px">'
+                f'{_conv_icon} {_conv_parts[0]}</div>',
+                unsafe_allow_html=True
+            )
+
         # 指标解释
         st.markdown(
             _explain_row('有效久期') +
-            _explain_row('凸性') +
             _explain_row('年化信用溢价'),
             unsafe_allow_html=True
         )
@@ -4196,14 +5191,179 @@ def main():
             st.markdown(f'<div class="card" style="font-size:0.88rem;color:#444">{_bond_interp}</div>',
                         unsafe_allow_html=True)
 
-        # 债券模型一句话解读（更新 carry 说明）
+        # 债券模型方法说明
         st.markdown(
             '<div style="font-size:0.8rem;color:#666;padding:6px 10px;'
             'background:#f8f9fa;border-radius:6px;margin-top:4px">'
-            '📖 久期归因（"利率敏感度"测试）：久期越长，对利率上行越敏感；'
-            '综合carry = 票息收入 + 信用溢价 + 骑乘收益，偏高时需关注信用风险。</div>',
+            '📖 <b>三因子期限结构归因</b>：Rₚ = α + β_short·(-ΔY_2Y) + β_long·(-ΔY_10Y) + β_credit·ΔCS + ε；'
+            '短端因子捕获存单/短融敏感度，长端因子捕获利率债暴露，信用利差因子揭示信用下沉程度。'
+            'Adj.R²越高说明三因子解释力越强。</div>',
             unsafe_allow_html=True
         )
+
+        # ══════════════════════════════════════════════════
+        # 债券持仓穿透板块（季报明细穿透）
+        # ══════════════════════════════════════════════════
+        if bond_structure:
+            st.markdown('---')
+            _bs = bond_structure
+            _quarter_label = _bs.get('quarter', '最新季度')
+            _total_wt      = _bs.get('total_weight', 0)
+            _n_bonds       = _bs.get('n_bonds', 0)
+            _wtd_dur       = _bs.get('wtd_duration_est', 0)
+            _rate_r        = _bs.get('rate_ratio', 0)
+            _credit_r      = _bs.get('credit_ratio', 0)
+            _conv_r        = _bs.get('convert_ratio', 0)
+            _type_dist     = _bs.get('type_dist', pd.DataFrame())
+            _conv_detail   = _bs.get('conv_detail', pd.DataFrame())
+
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
+                f'<span style="font-size:1.05rem;font-weight:700;color:#2c3e50">🔍 债券持仓穿透</span>'
+                f'<span style="background:#8e44ad;color:white;font-size:0.72rem;'
+                f'padding:2px 8px;border-radius:10px;font-weight:600">季报穿透</span>'
+                f'<span style="color:#aaa;font-size:0.78rem">数据来源：{_quarter_label} | 共 {_n_bonds} 只债券 | '
+                f'合计占净值 {_total_wt:.1f}%（未含银行间未披露部分）</span>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            # ── 三列摘要 KPI ──
+            _bc1, _bc2, _bc3 = st.columns(3)
+            with _bc1:
+                _dur_color = 'kpi-orange' if _wtd_dur > 5 else ''
+                st.markdown(_kpi('加权估算剩余期限', f'{_wtd_dur:.1f}年', _dur_color),
+                            unsafe_allow_html=True)
+            with _bc2:
+                _rate_pct = f'{_rate_r*100:.1f}%'
+                st.markdown(_kpi('利率债占比（含国债/政金债）', _rate_pct,
+                                 'kpi-green' if _rate_r > 0.5 else ''), unsafe_allow_html=True)
+            with _bc3:
+                _credit_pct = f'{(_credit_r+_conv_r)*100:.1f}%'
+                st.markdown(_kpi('信用/含权债占比', _credit_pct,
+                                 'kpi-orange' if _credit_r + _conv_r > 0.5 else ''), unsafe_allow_html=True)
+
+            # ── 债券类型分布图 + 可转债评级分布 ──
+            _col_left, _col_right = st.columns([3, 2])
+
+            with _col_left:
+                # Plotly 饼图：债券类型
+                if not _type_dist.empty:
+                    import plotly.graph_objects as _go
+                    _colors_bond = ['#3498db','#2ecc71','#e74c3c','#f39c12',
+                                    '#9b59b6','#1abc9c','#e67e22','#95a5a6']
+                    _fig_pie = _go.Figure(_go.Pie(
+                        labels=_type_dist['bond_type'].tolist(),
+                        values=_type_dist['占净值'].tolist(),
+                        hole=0.4,
+                        marker_colors=_colors_bond[:len(_type_dist)],
+                        textinfo='label+percent',
+                        textfont_size=11,
+                        hovertemplate='%{label}<br>占净值：%{value:.2f}%<extra></extra>'
+                    ))
+                    _fig_pie.update_layout(
+                        title=dict(text='债券类型分布（占净值%）', font_size=13, x=0),
+                        showlegend=False,
+                        margin=dict(l=0, r=0, t=30, b=0),
+                        height=250,
+                    )
+                    st.plotly_chart(_fig_pie, use_container_width=True)
+
+            with _col_right:
+                # 可转债评级分布 或 类型明细表
+                if not _conv_detail.empty and '评级' in _conv_detail.columns:
+                    _rating_counts = _conv_detail.groupby('评级')['占净值比例'].sum().reset_index()
+                    _rating_counts = _rating_counts.sort_values('占净值比例', ascending=False)
+                    # 简单 bar chart
+                    import plotly.express as _px
+                    _fig_bar = _px.bar(
+                        _rating_counts, x='评级', y='占净值比例',
+                        title=f'可转债评级分布（共{len(_conv_detail)}只，占净值{_conv_r*_total_wt:.1f}%）',
+                        labels={'占净值比例': '占净值%', '评级': '信用评级'},
+                        color='评级',
+                        color_discrete_sequence=['#2ecc71','#3498db','#f39c12','#e74c3c','#95a5a6']
+                    )
+                    _fig_bar.update_layout(
+                        showlegend=False, height=250,
+                        margin=dict(l=0, r=0, t=30, b=0),
+                        title_font_size=12,
+                        xaxis_title='', yaxis_title='占净值%'
+                    )
+                    st.plotly_chart(_fig_bar, use_container_width=True)
+                elif not _type_dist.empty:
+                    # 没有可转债时，展示类型明细表
+                    st.markdown('<div style="font-size:0.82rem;font-weight:600;color:#444;margin-bottom:4px">债券类型明细</div>',
+                                unsafe_allow_html=True)
+                    _show_df = _type_dist.rename(columns={'bond_type':'类型','只数':'只数','占净值':'占净值%','占比%':'占持仓%'})
+                    st.dataframe(_show_df, use_container_width=True, hide_index=True,
+                                 column_config={'占净值%': st.column_config.NumberColumn(format='%.2f')})
+
+            # ── 可转债明细展示（折叠）──
+            if not _conv_detail.empty:
+                with st.expander(f'📋 可转债持仓明细（{len(_conv_detail)}只）', expanded=False):
+                    _show_conv = _conv_detail[['债券名称','占净值比例','评级','到期日','剩余年限','票面利率']].copy()
+                    _show_conv = _show_conv.sort_values('占净值比例', ascending=False)
+                    st.dataframe(
+                        _show_conv, use_container_width=True, hide_index=True,
+                        column_config={
+                            '占净值比例': st.column_config.NumberColumn('占净值%', format='%.2f'),
+                            '剩余年限': st.column_config.NumberColumn('剩余年限(年)', format='%.2f'),
+                        }
+                    )
+
+            # ── 穿透联动解读 ──
+            _penetration_insight = []
+
+            # 利率债 vs 信用债结构
+            if _rate_r > 0.6:
+                _penetration_insight.append('持仓以<b>利率债为主</b>（国债+政策性金融债），久期风险主要来自利率波动，信用风险较低。')
+            elif _credit_r + _conv_r > 0.5:
+                _penetration_insight.append(f'持仓以<b>信用/含权债为主</b>（占持仓 {(_credit_r+_conv_r)*100:.0f}%），存在一定信用下沉暴露。')
+            else:
+                _penetration_insight.append('持仓呈<b>利率债+信用债混合</b>结构，同时承担利率风险与信用风险。')
+
+            # 可转债情况
+            if _conv_r > 0.1:
+                _n_conv = len(_conv_detail) if not _conv_detail.empty else '若干'
+                _penetration_insight.append(f'可转债仓位占持仓 <b>{_conv_r*100:.0f}%</b>（{_n_conv}只），使该基金在股市上涨时具有一定弹性，但波动性较纯利率债更高。')
+
+            # 与三因子β联动
+            if has_credit and abs(credit_beta) > 0.5 and p_credit < 0.1:
+                if credit_beta < 0:
+                    _penetration_insight.append(
+                        f'三因子回归显示 β_credit = {credit_beta:.2f}（显著），与持仓结构吻合：'
+                        f'信用债占持仓 {_credit_r*100:.0f}%，利差走阔时净值承压，<b>信用下沉策略得到季报数据印证</b>。'
+                    )
+                else:
+                    _penetration_insight.append(
+                        f'三因子回归显示 β_credit = {credit_beta:.2f}（正值），说明该基金在信用利差扩大时反而受益，可能存在做空信用或偏向利率债对冲策略。'
+                    )
+
+            # 加权期限
+            if _wtd_dur > 0:
+                _dur_comment = '偏长久期' if _wtd_dur > 4 else ('中短久期' if _wtd_dur > 2 else '短久期')
+                _penetration_insight.append(
+                    f'从季报持仓估算加权剩余期限约 <b>{_wtd_dur:.1f}年</b>（{_dur_comment}），'
+                    f'与三因子模型反推的短端久期 {abs(dur_short):.1f}年 / 长端久期 {abs(dur_long):.1f}年 可相互印证。'
+                    f'<span style="color:#888;font-size:0.78em">（注：季报期限估算为启发式推算，非精确YTM加权）</span>'
+                )
+
+            if _penetration_insight:
+                st.markdown(
+                    '<div style="background:#f8f0ff;border-left:3px solid #8e44ad;border-radius:6px;'
+                    'padding:10px 14px;font-size:0.85rem;color:#333;margin-top:4px;line-height:1.8">'
+                    '🔍 <b>穿透解读</b>：' + ''.join(f'<br>• {s}' for s in _penetration_insight) +
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+
+            # 数据说明
+            st.markdown(
+                '<div style="font-size:0.75rem;color:#aaa;margin-top:4px">'
+                '📌 数据来源：天天基金季报债券投资明细；可转债评级通过交易所接口实时查询；'
+                '加权期限为启发式估算（含权债按到期日，利率债按名称发行年份推断），仅供参考。</div>',
+                unsafe_allow_html=True
+            )
 
     # 混合类结果
     if model_type == 'mixed' and model_results:
@@ -4485,13 +5645,17 @@ def main():
         ir   = sr.get('info_ratio', 0.0)
         industry_label = sw_name_display or '同行业'
 
-        # Alpha 行
-        if na > 0.08:
+        # Alpha 行（与性格诊断标签体系保持一致：na>0.03 AND ir>0.5 才算「具备选股」）
+        if na > 0.08 and ir > 1.0:
             alpha_status = '🏆 窝里横王者'
-            alpha_comment = f'就算{industry_label}指数不涨不跌，经理靠选股一年也能多赚{na*100:.1f}%。这是真本事。'
-        elif na > 0.03:
+            alpha_comment = f'就算{industry_label}指数不涨不跌，经理靠选股一年也能多赚{na*100:.1f}%，IR={ir:.2f}高效稳定。这是真本事。'
+        elif na > 0.03 and ir > 0.5:
             alpha_status = '✅ 具备选股能力'
-            alpha_comment = f'在{industry_label}内部超额{na*100:.1f}%，行业内选股占优。'
+            alpha_comment = f'在{industry_label}内部超额{na*100:.1f}%，IR={ir:.2f}，选股效率达标。'
+        elif na > 0.03:
+            # Alpha>3%但IR偏低：有超额但效率不足，对应性格诊断「行业随从」
+            alpha_status = '🟡 微弱Alpha，效率不足'
+            alpha_comment = f'Alpha {na*100:.1f}%有一点超额，但IR={ir:.2f}偏低，说明超额不稳定——主要靠行业Beta赚钱，非经理选股。'
         elif na > 0:
             alpha_status = '🟡 微弱超额'
             alpha_comment = f'勉强跑赢{industry_label}指数{na*100:.1f}%，优势不明显，注意费率侵蚀。'
@@ -4662,15 +5826,18 @@ def main():
                 bm_df=bm_df,
             )
 
-            # 动态标题：用实际总收益，涨红跌绿
-            _decomp_ret_val = _total_ret  # _total_ret 已在 Part 1 KPI 区计算
-            _decomp_title_color = '#e74c3c' if _decomp_ret_val >= 0 else '#27ae60'
-            _decomp_title_verb  = '是怎么赚的？' if _decomp_ret_val >= 0 else '是怎么亏的？'
+            # 动态标题：用「超额收益」（相对基准），避免与总收益混淆
+            # _total_ret 是绝对总收益，_decomp['total_excess'] 是相对基准的超额
+            _decomp_excess_val = _decomp.get('total_excess', 0.0) * 100
+            _decomp_excess_color = '#e74c3c' if _decomp_excess_val >= 0 else '#27ae60'
+            _decomp_excess_verb  = '超额（相对基准）' if _decomp_excess_val >= 0 else '落后（相对基准）'
             st.markdown(
                 f'<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">'
-                f'📦 收益拆解：这 '
-                f'<span style="color:{_decomp_title_color};font-size:1.05rem">'
-                f'{_decomp_ret_val:+.2f}%</span> {_decomp_title_verb}</div>',
+                f'📦 超额收益拆解：基准以上 '
+                f'<span style="color:{_decomp_excess_color};font-size:1.05rem">'
+                f'{_decomp_excess_val:+.2f}%</span> {_decomp_excess_verb}'
+                f'<span style="font-size:0.78rem;color:#888;font-weight:400;margin-left:8px">'
+                f'（区间总收益 {_total_ret:+.1f}%，拆解为相对基准超额）</span></div>',
                 unsafe_allow_html=True
             )
 
@@ -4804,6 +5971,18 @@ def main():
                     if _val_fig.data:
                         st.plotly_chart(_val_fig, use_container_width=True)
 
+                    # QDII基金：加说明注释
+                    _cross_cnt = sum(1 for v in _valert if v['risk_level'] in ('跨市场', '港股暂缺'))
+                    if _cross_cnt > 0 and _is_qdii_fund:
+                        st.markdown(
+                            f'<div style="background:#f0f4ff;border-radius:6px;padding:7px 12px;'
+                            f'font-size:0.78rem;color:#666;margin-bottom:8px">'
+                            f'🌐 该QDII基金含 {_cross_cnt} 只境外股票（港股/美股/台股），'
+                            f'当前接口仅支持A股和部分港股估值分析。境外持仓建议参考各交易所官方数据。'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+
                     # 明细表
                     _vt_html = '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
                     _vt_html += '<tr style="background:#1a1a2e;color:white">'
@@ -4813,9 +5992,14 @@ def main():
                     for _i, _v in enumerate(_valert):
                         _bg = '#fafafa' if _i % 2 == 0 else 'white'
                         _nm = _v.get('name') or _v['code']
-                        _pe_str  = f"{_v['current_pe']:.1f}" if _v['current_pe'] else 'N/A'
-                        _pct_str = f"{_v['pe_percentile']:.0f}%" if _v['pe_percentile'] is not None else 'N/A'
-                        _pb_str  = f"{_v['current_pb']:.2f}" if _v['current_pb'] else 'N/A'
+                        # 跨市场/港股暂缺：PE/PB显示「—」，更清晰
+                        _is_cross = _v['risk_level'] in ('跨市场', '港股暂缺')
+                        _pe_str  = ('—' if _is_cross else
+                                    (f"{_v['current_pe']:.1f}" if _v['current_pe'] else 'N/A'))
+                        _pct_str = ('—' if _is_cross else
+                                    (f"{_v['pe_percentile']:.0f}%" if _v['pe_percentile'] is not None else 'N/A'))
+                        _pb_str  = ('—' if _is_cross else
+                                    (f"{_v['current_pb']:.2f}" if _v['current_pb'] else 'N/A'))
                         _rl      = f"{_v['risk_icon']} {_v['risk_level']}"
                         _vt_html += (f'<tr style="background:{_bg}">'
                                      f'<td style="padding:5px 8px">{_nm[:8]}</td>'
@@ -4893,19 +6077,28 @@ def main():
         if _bond_res_for_stress and bond_ratio > 0.10:
             _eff_dur = _bond_res_for_stress.get('duration_underlying',
                        _bond_res_for_stress.get('duration', 2.5)) or 2.5
-            # 合理性保护：负值或零值不能进入压力测试（否则利率上行反而显示"盈利"）
             _eff_dur = max(_eff_dur, 0.1)
             _dur_source = _bond_res_for_stress.get('duration_source', 'regression')
-            _dur_tag = '' if _dur_source == 'regression' else ' （经验估算值）'
+            _dur_tag = '' if _dur_source in ('regression', 'three_factor') else ' （经验估算值）'
+
+            # 三因子参数
+            _st_ds  = _bond_res_for_stress.get('dur_short', 0.0)
+            _st_dl  = _bond_res_for_stress.get('dur_long', 0.0)
+            _st_cb  = _bond_res_for_stress.get('credit_beta', 0.0)
+            _st_hc  = _bond_res_for_stress.get('has_credit_factor', False)
 
             st.markdown(
                 '<div style="font-size:0.9rem;font-weight:700;color:#1a1a2e;margin-bottom:8px'
                 + (';margin-top:16px' if model_type in ('mixed', 'sector') else '') + '">'
-                '🧪 债券端：久期压力测试</div>',
+                '🧪 债券端：情景压力测试</div>',
                 unsafe_allow_html=True
             )
 
-            _stress = bond_stress_test(_eff_dur, bond_ratio)
+            _stress = bond_stress_test(
+                _eff_dur, bond_ratio,
+                dur_short=_st_ds, dur_long=_st_dl,
+                credit_beta=_st_cb, has_credit_factor=_st_hc
+            )
 
             # 一句话叙事
             st.markdown(
@@ -4916,16 +6109,62 @@ def main():
                 unsafe_allow_html=True
             )
 
-            # 三场景卡片（Flexbox 响应式，移动端自动折行）
-            _sc_html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
-            for _sc in _stress['scenarios']:
-                _bp = _sc['bp']
-                _fi = _sc['fund_impact'] * 100
-                _icon = _sc['risk_icon']
-                _rl   = _sc['risk_level']
-                _sc_bg = {'🟢':'#eafaf1','🟡':'#fffbea','🟠':'#fff4e5','🔴':'#fef0f0'}.get(_icon,'#f8f8f8')
-                _sc_border = {'🟢':'#27ae60','🟡':'#f39c12','🟠':'#e67e22','🔴':'#e74c3c'}.get(_icon,'#ccc')
-                _sc_html += f'''
+            _stress_mode = _stress.get('mode', 'single_factor')
+
+            if _stress_mode == 'three_factor':
+                # ── 三因子场景化矩阵展示 ──
+                _sc_html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+                for _sc in _stress['scenarios']:
+                    if _sc.get('skip'):
+                        continue
+                    _fi   = _sc['fund_impact'] * 100
+                    _icon = _sc['risk_icon']
+                    _rl   = _sc['risk_level']
+                    _sc_bg     = {'🟢':'#eafaf1','🟡':'#fffbea','🟠':'#fff4e5','🔴':'#fef0f0'}.get(_icon,'#f8f8f8')
+                    _sc_border = {'🟢':'#27ae60','🟡':'#f39c12','🟠':'#e67e22','🔴':'#e74c3c'}.get(_icon,'#ccc')
+                    # 拆解说明
+                    _breakdown = []
+                    if abs(_sc['impact_short']) > 0.0001:
+                        _breakdown.append(f"短端: {_sc['impact_short']*100:+.3f}%")
+                    if abs(_sc['impact_long']) > 0.0001:
+                        _breakdown.append(f"长端: {_sc['impact_long']*100:+.3f}%")
+                    if abs(_sc['impact_credit']) > 0.0001:
+                        _breakdown.append(f"信用: {_sc['impact_credit']*100:+.3f}%")
+                    _bd_str = ' | '.join(_breakdown) if _breakdown else ''
+
+                    _sc_html += f'''
+<div style="flex:1;min-width:140px;background:{_sc_bg};border:1px solid {_sc_border};
+     border-radius:8px;padding:10px 8px;text-align:center">
+  <div style="font-size:1.2rem">{_icon}</div>
+  <div style="font-size:0.76rem;font-weight:600;color:#333;margin:2px 0">{_sc['name']}</div>
+  <div style="font-size:0.68rem;color:#888;margin-bottom:4px;line-height:1.3">{_sc['desc']}</div>
+  <div style="font-size:1.15rem;font-weight:700;color:{_sc_border}">{_fi:+.3f}%</div>
+  <div style="font-size:0.68rem;color:#aaa;margin:2px 0">{_bd_str}</div>
+  <div style="font-size:0.74rem;font-weight:600;color:{_sc_border};margin-top:3px">{_rl}</div>
+</div>'''
+                _sc_html += '</div>'
+                st.markdown(_sc_html, unsafe_allow_html=True)
+
+                # 公式说明
+                st.markdown(
+                    f'<div style="font-size:0.73rem;color:#aaa;padding:5px 0">'
+                    f'📐 三因子压测：短端影响 = −β_short({abs(_st_ds):.2f}年) × ΔY_2Y × 仓位；'
+                    f'长端影响 = −β_long({abs(_st_dl):.2f}年) × ΔY_10Y × 仓位；'
+                    + (f'信用影响 = β_credit({_st_cb:.2f}) × ΔCS × 仓位；' if _st_hc else '')
+                    + f'债券仓位 {bond_ratio*100:.0f}%{_dur_tag}</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                # ── 单因子：原有展示（兼容降级场景）──
+                _sc_html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+                for _sc in _stress['scenarios']:
+                    _bp = _sc.get('bp', _sc.get('dy_short_bp', 0))
+                    _fi = _sc['fund_impact'] * 100
+                    _icon = _sc['risk_icon']
+                    _rl   = _sc['risk_level']
+                    _sc_bg = {'🟢':'#eafaf1','🟡':'#fffbea','🟠':'#fff4e5','🔴':'#fef0f0'}.get(_icon,'#f8f8f8')
+                    _sc_border = {'🟢':'#27ae60','🟡':'#f39c12','🟠':'#e67e22','🔴':'#e74c3c'}.get(_icon,'#ccc')
+                    _sc_html += f'''
 <div style="flex:1;min-width:120px;background:{_sc_bg};border:1px solid {_sc_border};
      border-radius:8px;padding:10px;text-align:center">
   <div style="font-size:1.3rem">{_icon}</div>
@@ -4934,16 +6173,15 @@ def main():
   <div style="font-size:0.72rem;color:#888">净值影响</div>
   <div style="font-size:0.75rem;font-weight:600;color:{_sc_border};margin-top:3px">{_rl}</div>
 </div>'''
-            _sc_html += '</div>'
-            st.markdown(_sc_html, unsafe_allow_html=True)
+                _sc_html += '</div>'
+                st.markdown(_sc_html, unsafe_allow_html=True)
 
-            # 公式说明
-            st.markdown(
-                f'<div style="font-size:0.73rem;color:#aaa;padding:5px 0">'
-                f'📐 计算公式：净值影响 = −久期({_eff_dur:.1f}年{_dur_tag}) × ΔY × 债券仓位({bond_ratio*100:.0f}%)；'
-                f'仅为线性近似，实际因凸性有所保护。</div>',
-                unsafe_allow_html=True
-            )
+                st.markdown(
+                    f'<div style="font-size:0.73rem;color:#aaa;padding:5px 0">'
+                    f'📐 计算公式：净值影响 = −久期({_eff_dur:.1f}年{_dur_tag}) × ΔY × 债券仓位({bond_ratio*100:.0f}%)；'
+                    f'仅为线性近似，实际因凸性有所保护。</div>',
+                    unsafe_allow_html=True
+                )
 
             # 综合预警（极端场景下股债双杀）
             _max_stress = abs(_stress['max_impact']) * 100
