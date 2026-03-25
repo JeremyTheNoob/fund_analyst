@@ -1,0 +1,11 @@
+# 历史版本归档（本地保留，不推送 GitHub）
+archive/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Streamlit
+.streamlit/secrets.toml
