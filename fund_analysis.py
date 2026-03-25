@@ -1772,20 +1772,20 @@ def run_duration_model(fund_ret: pd.Series,
         # ── 基金类型诊断 ──
         fund_type_note = ''
         if p_short < 0.05 and abs(dur_short) > abs(dur_long) * 1.5:
-            fund_type_note = '【短债特征】基金对短端资金面（1-2年期）高度敏感，典型存单/短融策略。'
+            fund_type_note = '主要买短期债（1-2年），利率一动净值就跟着动，类似短债/货币增强型基金。'
         elif p_long < 0.05 and abs(dur_long) > abs(dur_short) * 1.5:
-            fund_type_note = '【利率债特征】基金主要暴露于长端利率（7-10年），对货币政策和经济预期敏感。'
+            fund_type_note = '主要买长期国债（7-10年），降息时赚得多，加息时跌得也多，利率走势影响很大。'
         elif p_short < 0.05 and p_long < 0.05:
-            fund_type_note = '【哑铃策略特征】同时持有短端和长端，对两端利率波动均有敏感度。'
+            fund_type_note = '同时配置短债和长债，利率两端都有敞口，类似"哑铃"结构。'
 
         credit_note = ''
         if has_spread and p_credit < 0.05:
             if credit_beta < -1.0:
-                credit_note = f'【信用下沉确认】β_credit={credit_beta:.2f}（p={p_credit:.3f}），利差扩大净值显著受损，高Carry来自信用风险溢价。'
+                credit_note = f'信用敞口较重——市场出现信用风波（债券违约/评级下调）时，该基金净值会比较难看。高收益背后对应着信用风险。'
             elif credit_beta > 1.0:
-                credit_note = f'【信用受益型】β_credit={credit_beta:.2f}（p={p_credit:.3f}），基金在信用利差收窄时受益（可能持有大量信用债）。'
+                credit_note = f'信用利差收窄时该基金受益，持有较多信用债或类似策略。'
         elif has_spread:
-            credit_note = f'信用利差β={credit_beta:.2f}（p={p_credit:.3f}，不显著），超额carry可能来自骑乘收益或杠杆套利，而非信用下沉。'
+            credit_note = f'信用风险影响不显著，多余的收益更可能来自骑乘（买久一点吃利差）或杠杆操作。'
 
         # ── 解读文本 ──
         parts = []
@@ -1793,12 +1793,12 @@ def run_duration_model(fund_ret: pd.Series,
         # 回归质量
         if duration_source == 'fallback_low_r2':
             parts.append(
-                f'⚠️ {factor_mode}回归 Adj.R²={r2_adj:.3f}（偏低），期限结构对该基金净值解释力弱，'
-                f'久期已回退至行业经验值 {DURATION_FALLBACK:.1f}年，压力测试仅供参考'
+                f'⚠️ 模型拟合效果偏弱（Adj.R²={r2_adj:.3f}），这期间的净值变化不太能用利率解释，'
+                f'久期已用行业经验值 {DURATION_FALLBACK:.1f}年替代，压力测试仅供参考'
             )
         else:
             parts.append(
-                f'✅ {factor_mode}回归 Adj.R²={r2_adj:.3f}，模型解释力{"良好" if r2_adj > 0.3 else "一般"}'
+                f'✅ 模型拟合Adj.R²={r2_adj:.3f}，{"解释力不错" if r2_adj > 0.3 else "解释力一般，净值还受其他因素影响"}'
             )
 
         # 基金类型诊断
@@ -1809,17 +1809,17 @@ def run_duration_model(fund_ret: pd.Series,
         dur_display = duration_underlying
         dur_src_note = '（行业经验估算）' if duration_source == 'fallback_low_r2' else position_note
         if dur_display > 7:
-            parts.append(f"组合有效久期 {dur_display:.1f}年（**偏长**）{dur_src_note}，加息环境高风险")
+            parts.append(f"利率敏感度较高（久期 {dur_display:.1f}年{dur_src_note}），加息时净值压力大")
         elif dur_display < 2:
-            parts.append(f"组合有效久期 {dur_display:.1f}年（**较短**）{dur_src_note}，对利率变动不敏感，偏货币/短债策略")
+            parts.append(f"利率敏感度很低（久期 {dur_display:.1f}年{dur_src_note}），基本不怕加息，收益主要靠票息")
         else:
-            parts.append(f"组合有效久期 {dur_display:.1f}年（中等）{dur_src_note}，利率中性")
+            parts.append(f"利率敏感度中等（久期 {dur_display:.1f}年{dur_src_note}）")
 
         if duration_source != 'fallback_low_r2':
             if p_short < 0.1:
-                parts.append(f"  → 短端贡献 {abs(dur_short):.2f}年（β={dur_short:.2f}, p={p_short:.3f}）")
+                parts.append(f"  → 短债贡献 {abs(dur_short):.2f}年（β={dur_short:.2f}, p={p_short:.3f}）")
             if p_long < 0.1:
-                parts.append(f"  → 长端贡献 {abs(dur_long):.2f}年（β={dur_long:.2f}, p={p_long:.3f}）")
+                parts.append(f"  → 长债贡献 {abs(dur_long):.2f}年（β={dur_long:.2f}, p={p_long:.3f}）")
 
         # 信用利差诊断
         if credit_note:
@@ -1830,13 +1830,13 @@ def run_duration_model(fund_ret: pd.Series,
 
         # Carry
         if carry_alpha > 0.04:
-            parts.append(f"年化综合carry {carry_alpha*100:.1f}%（**偏高**），需关注信用风险和流动性")
+            parts.append(f"年化收益来源估算 {carry_alpha*100:.1f}%（**偏高**），需留意信用风险或流动性风险")
         elif carry_alpha > 0.015:
-            parts.append(f"年化综合carry {carry_alpha*100:.1f}%，整体合理（包含票息+信用溢价+骑乘）")
+            parts.append(f"年化收益来源估算 {carry_alpha*100:.1f}%，水平合理")
         elif carry_alpha > 0:
-            parts.append(f"年化综合carry {carry_alpha*100:.2f}%，收益主要来自利率敞口")
+            parts.append(f"年化收益来源估算 {carry_alpha*100:.2f}%，主要靠利率方向赚钱")
         else:
-            parts.append("综合carry为负，纯利率博弈型策略，信用成分极低")
+            parts.append("收益来源估算为负，纯博利率方向，信用成分极少")
 
         return {
             'duration':             duration_portfolio,
@@ -1937,27 +1937,27 @@ def run_duration_model(fund_ret: pd.Series,
     parts = []
     if duration_source == 'fallback_low_r2':
         parts.append(
-            f'⚠️ 单因子回归R²={r2:.2f}偏低（{factor_mode}），利率敏感度难以精确估计，'
-            f'久期已回退至行业经验值 {DURATION_FALLBACK:.1f}年，压力测试仅供参考'
+            f'⚠️ 模型拟合偏弱（R²={r2:.2f}），这段时间净值变化不太能用利率解释，'
+            f'久期改用行业经验值 {DURATION_FALLBACK:.1f}年，压力测试仅供参考'
         )
     dur_src_note = '（行业经验估算）' if duration_source == 'fallback_low_r2' else position_note
     if duration_underlying > 7:
-        parts.append(f"有效久期 {duration_underlying:.1f}年（**偏长**）{dur_src_note}，加息环境高风险")
+        parts.append(f"利率敏感度高（久期 {duration_underlying:.1f}年{dur_src_note}），加息时净值压力大")
     elif duration_underlying < 2:
-        parts.append(f"有效久期 {duration_underlying:.1f}年（**较短**）{dur_src_note}，对利率变动不敏感")
+        parts.append(f"利率敏感度低（久期 {duration_underlying:.1f}年{dur_src_note}），基本不怕利率波动")
     else:
-        parts.append(f"有效久期 {duration_underlying:.1f}年（中等）{dur_src_note}，利率中性")
+        parts.append(f"利率敏感度中等（久期 {duration_underlying:.1f}年{dur_src_note}）")
 
     parts.append(convexity_note)
 
     if carry_alpha > 0.04:
-        parts.append(f"年化综合carry {carry_alpha*100:.1f}%（**偏高**），可能含信用债或骑乘收益")
+        parts.append(f"年化收益来源 {carry_alpha*100:.1f}%（偏高），可能含信用债或骑乘收益")
     elif carry_alpha > 0.015:
-        parts.append(f"年化综合carry {carry_alpha*100:.1f}%，整体合理")
+        parts.append(f"年化收益来源 {carry_alpha*100:.1f}%，水平合理")
     elif carry_alpha > 0:
-        parts.append(f"年化综合carry {carry_alpha*100:.2f}%，收益主要来自利率敞口")
+        parts.append(f"年化收益来源 {carry_alpha*100:.2f}%，主要靠利率方向赚钱")
     else:
-        parts.append("综合carry为负，纯利率博弈型策略")
+        parts.append("收益来源为负，纯利率方向博弈型")
 
     return {
         'duration':             duration_portfolio,
@@ -2009,26 +2009,22 @@ def _convexity_from_holdings(holdings: dict) -> tuple:
         _credit_pct = (credit_ratio or 0) / _total * 100 if _total > 0 else 0
         if _rate_pct >= 60:
             return 'strong', (
-                f'凸性：**强**（季报穿透，利率债占持仓 {_rate_pct:.0f}%，含国债/政金债），'
-                f'正凸性保护好，利率大幅下行时净值加速上涨'
+                f'凸性：**强**（利率债占持仓 {_rate_pct:.0f}%），利率大跌时净值涨得更快，下行保护好'
             )
         elif _credit_pct >= 60:
             return 'weak', (
-                f'凸性：**弱**（季报穿透，信用/含权债占持仓 {_credit_pct:.0f}%），'
-                f'信用债凸性接近0，可转债等含权债在极端行情下可能有负凸性风险'
+                f'凸性：**弱**（信用/含权债占持仓 {_credit_pct:.0f}%），极端行情下净值波动不会有太多缓冲'
             )
         else:
             return 'moderate', (
-                f'凸性：**中等**（季报穿透，利率债 {_rate_pct:.0f}% / 信用含权债 {_credit_pct:.0f}%），'
-                f'混合结构，正凸性部分可对冲信用波动'
+                f'凸性：**中等**（利率债 {_rate_pct:.0f}% / 信用含权债 {_credit_pct:.0f}%），混合结构，有一定缓冲'
             )
     else:
         # 无细分数据，根据 bond_ratio 给出通用说明
         if bond_ratio > 0.8:
-            return 'unknown', ('凸性：受限于季报数据无债券类别明细，无法精确穿透；'
-                               '若以利率债为主则正凸性保护较好，信用债为主则凸性偏弱')
+            return 'unknown', ('凸性：暂无持仓明细，无法精确判断；利率债为主则缓冲好，信用债为主则缓冲弱')
         else:
-            return 'unknown', '凸性：混合仓位基金，债券部分凸性取决于利率债/信用债比例'
+            return 'unknown', '凸性：混合仓位基金，债券持仓结构待明确后可进一步判断'
 
 
 # ---------- M3. 混合模型：Brinson 归因 + 动态漂移监控 ----------
@@ -4925,8 +4921,8 @@ def main():
         'R²':          'R² = 有多少涨跌可以用市场因子来解释。越高说明基金越像指数，经理主动管理空间越小。',
         'Alpha P值':   'P值 = Alpha的可信度。<0.05才算统计显著，否则那点Alpha可能只是运气。',
         '有效久期':     '久期 = 利率敏感度。久期越长，降息时涨得越多，加息时跌得也越惨。像弹簧，越长越弹。',
-        '凸性':         '凸性 = 久期的保护层。凸性越高，涨的时候久期会自动变长多赚，跌的时候久期缩短少亏。好事。',
-        '年化信用溢价': '综合carry = 票息收入 + 信用溢价 + 骑乘收益的年化总和（回归截距项）。偏高（>4%）时，除了信用风险，也可能是持有高票息短债或利用了曲线陡峭度，并非全是违约风险。',
+        '凸性':         '凸性 = 极端行情时的缓冲保护。凸性越强，利率大跌时净值加速向上，大涨时跌得少。越高越好。',
+        '年化信用溢价': '年化收益来源 = 利息收入 + 信用溢价 + 骑乘收益的年化总和。偏高（>4%）时，可能是买了信用评级偏低的债，也可能是短期高票息策略或曲线套利，不一定代表高风险。',
         '配置效应':     '配置效应（站队）= 基金在股/债大类上的配比与基准不同而带来的超额。经理在股市好时多配了股票，就会有正的配置效应——这是"择时站队"的分。',
         '选择效应':     '选择效应（挑货）= 在相同仓位权重下，基金选的标的比基准同类跑得好/差带来的超额（含交互效应）。这是"选股选债"的分，正值说明经理比基准更会挑。',
         '交互效应':     '交互效应 = 配置超配+同时选对标的带来的叠加奖金（已并入选择效应展示）。可理解为"两种能力同向发力的化学反应"。',
@@ -5098,12 +5094,12 @@ def main():
 
         # ── 模型标签 + 基金类型诊断 ──
         _model_badge_color = '#27ae60' if _is_three_factor else '#e67e22'
-        _model_label = '🔬 三因子期限结构归因' if _is_three_factor else '📐 单因子T-Model归因'
+        _model_label = '🔬 利率+信用三维分析' if _is_three_factor else '📐 单利率因子分析'
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
             f'<span style="background:{_model_badge_color};color:white;font-size:0.75rem;'
             f'padding:2px 10px;border-radius:12px;font-weight:600">{_model_label}</span>'
-            f'<span style="color:#888;font-size:0.76rem">模型: {factor_mode} | Adj.R²={r2_adj:.3f}</span>'
+            f'<span style="color:#888;font-size:0.76rem">模型解释力 Adj.R²={r2_adj:.3f}</span>'
             f'</div>',
             unsafe_allow_html=True
         )
@@ -5121,22 +5117,22 @@ def main():
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 _s_sig = ' *' if p_short < 0.05 else (' ~' if p_short < 0.1 else '')
-                st.markdown(_kpi(f'短端久期（2年期）{_s_sig}', f'{abs(dur_short):.2f}年',
+                st.markdown(_kpi(f'短债敏感度{_s_sig}', f'{abs(dur_short):.2f}年',
                                  'kpi-orange' if abs(dur_short) > 3 else ''), unsafe_allow_html=True)
             with c2:
                 _l_sig = ' *' if p_long < 0.05 else (' ~' if p_long < 0.1 else '')
-                st.markdown(_kpi(f'长端久期（10年期）{_l_sig}', f'{abs(dur_long):.2f}年',
+                st.markdown(_kpi(f'长债敏感度{_l_sig}', f'{abs(dur_long):.2f}年',
                                  'kpi-orange' if abs(dur_long) > 5 else ''), unsafe_allow_html=True)
             with c3:
                 if has_credit:
                     _c_sig = ' *' if p_credit < 0.05 else ''
                     _c_color = 'kpi-orange' if credit_beta < -1.5 else ('kpi-green' if credit_beta > 1.0 else '')
-                    st.markdown(_kpi(f'信用利差β{_c_sig}', f'{credit_beta:.2f}',
+                    st.markdown(_kpi(f'信用风险敞口{_c_sig}', f'{credit_beta:.2f}',
                                      _c_color), unsafe_allow_html=True)
                 else:
-                    st.markdown(_kpi('信用利差β', '—', ''), unsafe_allow_html=True)
+                    st.markdown(_kpi('信用风险敞口', '—', ''), unsafe_allow_html=True)
             with c4:
-                st.markdown(_kpi('年化综合carry', fmt_pct(carry),
+                st.markdown(_kpi('年化收益来源', fmt_pct(carry),
                                  'kpi-orange' if carry > 0.04 else ''), unsafe_allow_html=True)
             # 显著性图例
             st.markdown(
@@ -5171,14 +5167,14 @@ def main():
 
         # 信用利差方向图（三因子模式下有信用因子时展示）
         if _is_three_factor and has_credit and p_credit < 0.1:
-            _c_dir = '利差扩大时净值下跌（信用下沉型）' if credit_beta < 0 else '利差扩大时净值上涨（反向操作）'
+            _c_dir = '信用风险扩大时净值会跌（持有较多信用债）' if credit_beta < 0 else '信用利差收窄时受益（偏利率债/反向对冲）'
             _c_bg  = '#fff8f0' if credit_beta < 0 else '#f0fff8'
             _c_bd  = '#e67e22' if credit_beta < 0 else '#27ae60'
             st.markdown(
                 f'<div style="background:{_c_bg};border-left:3px solid {_c_bd};border-radius:5px;'
                 f'padding:7px 12px;font-size:0.82rem;color:#333;margin-bottom:6px">'
-                f'📊 <b>信用利差敏感度 β={credit_beta:.2f}</b>（p={p_credit:.3f}）：{_c_dir}。'
-                f'{"高Carry主要来自信用风险溢价，需关注评级下沉风险。" if credit_beta < -1.0 else "信用利差收窄时该基金获益。"}'
+                f'📊 <b>信用风险敏感度</b>（β={credit_beta:.2f}, p={p_credit:.3f}）：{_c_dir}。'
+                f'{"收益偏高可能是因为买了评级低的债，需关注违约风险。" if credit_beta < -1.0 else "信用债占比不高，利率才是主要驱动。"}'
                 f'</div>',
                 unsafe_allow_html=True
             )
@@ -5204,16 +5200,24 @@ def main():
 
         _bond_interp = br.get('interpretation', '')
         if _bond_interp:
-            st.markdown(f'<div class="card" style="font-size:0.88rem;color:#444">{_bond_interp}</div>',
-                        unsafe_allow_html=True)
+            # 把分号分隔的 parts 拆成 bullet 列表展示
+            _interp_parts = [p.strip() for p in _bond_interp.split('；') if p.strip()]
+            # 过滤掉和上面 convexity 卡片重复的那条
+            _interp_parts = [p for p in _interp_parts if '凸性' not in p]
+            if _interp_parts:
+                _bullets = ''.join(f'<li style="margin-bottom:3px">{p}</li>' for p in _interp_parts)
+                st.markdown(
+                    f'<div class="card" style="font-size:0.86rem;color:#444">'
+                    f'<ul style="margin:0;padding-left:18px;line-height:1.75">{_bullets}</ul></div>',
+                    unsafe_allow_html=True
+                )
 
         # 债券模型方法说明
         st.markdown(
             '<div style="font-size:0.8rem;color:#666;padding:6px 10px;'
             'background:#f8f9fa;border-radius:6px;margin-top:4px">'
-            '📖 <b>三因子期限结构归因</b>：Rₚ = α + β_short·(-ΔY_2Y) + β_long·(-ΔY_10Y) + β_credit·ΔCS + ε；'
-            '短端因子捕获存单/短融敏感度，长端因子捕获利率债暴露，信用利差因子揭示信用下沉程度。'
-            'Adj.R²越高说明三因子解释力越强。</div>',
+            '📖 <b>分析方法</b>：将基金每日净值涨跌，对短期利率、长期利率和信用利差三个因子做回归，'
+            '分别算出这支基金对"短债"、"长债"、"信用债"各有多大暴露。Adj.R²越高说明三个因子越能解释净值变化。</div>',
             unsafe_allow_html=True
         )
 
@@ -5332,43 +5336,41 @@ def main():
 
             # 利率债 vs 信用债结构
             if _rate_r > 0.6:
-                _penetration_insight.append('持仓以<b>利率债为主</b>（国债+政策性金融债），久期风险主要来自利率波动，信用风险较低。')
+                _penetration_insight.append('持仓以<b>国债/政金债为主</b>，主要风险是利率变化，信用违约风险低。')
             elif _credit_r + _conv_r > 0.5:
-                _penetration_insight.append(f'持仓以<b>信用/含权债为主</b>（占持仓 {(_credit_r+_conv_r)*100:.0f}%），存在一定信用下沉暴露。')
+                _penetration_insight.append(f'持仓<b>信用债/可转债偏多</b>（占 {(_credit_r+_conv_r)*100:.0f}%），收益相对高一些，但也承担了更多信用风险。')
             else:
-                _penetration_insight.append('持仓呈<b>利率债+信用债混合</b>结构，同时承担利率风险与信用风险。')
+                _penetration_insight.append('国债和信用债<b>混合配置</b>，利率风险和信用风险都有一些，相对均衡。')
 
             # 可转债情况
             if _conv_r > 0.1:
                 _n_conv = len(_conv_detail) if not _conv_detail.empty else '若干'
-                _penetration_insight.append(f'可转债仓位占持仓 <b>{_conv_r*100:.0f}%</b>（{_n_conv}只），使该基金在股市上涨时具有一定弹性，但波动性较纯利率债更高。')
+                _penetration_insight.append(f'可转债仓位占 <b>{_conv_r*100:.0f}%</b>（{_n_conv}只），股市涨时这部分会有弹性，但波动也比纯债更大。')
 
             # 与三因子β联动
             if has_credit and abs(credit_beta) > 0.5 and p_credit < 0.1:
                 if credit_beta < 0:
                     _penetration_insight.append(
-                        f'三因子回归显示 β_credit = {credit_beta:.2f}（显著），与持仓结构吻合：'
-                        f'信用债占持仓 {_credit_r*100:.0f}%，利差走阔时净值承压，<b>信用下沉策略得到季报数据印证</b>。'
+                        f'模型测算显示信用风险敏感度较高，和持仓中信用债占比 {_credit_r*100:.0f}% 相符——<b>信用市场出风险时，这支基金会比较难看。</b>'
                     )
                 else:
                     _penetration_insight.append(
-                        f'三因子回归显示 β_credit = {credit_beta:.2f}（正值），说明该基金在信用利差扩大时反而受益，可能存在做空信用或偏向利率债对冲策略。'
+                        f'模型显示信用利差扩大反而对净值有利，可能持有利率债对冲或有特殊策略。'
                     )
 
             # 加权期限
             if _wtd_dur > 0:
-                _dur_comment = '偏长久期' if _wtd_dur > 4 else ('中短久期' if _wtd_dur > 2 else '短久期')
+                _dur_comment = '偏长，降息时涨得更多但加息风险也更大' if _wtd_dur > 4 else ('中短期，利率敏感度适中' if _wtd_dur > 2 else '很短，基本不怕利率波动')
                 _penetration_insight.append(
-                    f'从季报持仓估算加权剩余期限约 <b>{_wtd_dur:.1f}年</b>（{_dur_comment}），'
-                    f'与三因子模型反推的短端久期 {abs(dur_short):.1f}年 / 长端久期 {abs(dur_long):.1f}年 可相互印证。'
-                    f'<span style="color:#888;font-size:0.78em">（注：季报期限估算为启发式推算，非精确YTM加权）</span>'
+                    f'从持仓看，债券剩余平均期限约 <b>{_wtd_dur:.1f}年</b>（{_dur_comment}）。'
+                    f'<span style="color:#888;font-size:0.78em">（估算值，仅供参考）</span>'
                 )
 
             if _penetration_insight:
                 st.markdown(
                     '<div style="background:#f8f0ff;border-left:3px solid #8e44ad;border-radius:6px;'
                     'padding:10px 14px;font-size:0.85rem;color:#333;margin-top:4px;line-height:1.8">'
-                    '🔍 <b>穿透解读</b>：' + ''.join(f'<br>• {s}' for s in _penetration_insight) +
+                    '🔍 <b>持仓透视</b>：' + ''.join(f'<br>• {s}' for s in _penetration_insight) +
                     '</div>',
                     unsafe_allow_html=True
                 )
@@ -5376,8 +5378,7 @@ def main():
             # 数据说明
             st.markdown(
                 '<div style="font-size:0.75rem;color:#aaa;margin-top:4px">'
-                '📌 数据来源：天天基金季报债券投资明细；可转债评级通过交易所接口实时查询；'
-                '加权期限为启发式估算（含权债按到期日，利率债按名称发行年份推断），仅供参考。</div>',
+                '📌 数据来源：天天基金季报债券持仓；可转债评级实时查询；期限为估算值，仅供参考，非精确YTM。</div>',
                 unsafe_allow_html=True
             )
 
