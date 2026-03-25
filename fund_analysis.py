@@ -43,9 +43,9 @@ warnings.filterwarnings('ignore')
 
 
 # ============================================================
-# 🛡️ 全局重试装饰器：网络抖动自动重试（最多3次，间隔2s）
+# 🛡️ 全局重试装饰器：网络抖动自动重试（最多3次，间隔1s）
 # ============================================================
-def retry_on_failure(retries: int = 3, delay: float = 2.0):
+def retry_on_failure(retries: int = 3, delay: float = 1.0):
     """
     自动重试装饰器。遇到任何异常自动重试，最后一次失败才向上抛出。
     用法：@retry_on_failure(retries=3, delay=2)
@@ -126,6 +126,25 @@ def render_css():
 
 # ---------- 1. 基金基本信息 ----------
 
+# ── 全量列表缓存（全天有效，所有 symbol 共享，避免每次重新拉几千行） ──
+@st.cache_data(ttl=86400, show_spinner=False)
+def _get_fund_name_list() -> pd.DataFrame:
+    """天天基金全量基金名称/类型列表，全天缓存"""
+    try:
+        return ak.fund_name_em()
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _get_fund_scale_sina() -> pd.DataFrame:
+    """新浪开放式基金规模全量表，全天缓存"""
+    try:
+        return ak.fund_scale_open_sina()
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_basic_info(symbol: str) -> dict:
     """获取基金基本信息（雪球优先，天天补充）"""
@@ -163,7 +182,7 @@ def fetch_basic_info(symbol: str) -> dict:
     # fund_name_em 包含全部公募，可以至少补全基金名称和大类类型
     if r['name'] == symbol or not r['type_raw']:
         try:
-            df_names = ak.fund_name_em()
+            df_names = _get_fund_name_list()
             # 字段：基金代码 / 拼音缩写 / 基金简称 / 基金类型 / 拼音全称
             row = df_names[df_names['基金代码'] == symbol]
             if not row.empty:
@@ -185,7 +204,7 @@ def fetch_basic_info(symbol: str) -> dict:
 
     if _need_scale or _need_manager or _need_estdate:
         try:
-            _df_sina = ak.fund_scale_open_sina()
+            _df_sina = _get_fund_scale_sina()
             if _df_sina is not None and not _df_sina.empty:
                 # symbol 可能是 int 或 str，做宽松匹配
                 _row_sina = _df_sina[_df_sina['基金代码'].astype(str).str.zfill(6) == str(symbol).zfill(6)]
@@ -450,11 +469,31 @@ def fetch_ff_factors(start: str, end: str) -> pd.DataFrame:
                   若全部备用指数拉取失败 → 直接 drop 此列，降维至三/四因子，
                   绝不用 NaN 列污染整个 DataFrame（NaN 列会让 dropna 清零全表）
     """
-    mkt   = fetch_index_daily('sh000300', start, end).rename(columns={'ret': 'Mkt'})
-    small = fetch_index_daily('sh000852', start, end).rename(columns={'ret': 'ret_small'})
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # ── 并行拉取 4 个基础指数（相互独立，无依赖） ──
+    _codes = {
+        'mkt':   'sh000300',
+        'small': 'sh000852',
+        'val':   'sz399371',
+        'grw':   'sz399370',
+    }
+    _results = {}
+    with ThreadPoolExecutor(max_workers=4) as _ex:
+        _futures = {_ex.submit(fetch_index_daily, code, start, end): name
+                    for name, code in _codes.items()}
+        for _fut in as_completed(_futures):
+            _name = _futures[_fut]
+            try:
+                _results[_name] = _fut.result()
+            except Exception:
+                _results[_name] = pd.DataFrame(columns=['date', 'ret'])
+
+    mkt   = _results.get('mkt',   pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'Mkt'})
+    small = _results.get('small', pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'ret_small'})
+    val   = _results.get('val',   pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'ret_val'})
+    grw   = _results.get('grw',   pd.DataFrame(columns=['date','ret'])).rename(columns={'ret': 'ret_grw'})
     large = mkt[['date']].copy().assign(ret_large=mkt['Mkt'])
-    val   = fetch_index_daily('sz399371', start, end).rename(columns={'ret': 'ret_val'})
-    grw   = fetch_index_daily('sz399370', start, end).rename(columns={'ret': 'ret_grw'})
 
     # ── 以沪深300(Mkt)日期为基准，其余指数 left join + ffill(3天) ──
     # 避免单个指数停牌/数据缺失导致整个因子矩阵被 inner join 截断
@@ -782,30 +821,39 @@ def fetch_bond_three_factors(start: str, end: str) -> pd.DataFrame:
     if term_df.empty:
         return pd.DataFrame(columns=['date', 'delta_y2', 'delta_y10', 'delta_spread'])
 
-    # ── 步骤2：按年分段获取信用利差 ──
+    # ── 步骤2：按年分段获取信用利差（并行）──
     # bond_china_yield 必须按整年请求（跨年数据异常），分段后拼合
     start_yr = pd.to_datetime(start).year
     end_yr   = pd.to_datetime(end).year
 
-    gov_frames = []
-    cre_frames = []
-    for yr in range(start_yr, end_yr + 1):
+    def _fetch_year(yr: int):
         s = f"{yr}0101"
         e = f"{yr}1231"
         try:
             df_yr = ak.bond_china_yield(start_date=s, end_date=e)
             if df_yr is None or df_yr.empty:
-                continue
-            # 国债3年
+                return None, None
             gov_yr = df_yr[df_yr['曲线名称'] == '中债国债收益率曲线'][['日期', '3年']].copy()
             gov_yr.columns = ['date', 'g_3y']
-            gov_frames.append(gov_yr)
-            # 中短期票据AAA 3年
             cre_yr = df_yr[df_yr['曲线名称'] == '中债中短期票据收益率曲线(AAA)'][['日期', '3年']].copy()
             cre_yr.columns = ['date', 'c_3y']
-            cre_frames.append(cre_yr)
+            return gov_yr, cre_yr
         except Exception:
-            continue
+            return None, None
+
+    gov_frames = []
+    cre_frames = []
+    years = list(range(start_yr, end_yr + 1))
+    from concurrent.futures import ThreadPoolExecutor as _TPE2
+    with _TPE2(max_workers=min(len(years), 4)) as _ex3:
+        _yr_futures = {_ex3.submit(_fetch_year, yr): yr for yr in years}
+        from concurrent.futures import as_completed as _ac
+        for _fut in _ac(_yr_futures):
+            gov_yr, cre_yr = _fut.result()
+            if gov_yr is not None:
+                gov_frames.append(gov_yr)
+            if cre_yr is not None:
+                cre_frames.append(cre_yr)
 
     # 组装信用利差序列
     spread_df = pd.DataFrame()
@@ -4415,10 +4463,37 @@ def main():
     end_str   = nav_df['date'].max().strftime('%Y%m%d')
 
     # ============================================================
-    # STEP 3  持仓与仓位判断
+    # STEP 3+4  持仓 & 基准构建（并行）
     # ============================================================
-    with st.spinner("获取持仓数据..."):
-        holdings = fetch_holdings(fund_code, basic['type_category'])
+    # build_benchmark_ret 需要 start_str/end_str，但不依赖持仓，两者可并行
+    parsed_bm = basic['benchmark_parsed']
+    if not parsed_bm:
+        defaults = {
+            'equity': {'type':'single','components':[{'name':'沪深300','code':'sh000300','weight':1.0}]},
+            'bond':   {'type':'single','components':[{'name':'中债综合','code':None,'weight':1.0}]},
+            'mixed':  {'type':'custom','components':[
+                {'name':'沪深300','code':'sh000300','weight':0.6},
+                {'name':'中债综合','code':None,'weight':0.4}]},
+            'sector': {'type':'single','components':[{'name':'沪深300','code':'sh000300','weight':1.0}]},
+            'index':  {'type':'single','components':[{'name':'沪深300','code':'sh000300','weight':1.0}]},
+            'qdii':   {},
+        }
+        parsed_bm = defaults.get(basic['type_category'], defaults['equity'])
+
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    with st.spinner("获取持仓与基准数据..."):
+        with _TPE(max_workers=2) as _ex:
+            _fut_hold = _ex.submit(fetch_holdings, fund_code, basic['type_category'])
+            if parsed_bm:
+                _fut_bm = _ex.submit(build_benchmark_ret, parsed_bm, start_str, end_str)
+            else:
+                _fut_bm = None
+            holdings = _fut_hold.result()
+            if _fut_bm is not None:
+                bm_df = _fut_bm.result()
+            else:
+                bm_df = pd.DataFrame(columns=['date', 'bm_ret'])
 
     stock_ratio = holdings.get('stock_ratio', 0.8)
     bond_ratio  = holdings.get('bond_ratio',  0.1)
@@ -4440,31 +4515,6 @@ def main():
     also_duration = (model_type in ('equity','mixed') and bond_ratio > 0.20)
 
     _sector_bm_label = ''   # 行业基金申万基准标签，空=未覆写（STEP 5 sector 分支会更新）
-
-    # ============================================================
-    # STEP 4  基准构建
-    # ============================================================
-    with st.spinner("构建业绩基准..."):
-        parsed_bm = basic['benchmark_parsed']
-        if not parsed_bm:
-            # 默认基准：权益→沪深300，债券→中债，混合→自定义60/40
-            # QDII→恒生指数（无法直接拉取时用空基准，累计收益图只显示基金净值）
-            defaults = {
-                'equity': {'type':'single','components':[{'name':'沪深300','code':'sh000300','weight':1.0}]},
-                'bond':   {'type':'single','components':[{'name':'中债综合','code':None,'weight':1.0}]},
-                'mixed':  {'type':'custom','components':[
-                    {'name':'沪深300','code':'sh000300','weight':0.6},
-                    {'name':'中债综合','code':None,'weight':0.4}]},
-                'sector': {'type':'single','components':[{'name':'沪深300','code':'sh000300','weight':1.0}]},
-                'index':  {'type':'single','components':[{'name':'沪深300','code':'sh000300','weight':1.0}]},
-                'qdii':   {},   # QDII基准暂无AkShare可拉取的MSCI指数，留空（图中只显示基金净值）
-            }
-            parsed_bm = defaults.get(basic['type_category'], defaults['equity'])
-        # QDII基金：如果基准解析为空（MSCI无法通过AkShare拉取），使用空DataFrame
-        if not parsed_bm:
-            bm_df = pd.DataFrame(columns=['date', 'bm_ret'])
-        else:
-            bm_df = build_benchmark_ret(parsed_bm, start_str, end_str)
 
     # ============================================================
     # STEP 5  运行量化模型
@@ -4535,8 +4585,11 @@ def main():
                                             bond_structure.get('total_weight', 0) / 100
 
         with st.spinner("获取国债期限结构和信用利差数据..."):
-            treasury     = fetch_treasury_10y(start_str, end_str)
-            three_factor = fetch_bond_three_factors(start_str, end_str)
+            with _TPE(max_workers=2) as _ex2:
+                _fut_t  = _ex2.submit(fetch_treasury_10y, start_str, end_str)
+                _fut_tf = _ex2.submit(fetch_bond_three_factors, start_str, end_str)
+                treasury     = _fut_t.result()
+                three_factor = _fut_tf.result()
 
         if not treasury.empty:
             fund_ret_s = nav_df.set_index('date')['ret'].dropna()
