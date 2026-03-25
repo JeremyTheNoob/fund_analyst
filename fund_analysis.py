@@ -1996,26 +1996,34 @@ def _convexity_from_holdings(holdings: dict) -> tuple:
         return 'unknown', '凸性：持仓数据不足，无法穿透估算'
 
     # 尝试从持仓中提取债券类别占比
-    # fund_portfolio_hold_em 返回的是股票持仓，不含债券明细
-    # 这里根据 bond_ratio / 资产配置粗分
     bond_ratio = holdings.get('bond_ratio', 0.0)
     stock_ratio = holdings.get('stock_ratio', 0.0)
 
-    # 如果有持仓债券类型数据（未来扩展）
-    gov_bond_ratio = holdings.get('gov_bond_ratio', None)  # 国债+政金债占净值比
-    credit_ratio   = holdings.get('credit_bond_ratio', None)  # 信用债占净值比
+    # v10.1：优先读取季报穿透数据（由 analyze_bond_structure 注入）
+    gov_bond_ratio = holdings.get('gov_bond_ratio', None)   # 利率债占净值比
+    credit_ratio   = holdings.get('credit_bond_ratio', None)  # 信用债+含权债占净值比
 
-    if gov_bond_ratio is not None:
-        if gov_bond_ratio > 0.5:
-            return 'strong', (f'凸性：**强**（穿透估算，利率债占比~{gov_bond_ratio*100:.0f}%），'
-                              f'国债/政金债凸性保护好，利率大幅波动有缓冲')
-        elif credit_ratio is not None and credit_ratio > 0.5:
-            return 'weak', (f'凸性：**弱**（穿透估算，信用债/存单占比~{credit_ratio*100:.0f}%），'
-                            f'信用债凸性接近0，含权债（可转债等）可能有负凸性风险')
+    if gov_bond_ratio is not None and (gov_bond_ratio + (credit_ratio or 0)) > 0.01:
+        _total = gov_bond_ratio + (credit_ratio or 0)
+        _rate_pct   = gov_bond_ratio / _total * 100 if _total > 0 else 0
+        _credit_pct = (credit_ratio or 0) / _total * 100 if _total > 0 else 0
+        if _rate_pct >= 60:
+            return 'strong', (
+                f'凸性：**强**（季报穿透，利率债占持仓 {_rate_pct:.0f}%，含国债/政金债），'
+                f'正凸性保护好，利率大幅下行时净值加速上涨'
+            )
+        elif _credit_pct >= 60:
+            return 'weak', (
+                f'凸性：**弱**（季报穿透，信用/含权债占持仓 {_credit_pct:.0f}%），'
+                f'信用债凸性接近0，可转债等含权债在极端行情下可能有负凸性风险'
+            )
         else:
-            return 'moderate', '凸性：中等（国债+信用债混合持仓），有一定正凸性保护'
+            return 'moderate', (
+                f'凸性：**中等**（季报穿透，利率债 {_rate_pct:.0f}% / 信用含权债 {_credit_pct:.0f}%），'
+                f'混合结构，正凸性部分可对冲信用波动'
+            )
     else:
-        # 无细分数据，根据bond_ratio给出通用说明
+        # 无细分数据，根据 bond_ratio 给出通用说明
         if bond_ratio > 0.8:
             return 'unknown', ('凸性：受限于季报数据无债券类别明细，无法精确穿透；'
                                '若以利率债为主则正凸性保护较好，信用债为主则凸性偏弱')
@@ -4496,6 +4504,14 @@ def main():
 
     # ----- 债券模型 -----
     if model_type == 'bond' or also_duration:
+        # 把季报债券穿透结果注入 holdings，让 _convexity_from_holdings 能读到真实利率债/信用债比例
+        if bond_structure:
+            holdings['gov_bond_ratio']    = bond_structure.get('rate_ratio', None) * \
+                                            bond_structure.get('total_weight', 0) / 100
+            holdings['credit_bond_ratio'] = (bond_structure.get('credit_ratio', 0) +
+                                             bond_structure.get('convert_ratio', 0)) * \
+                                            bond_structure.get('total_weight', 0) / 100
+
         with st.spinner("获取国债期限结构和信用利差数据..."):
             treasury     = fetch_treasury_10y(start_str, end_str)
             three_factor = fetch_bond_three_factors(start_str, end_str)
