@@ -400,19 +400,39 @@ def fetch_index_daily(symbol_code: str, start: str, end: str) -> pd.DataFrame:
     """通用指数日行情获取，返回 date / ret（公共因子数据，全天缓存 86400s）
     ⚠️ 横线防护：pct_change() 首行永远是 NaN，这里统一填 0，
        确保 cumprod 时基准不会因首行 NaN 导致整条线塌为 0。
+    双接口策略：
+       主力：stock_zh_index_daily（稳定，无 em 后缀依赖）
+       备用：stock_zh_index_daily_em（部分时期可用）
     """
-    try:
-        df = ak.stock_zh_index_daily_em(symbol=symbol_code)
+    def _build(df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=['date','ret'])
-        df = df[['date','close']].copy()
+            return pd.DataFrame(columns=['date', 'ret'])
+        df = df[['date', 'close']].copy()
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date')
         df = df[(df['date'] >= pd.to_datetime(start)) & (df['date'] <= pd.to_datetime(end))]
-        df['ret'] = df['close'].pct_change().fillna(0)  # 首行NaN→0，防基准横线
-        return df[['date','ret']].reset_index(drop=True)
+        df['ret'] = df['close'].pct_change().fillna(0)
+        return df[['date', 'ret']].reset_index(drop=True)
+
+    # ── 主力接口：stock_zh_index_daily ──
+    try:
+        raw = ak.stock_zh_index_daily(symbol=symbol_code)
+        result = _build(raw)
+        if not result.empty:
+            return result
     except Exception:
-        return pd.DataFrame(columns=['date','ret'])
+        pass
+
+    # ── 备用接口：stock_zh_index_daily_em ──
+    try:
+        raw = ak.stock_zh_index_daily_em(symbol=symbol_code)
+        result = _build(raw)
+        if not result.empty:
+            return result
+    except Exception:
+        pass
+
+    return pd.DataFrame(columns=['date', 'ret'])
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -875,9 +895,11 @@ _INDEX_NAME_CODE = {
     '活期存款':     None,
     '定期存款':     None,
     '一年定期':     None,
-    # 港股/海外（暂不支持，返回None走兜底）
-    '恒生':         None,
-    '恒生指数':     None,
+    # 港股/海外（用 hk: 前缀标识，走 fetch_hk_index_daily 接口）
+    '恒生':         'hk:HSI',
+    '恒生指数':     'hk:HSI',
+    '恒生科技':     'hk:HSTECH',
+    '恒生国企':     'hk:HSCEI',
 }
 
 def _parse_benchmark(text: str) -> dict:
@@ -981,6 +1003,10 @@ def build_benchmark_ret(parsed: dict, start: str, end: str) -> pd.DataFrame:
 
         if code is None and '中债' in comp.get('name',''):
             df_part = fetch_bond_index(start, end).rename(columns={'ret':'part_ret'})
+        elif code is not None and code.startswith('hk:'):
+            # 港股指数（恒生/国企/科技等）——用新浪港股接口
+            hk_symbol = code[3:]  # 去掉 'hk:' 前缀，如 'HSI'
+            df_part = fetch_hk_index_daily(hk_symbol, start, end).rename(columns={'ret':'part_ret'})
         elif code is None:
             # 银行活期等，收益率视为 0
             df_part = pd.DataFrame({'date': pd.date_range(start, end, freq='B'),
