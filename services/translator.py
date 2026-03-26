@@ -344,3 +344,300 @@ def translate_results(model: str, results: dict,
         out['tags'] = []
 
     return out
+
+
+# ============================================================
+# 🔬 纯债基金专属翻译层（四段式金字塔结构）
+# ============================================================
+
+def translate_pure_bond_results(
+    model_results: dict,
+    macro_plugin: dict = None,
+) -> dict:
+    """
+    纯债基金大白话四段式报告
+
+    金字塔结构：
+    1. 核心定调（结论先行）
+    2. 收益溯源（钱从哪里来）
+    3. 风险排查（坑在哪里）
+    4. 投资建议（怎么买）
+
+    Args:
+        model_results: run_pure_bond_analysis()的结果
+        macro_plugin: get_macro_plugin()的结果
+
+    Returns:
+        {
+          'headline': str,          # 标题行（一句话定调）
+          'fund_label': str,        # 性格标签
+          'scores_summary': str,    # 评分摘要
+          'income_source': str,     # 第2段：收益溯源
+          'risk_check': str,        # 第3段：风险排查
+          'advice': str,            # 第4段：投资建议
+          'duration_highlight': str,# 久期专项说明
+          'duration_grade_note': str, # 久期评级说明（A+时特殊）
+          'macro_notes': str,       # 宏观环境备注
+          'tags': list,             # 标签列表
+          'overall_grade': str,     # 综合评级
+        }
+    """
+    scores = model_results.get('scores', {})
+    asset_struct = model_results.get('asset_structure', {})
+    credit = model_results.get('credit_quality', {})
+    conc = model_results.get('concentration', {})
+    dur = model_results.get('duration_system', {})
+    three_factor = model_results.get('three_factor_results', {})
+    identity = model_results.get('identity', {})
+    data_quality = model_results.get('data_quality', {})
+
+    fund_label = scores.get('fund_label', model_results.get('fund_label', '📊 均衡配置型'))
+    grade = scores.get('grade', 'B')
+    total_score = scores.get('total_score', 70.0)
+    one_vote_veto = scores.get('one_vote_veto', False)
+    veto_reason = scores.get('veto_reason', '')
+
+    # ── 1. 核心定调 ───────────────────────────────────────────────
+    label_core = fund_label.split('（')[0].replace('🚀', '').replace('🛡️', '').replace(
+        '🌾', '').replace('⚡', '').replace('🎲', '').replace('🎯', '').replace(
+        '💰', '').replace('📊', '').strip()
+
+    grade_emoji = {'A+': '🏆', 'A': '✅', 'B': '📊', 'C': '🟡', 'D': '❌'}.get(grade, '📊')
+
+    if one_vote_veto:
+        headline = f"❌【高风险警示】{label_core} · 触发一票否决"
+        scores_summary = f"综合评级：D级 | 原因：{veto_reason}"
+    else:
+        headline = f"{grade_emoji}【{label_core}】综合评分 {total_score:.0f}分 / {grade}级"
+        scores_summary = (
+            f"底层资产质量 {scores.get('score_quality', 75):.0f}分 | "
+            f"信用 {scores.get('s_credit', 80):.0f}分 · "
+            f"集中度 {scores.get('s_conc', 80):.0f}分 · "
+            f"结构 {scores.get('s_struct', 80):.0f}分 | "
+            f"久期管理 {scores.get('s_duration', 80):.0f}分（{scores.get('duration_grade', 'B')}级）"
+        )
+
+    # ── 2. 收益溯源 ───────────────────────────────────────────────
+    income_parts = []
+    rate_r = asset_struct.get('rate_ratio', 0)
+    credit_r = asset_struct.get('credit_ratio', 0)
+    ncd_r = asset_struct.get('ncd_ratio', 0)
+    duration_val = dur.get('duration', 2.0)
+    alpha = three_factor.get('alpha', 0.0)
+    alpha_pval = three_factor.get('alpha_pval', 1.0)
+
+    # 主要收益来源分析
+    if ncd_r > 0.50:
+        income_parts.append(
+            f"💰 收益来源主要是同业存单的稳定票息（占比{ncd_r*100:.0f}%），"
+            f"本质上是一只增强版的货币基金，收益稳健但Alpha空间有限"
+        )
+    elif rate_r > 0.60:
+        if duration_val > 4:
+            income_parts.append(
+                f"🚀 主要靠利率债资本利得赚钱（利率债{rate_r*100:.0f}%，久期{duration_val:.1f}年）。"
+                f"经理对利率走势判断精准，在债牛行情中吃到了最肥的一段"
+            )
+        else:
+            income_parts.append(
+                f"🛡️ 以利率债票息为主（{rate_r*100:.0f}%），久期{duration_val:.1f}年，"
+                f"赚的是稳稳的利息钱，波动极低"
+            )
+    elif credit_r > 0.60:
+        wacs = credit.get('wacs', 80)
+        if credit.get('is_credit_sinking'):
+            income_parts.append(
+                f"⚡ 主要靠信用债挖掘赚钱（{credit_r*100:.0f}%），"
+                f"经理在做'信用下沉'，博取高收益债的风险溢价。"
+                f"WACS评分{wacs:.0f}（偏低），收益质量需关注"
+            )
+        else:
+            income_parts.append(
+                f"🌾 主要靠优质信用债的票息赚钱（{credit_r*100:.0f}%），"
+                f"WACS评分{wacs:.0f}（高等级）。"
+                f"赚的是辛苦的选券的钱，收益质量高"
+            )
+    else:
+        income_parts.append(
+            f"📊 利率债+信用债均衡配置（利率{rate_r*100:.0f}% / 信用{credit_r*100:.0f}%），"
+            f"收益来源多元化"
+        )
+
+    # Alpha贡献
+    if alpha_pval < 0.05 and alpha > 0:
+        income_parts.append(
+            f"✨ 三因子模型显示：剔除市场因子后，年化Alpha为{alpha*100:.2f}%（显著）"
+        )
+    elif alpha_pval < 0.1 and alpha > 0:
+        income_parts.append(f"经理存在一定的超额选券能力（Alpha={alpha*100:.2f}%，弱显著）")
+
+    income_source = '；'.join(income_parts)
+
+    # ── 3. 风险排查 ───────────────────────────────────────────────
+    risk_parts = []
+
+    # HHI集中度风险
+    hhi = conc.get('static_hhi', 500)
+    top5 = conc.get('top5_ratio', 0.2)
+    hhi_trend = conc.get('hhi_trend', 'stable')
+
+    if hhi > 1500:
+        risk_parts.append(
+            f"🎯 集中度较高（HHI={hhi:.0f}），前五大重仓债占比{top5*100:.0f}%。"
+            f"鸡蛋比较集中，单只债券踩雷会导致净值明显跳水"
+        )
+    elif hhi_trend == 'rising':
+        risk_parts.append(
+            f"📈 动态预警：近期HHI持续上升（当前{hhi:.0f}），"
+            f"经理正在增加押注——需警惕风格激进化"
+        )
+    else:
+        risk_parts.append(f"✅ 持仓较为分散（HHI={hhi:.0f}），单券踩雷风险可控")
+
+    # 久期风险
+    std_range = dur.get('standard_range', (1.0, 5.0))
+    is_in_std = dur.get('is_in_standard', True)
+    if not is_in_std:
+        risk_parts.append(
+            f"⚠️ 久期漂移：实测{duration_val:.1f}年，"
+            f"超出{dur.get('fund_subtype', '基金类型')}标准区间{std_range}，"
+            f"风格与宣传不符"
+        )
+
+    # 利率压力测试
+    stress_10bp = dur.get('stress_10bp', -0.2)
+    risk_parts.append(
+        f"📐 压力测试：利率若上行10BP，净值约跌{abs(stress_10bp):.2f}%"
+    )
+
+    # 信用下沉风险
+    if credit.get('is_credit_sinking'):
+        sink_r = credit.get('sinking_ratio', 0)
+        risk_parts.append(
+            f"⚡ 信用下沉：AA+以下占比{sink_r*100:.0f}%。"
+            f"经理在用风险换收益，适合风险偏好较高的投资者"
+        )
+
+    # 数据质量警告
+    if not data_quality.get('is_valid', True):
+        risk_parts.append(
+            f"⚠️ 数据质量：{data_quality.get('warnings', [''])[0]}"
+        )
+
+    risk_check = '；'.join(risk_parts)
+
+    # ── 4. 投资建议 ───────────────────────────────────────────────
+    market_trend = ''
+    if macro_plugin and macro_plugin.get('rate_macro_text'):
+        pass  # 宏观文本已在 macro_notes 中展示
+
+    if one_vote_veto:
+        advice = f"❌ 不建议配置。{veto_reason}"
+    elif grade == 'A':
+        if credit_r > 0.60 and credit.get('is_credit_sinking'):
+            advice = (
+                f"适合作为组合中的'进攻角'（{label_core}）。"
+                f"鉴于信用下沉策略，建议分批买入，"
+                f"控制单基金配置比例不超过15%，分散尾部风险。"
+            )
+        elif rate_r > 0.60 and duration_val > 4:
+            advice = (
+                f"当前久期处于高位，在利率下行趋势中表现亮眼。"
+                f"建议顺势持有，但密切关注利率拐点信号，"
+                f"利率开始上行时及时减仓。"
+            )
+        else:
+            advice = (
+                f"优质纯债基金，适合作为组合底仓。"
+                f"可长期持有，利率上行时适当减持，利率下行时加仓。"
+            )
+    elif grade == 'B':
+        advice = (
+            f"整体表现合格，风格基本稳定。"
+            f"适合稳健型投资者作为组合的安全垫，"
+            f"建议配置比例不超过组合的30%。"
+        )
+    elif grade == 'C':
+        advice = (
+            f"存在风格漂移或信用质量问题，需谨慎配置。"
+            f"建议先观察一个季度，确认风格改善后再考虑买入。"
+        )
+    else:
+        advice = (
+            f"综合评分偏低，不建议作为主要持仓。"
+            f"如确实需要配置，建议小仓位（<5%）并设置止损。"
+        )
+
+    # ── 久期专项说明 ──────────────────────────────────────────────
+    dur_grade = scores.get('duration_grade', 'B')
+    dur_score = scores.get('s_duration', 80)
+    timing_score = dur.get('timing_score', 0)
+
+    if dur_grade == 'A+':
+        duration_highlight = (
+            f"🏆 【卓越表现】久期管理得分{dur_score:.0f}分（A+级），"
+            f"主要源于在{'利率下行' if timing_score > 0 else '利率波动'}阶段的精准择时操作，"
+            f"超额收益显著。"
+        )
+        duration_grade_note = (
+            f"久期择时得分{dur_score:.0f}分（突破100分基准），"
+            f"代表经理在合规区间内展现了卓越的择时能力。"
+        )
+    elif dur_grade == 'A':
+        duration_highlight = (
+            f"✅ 久期管理优秀（{dur_score:.0f}分 / A级），"
+            f"久期{duration_val:.1f}年严格匹配基金类型，风格稳健。"
+        )
+        duration_grade_note = ''
+    elif dur_grade == 'D':
+        duration_highlight = (
+            f"❌ 久期管理警示（{dur_score:.0f}分 / D级），"
+            f"实测久期{duration_val:.1f}年严重偏离基金类型标准，"
+            f"风格背离风险较高。"
+        )
+        duration_grade_note = f"D级标准：久期偏离超出合理区间，或短债基金久期>3年。"
+    else:
+        duration_highlight = (
+            f"久期管理{'良好' if dur_grade == 'B' else '尚可'}（{dur_score:.0f}分 / {dur_grade}级），"
+            f"久期{duration_val:.1f}年{'在' if dur.get('is_in_standard') else '略超出'}标准区间内。"
+        )
+        duration_grade_note = ''
+
+    # ── 宏观备注 ──────────────────────────────────────────────────
+    macro_notes_parts = []
+    if macro_plugin:
+        if macro_plugin.get('rate_macro_text'):
+            macro_notes_parts.append(macro_plugin['rate_macro_text'])
+        if macro_plugin.get('credit_industry_text'):
+            macro_notes_parts.append(macro_plugin['credit_industry_text'])
+
+    macro_notes = '\n\n'.join(macro_notes_parts)
+
+    # ── 标签 ──────────────────────────────────────────────────────
+    tags = [fund_label]
+    if credit.get('is_credit_sinking'):
+        tags.append('⚡ 信用下沉')
+    if asset_struct.get('is_ncd_heavy'):
+        tags.append('💰 存单重仓')
+    if dur_grade in ('A+', 'A'):
+        tags.append('⏱️ 久期精准')
+    if hhi > 1500:
+        tags.append('🎯 高集中度')
+    if one_vote_veto:
+        tags.append('❌ 一票否决')
+
+    return {
+        'headline': headline,
+        'fund_label': fund_label,
+        'scores_summary': scores_summary,
+        'income_source': income_source,
+        'risk_check': risk_check,
+        'advice': advice,
+        'duration_highlight': duration_highlight,
+        'duration_grade_note': duration_grade_note,
+        'macro_notes': macro_notes,
+        'tags': tags,
+        'overall_grade': grade,
+        'one_vote_veto': one_vote_veto,
+    }
+

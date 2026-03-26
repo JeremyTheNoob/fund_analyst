@@ -125,13 +125,38 @@ def analyze_fund(
             model_type=model_type,
         )
     elif model_type == 'bond':
-        # 债券模型
-        model_results = run_bond_analysis(
-            symbol=symbol,
-            nav_data=nav_data,
-            basic_info=basic_info,
-            holdings_data=holdings_data,
-        )
+        # 债券模型：先尝试纯债分析，回退到通用债券模型
+        try:
+            from models.pure_bond_model import run_pure_bond_analysis
+            from data.fetcher import fetch_market_indicators
+
+            # 获取宏观指标（用于久期择时评分）
+            try:
+                market_indicators = fetch_market_indicators(lookback_years=3)
+            except Exception:
+                market_indicators = {}
+
+            model_results = run_pure_bond_analysis(
+                symbol=symbol,
+                nav_data=nav_data,
+                basic_info=basic_info,
+                holdings_data=holdings_data,
+                market_indicators=market_indicators,
+            )
+            # 将宏观指标挂到结果上供UI使用
+            model_results['market_indicators'] = market_indicators
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # 回退到旧版债券模型
+            model_results = run_bond_analysis(
+                symbol=symbol,
+                nav_data=nav_data,
+                basic_info=basic_info,
+                holdings_data=holdings_data,
+            )
+            model_results['_fallback_reason'] = str(e)
     else:
         # 货币基金等不分析
         model_results = {

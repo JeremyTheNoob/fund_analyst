@@ -817,3 +817,230 @@ def build_benchmark_ret(parsed: dict, start: str, end: str) -> pd.DataFrame:
         result['bm_ret'] = result['bm_ret'].fillna(0)
 
     return result
+
+
+# ============================================================
+# 📊 纯债基金专用数据获取
+# ============================================================
+
+@cached_data(ttl=config.CACHE_CONFIG['long'], show_spinner=False)
+def fetch_multi_tenor_yield(start: str, end: str) -> pd.DataFrame:
+    """
+    获取多期限国债收益率曲线 (1Y/2Y/5Y/7Y/10Y/30Y)
+    用于期限利差计算、利率环境判断
+    返回: DataFrame(date, y1y, y2y, y5y, y7y, y10y, y30y)
+    """
+    try:
+        df = ak.bond_zh_us_rate(start_date=start)
+        if df.empty:
+            return pd.DataFrame()
+
+        # 统一日期列
+        if 'date' not in df.columns and len(df.columns) > 0:
+            df = df.rename(columns={df.columns[0]: 'date'})
+        df['date'] = pd.to_datetime(df['date'])
+        df = df[(df['date'] >= pd.to_datetime(start)) & (df['date'] <= pd.to_datetime(end))]
+
+        # 映射各期限列
+        col_map = {
+            '中国国债收益率1年': 'y1y',
+            '中国国债收益率2年': 'y2y',
+            '中国国债收益率5年': 'y5y',
+            '中国国债收益率7年': 'y7y',
+            '中国国债收益率10年': 'y10y',
+            '中国国债收益率30年': 'y30y',
+        }
+        keep_cols = ['date']
+        for src, dst in col_map.items():
+            if src in df.columns:
+                df[dst] = df[src]
+                keep_cols.append(dst)
+
+        df = df[keep_cols].sort_values('date').reset_index(drop=True)
+        # 前向填充（节假日/停牌）
+        for c in keep_cols[1:]:
+            df[c] = df[c].ffill(limit=5)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@cached_data(ttl=config.CACHE_CONFIG['medium'], show_spinner=False)
+def fetch_market_indicators(lookback_years: int = 3) -> dict:
+    """
+    获取宏观/市场指标快照，用于纯债分析的宏观插件
+    返回:
+      current_y10y: 当前10Y国债收益率
+      y10y_percentile: 历史分位数（0-100）
+      term_spread: 期限利差(10Y-1Y)
+      term_spread_status: 'flat'/'normal'/'steep'
+      y10y_trend: 'up'/'down'/'flat' (近3个月趋势)
+      y10y_series: 历史序列 pd.Series(date_index)
+    """
+    from datetime import date
+    end = date.today().strftime('%Y%m%d')
+    start_dt = (date.today() - timedelta(days=365 * lookback_years))
+    start = start_dt.strftime('%Y%m%d')
+
+    result = {
+        'current_y10y': None,
+        'y10y_percentile': None,
+        'term_spread': None,
+        'term_spread_status': 'unknown',
+        'y10y_trend': 'unknown',
+        'y10y_series': pd.Series(dtype=float),
+        'y1y_series': pd.Series(dtype=float),
+    }
+
+    try:
+        df = fetch_multi_tenor_yield(start, end)
+        if df.empty:
+            return result
+
+        df = df.dropna(subset=['y10y'])
+        if df.empty:
+            return result
+
+        df = df.set_index('date').sort_index()
+        y10y = df['y10y'].dropna()
+
+        result['y10y_series'] = y10y
+        result['current_y10y'] = float(y10y.iloc[-1])
+
+        # 历史分位数
+        pct = float((y10y < result['current_y10y']).mean() * 100)
+        result['y10y_percentile'] = round(pct, 1)
+
+        # 期限利差 (10Y - 1Y)
+        if 'y1y' in df.columns:
+            y1y = df['y1y'].dropna()
+            result['y1y_series'] = y1y
+            common = y10y.index.intersection(y1y.index)
+            if len(common) > 0:
+                spread = y10y.loc[common] - y1y.loc[common]
+                cur_spread = float(spread.iloc[-1])
+                result['term_spread'] = round(cur_spread, 3)
+                spread_pct = float((spread < cur_spread).mean() * 100)
+                if spread_pct < 20:
+                    result['term_spread_status'] = 'flat'   # 极度平坦
+                elif spread_pct > 70:
+                    result['term_spread_status'] = 'steep'  # 陡峭
+                else:
+                    result['term_spread_status'] = 'normal'
+
+        # 近3个月趋势
+        if len(y10y) > 60:
+            recent = y10y.iloc[-60:]
+            slope = np.polyfit(range(len(recent)), recent.values, 1)[0]
+            if slope > 0.002:
+                result['y10y_trend'] = 'up'
+            elif slope < -0.002:
+                result['y10y_trend'] = 'down'
+            else:
+                result['y10y_trend'] = 'flat'
+
+    except Exception:
+        pass
+
+    return result
+
+
+@cached_data(ttl=config.CACHE_CONFIG['long'], show_spinner=False)
+def fetch_bond_quarterly_holdings(symbol: str) -> dict:
+    """
+    获取基金近8个季度的债券持仓数据
+    用于动态HHI计算
+    返回: {'2024': df, '2023': df, ...}  df列: 债券名称/债券代码/占净值比例/评级
+    """
+    years = ['2024', '2023', '2022', '2021', '2020']
+    holdings = {}
+    for yr in years:
+        try:
+            df = ak.fund_portfolio_bond_hold_em(symbol=symbol, date=yr)
+            if not df.empty and '占净值比例' in df.columns:
+                holdings[yr] = df.copy()
+        except Exception:
+            pass
+    return holdings
+
+
+@cached_data(ttl=config.CACHE_CONFIG['long'], show_spinner=False)
+def fetch_fund_asset_allocation_history(symbol: str) -> pd.DataFrame:
+    """
+    获取基金资产配置历史（各季报的股票/债券/现金比例）
+    用于纯债基金三重过滤条件验证
+    返回: DataFrame(date, stock_ratio, bond_ratio, cash_ratio)
+    """
+    try:
+        df = ak.fund_portfolio_asset_allocation_em(symbol=symbol)
+        if df.empty:
+            return pd.DataFrame()
+
+        records = []
+        if '资产类别' in df.columns and '占净值比例(%)' in df.columns:
+            # 按季度重组
+            for col in df.columns:
+                if col not in ('资产类别', '占净值比例(%)'):
+                    pass
+            # fund_portfolio_asset_allocation_em 返回格式: 行=资产类别, 列=各报告期
+            df_t = df.set_index('资产类别').T if '资产类别' in df.columns else df
+            for idx_val in df_t.index:
+                row = df_t.loc[idx_val]
+                rec = {'period': str(idx_val), 'stock_ratio': 0.0, 'bond_ratio': 0.0, 'cash_ratio': 0.0}
+                for asset, val in row.items():
+                    try:
+                        v = float(val) / 100
+                    except Exception:
+                        v = 0.0
+                    if '股票' in str(asset):
+                        rec['stock_ratio'] = v
+                    elif '债券' in str(asset):
+                        rec['bond_ratio'] = v
+                    elif '现金' in str(asset) or '银行存款' in str(asset):
+                        rec['cash_ratio'] = v
+                records.append(rec)
+            return pd.DataFrame(records)
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+@cached_data(ttl=config.CACHE_CONFIG['medium'], show_spinner=False)
+def fetch_bond_index_corr_data(start: str, end: str) -> pd.DataFrame:
+    """
+    获取中债综合财富指数和沪深300日收益率
+    用于纯债基金相关性验证（过滤条件3）
+    返回: DataFrame(date, bond_ret, equity_ret)
+    """
+    result = pd.DataFrame()
+    try:
+        # 中债综合财富指数
+        df_bond = ak.bond_new_composite_index_cbond(indicator="财富")
+        if not df_bond.empty:
+            df_bond.columns = ['date', 'bond_index'] if len(df_bond.columns) == 2 else df_bond.columns
+            if '日期' in df_bond.columns:
+                df_bond = df_bond.rename(columns={'日期': 'date'})
+            if '指数' in df_bond.columns:
+                df_bond = df_bond.rename(columns={'指数': 'bond_index'})
+            df_bond['date'] = pd.to_datetime(df_bond['date'])
+            df_bond = df_bond[(df_bond['date'] >= pd.to_datetime(start)) &
+                              (df_bond['date'] <= pd.to_datetime(end))].sort_values('date')
+            df_bond['bond_ret'] = df_bond['bond_index'].pct_change()
+            df_bond = df_bond[['date', 'bond_ret']].dropna()
+    except Exception:
+        df_bond = pd.DataFrame(columns=['date', 'bond_ret'])
+
+    try:
+        # 沪深300
+        df_eq = fetch_index_daily('sh000300', start, end)[['date', 'ret']].rename(columns={'ret': 'equity_ret'})
+    except Exception:
+        df_eq = pd.DataFrame(columns=['date', 'equity_ret'])
+
+    if not df_bond.empty and not df_eq.empty:
+        result = df_bond.merge(df_eq, on='date', how='inner')
+    elif not df_bond.empty:
+        result = df_bond
+    elif not df_eq.empty:
+        result = df_eq
+
+    return result

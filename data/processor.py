@@ -475,3 +475,153 @@ def performance_decomposition(
         'credit_lines': credit_lines,
         'data_quality': data_quality,
     }
+
+
+# ============================================================
+# 🔧 纯债基金数据管道（BondDataPipeline）
+# ============================================================
+
+class BondDataPipeline:
+    """
+    纯债基金净值数据清洗管道（Pipeline模式）
+
+    每一层只负责一个清洗任务：
+      1. 剔除大额赎回导致的净值异常暴涨
+      2. 检查数据连续性（零波动横线过滤）
+      3. 复权净值一致性校验
+      4. 切换到周频（如果日频质量不足）
+
+    使用示例：
+        pipeline = BondDataPipeline(nav_df)
+        clean_df = (pipeline
+                    .remove_outliers()
+                    .check_data_continuity()
+                    .validate_nav_consistency()
+                    .get_processed_data())
+    """
+
+    def __init__(self, raw_df: pd.DataFrame):
+        """
+        Args:
+            raw_df: 含 date/nav/ret 列的净值 DataFrame
+        """
+        self.df = raw_df.copy()
+        self.warnings = []       # 收集警告信息
+        self.is_valid = True     # 数据是否可用
+        self.freq = 'daily'      # 当前频率
+
+    def remove_outliers(self, z_threshold: float = 5.0) -> 'BondDataPipeline':
+        """
+        剔除大额赎回费、分红导致的净值异常暴涨/暴跌
+        使用滚动中位数绝对偏差（MAD）过滤
+
+        Args:
+            z_threshold: MAD倍数阈值，默认5倍（约等于Z=5）
+        """
+        if 'ret' not in self.df.columns or len(self.df) < 20:
+            return self
+
+        ret = self.df['ret'].copy()
+
+        # 滚动中位数 + MAD
+        rolling_median = ret.rolling(window=20, min_periods=5, center=True).median()
+        rolling_mad = (ret - rolling_median).abs().rolling(window=20, min_periods=5, center=True).median()
+
+        # 避免 MAD=0 的情况（用 0.001% 下限）
+        rolling_mad = rolling_mad.clip(lower=0.00001)
+
+        # 修正分数
+        modified_z = (ret - rolling_median).abs() / rolling_mad
+
+        outlier_mask = modified_z > z_threshold
+        n_outliers = outlier_mask.sum()
+
+        if n_outliers > 0:
+            self.warnings.append(
+                f"检测到 {n_outliers} 个异常收益率日期（可能为大额赎回/分红），已平滑处理"
+            )
+            # 用前一日收益率替换（安全填充）
+            self.df.loc[outlier_mask, 'ret'] = np.nan
+            self.df['ret'] = self.df['ret'].ffill(limit=2).fillna(0)
+
+        return self
+
+    def check_data_continuity(self, zero_threshold: float = 0.3) -> 'BondDataPipeline':
+        """
+        检查数据连续性：识别"僵尸基金"（净值长期横线）
+
+        Args:
+            zero_threshold: 零波动率上限，超过则标记为不可用（默认30%）
+        """
+        if 'ret' not in self.df.columns or len(self.df) < 10:
+            return self
+
+        zero_rate = (self.df['ret'].fillna(0).abs() < 1e-6).mean()
+
+        if zero_rate > zero_threshold:
+            self.is_valid = False
+            self.warnings.append(
+                f"⚠️ 该基金存在大量零波动数据（{zero_rate*100:.1f}%），"
+                f"可能为'僵尸基金'或持有大量违约债，建议以周频分析"
+            )
+            # 自动降频尝试
+            self._downsample_to_weekly()
+
+        return self
+
+    def validate_nav_consistency(self, tolerance: float = 0.0001) -> 'BondDataPipeline':
+        """
+        复权净值一致性校验
+        验证 (today_nav - yesterday_nav) / yesterday_nav ≈ ret
+
+        Args:
+            tolerance: 允许误差（默认0.01%）
+        """
+        if 'nav' not in self.df.columns or 'ret' not in self.df.columns:
+            return self
+
+        df_sorted = self.df.sort_values('date').copy()
+        nav_implied_ret = df_sorted['nav'].pct_change()
+
+        diff = (nav_implied_ret - df_sorted['ret']).abs()
+        anomaly_rate = (diff > tolerance).mean()
+
+        if anomaly_rate > 0.05:
+            self.warnings.append(
+                f"⚠️ 净值一致性校验：{anomaly_rate*100:.1f}% 的日期存在偏差(>{tolerance*100:.2f}%)，"
+                f"建议以累计净值重新计算收益率"
+            )
+            # 强制用净值重新计算收益率
+            df_sorted['ret'] = nav_implied_ret.fillna(0)
+            self.df = df_sorted
+
+        return self
+
+    def _downsample_to_weekly(self):
+        """将日频净值降采样为周频"""
+        if 'date' not in self.df.columns:
+            return
+        df = self.df.copy()
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.set_index('date')
+        df_weekly = df['nav'].resample('W-FRI').last().dropna()
+        df_weekly_ret = df_weekly.pct_change().rename('ret')
+        self.df = pd.DataFrame({
+            'date': df_weekly.index,
+            'nav': df_weekly.values,
+            'ret': df_weekly_ret.values,
+        }).dropna()
+        self.freq = 'weekly'
+
+    def get_processed_data(self) -> pd.DataFrame:
+        """返回清洗后的数据"""
+        return self.df.copy()
+
+    def get_summary(self) -> dict:
+        """返回清洗摘要"""
+        return {
+            'is_valid': self.is_valid,
+            'freq': self.freq,
+            'warnings': self.warnings,
+            'n_rows': len(self.df),
+        }

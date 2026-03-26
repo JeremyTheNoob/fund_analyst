@@ -12,6 +12,7 @@ from ui.charts import plot_radar_chart, plot_cumulative_return, plot_holdings_pi
 from ui.components import render_analysis_report, render_css
 from ui.holdings_components import render_holdings_penetration_dashboard
 from ui.alpha_v2_components import render_alpha_v2_dashboard
+from ui.pure_bond_components import render_pure_bond_dashboard
 
 # 设置Streamlit运行时标志，使缓存装饰器正常工作
 import data.fetcher
@@ -156,6 +157,38 @@ def main():
             if alpha_v2 and 'error' not in alpha_v2 and model_type in ('equity', 'mixed', 'sector'):
                 st.markdown("---")
                 render_alpha_v2_dashboard(alpha_v2)
+
+            # ---------- Part 3c: 纯债基金深度分析（bond模型专用） ----------
+            if model_type == 'bond' and model_results.get('model_name') == 'pure_bond_model':
+                st.markdown("---")
+                # 生成宏观插件
+                macro_plugin = None
+                try:
+                    from services.macro_engine import get_macro_plugin
+                    macro_plugin = get_macro_plugin(
+                        portfolio_summary={},
+                        asset_structure=model_results.get('asset_structure', {}),
+                        credit_quality=model_results.get('credit_quality', {}),
+                        concentration=model_results.get('concentration', {}),
+                        duration_results=model_results.get('duration_system', {}),
+                        market_indicators=model_results.get('market_indicators', {}),
+                    )
+                except Exception:
+                    macro_plugin = None
+
+                # 生成翻译
+                translation = None
+                try:
+                    from services.translator import translate_pure_bond_results
+                    translation = translate_pure_bond_results(model_results, macro_plugin)
+                except Exception:
+                    translation = None
+
+                render_pure_bond_dashboard(
+                    model_results=model_results,
+                    translation=translation,
+                    macro_plugin=macro_plugin,
+                )
 
             # 免责声明(移到报告最后)
             st.markdown("---")
