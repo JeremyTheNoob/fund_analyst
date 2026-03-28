@@ -1,11 +1,53 @@
 # 历史版本归档（本地保留，不推送 GitHub）
 archive/
+_archive_final/
+
+# 旧工程文件（本地保留，不推送 GitHub）
+旧基金工程文件/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
 .env
+.venv
+venv/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 测试和调试文件
+test_*.py
+verify_*.py
+debug_*.py
+*_test.py
+
+# 数据文件（本地缓存）
+data/index_cache/
+*.parquet
+
+# 日志文件
+*.log
+update.log
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE配置
+.vscode/
+.idea/
+*.iml
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
