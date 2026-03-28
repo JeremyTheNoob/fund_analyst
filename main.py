@@ -46,49 +46,53 @@ st.set_page_config(
     page_title="净值风云 - 养基之前搜一搜",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
-
-# ============================================================
-# 侧边栏
-# ============================================================
-with st.sidebar:
-    st.title("净值风云")
-    st.caption("养基之前搜一搜")
-
-    st.divider()
-    fund_code = st.text_input(
-        "基金代码",
-        placeholder="输入6位基金代码，如 000001",
-    )
-
-    analysis_range = st.radio(
-        "分析周期",
-        options=["自成立以来", "现任基金经理以来"],
-        index=0,
-        horizontal=False,
-    )
-
-    since_inception = (analysis_range == "自成立以来")
-
-    analyze_btn = st.button("🔍 开始分析", type="primary", use_container_width=True)
-
-    st.divider()
-    st.markdown("### 📋 支持的基金类型")
-    st.markdown("- ✅ 权益类（股票/偏股混合）")
-    st.markdown("- ✅ 纯债类（纯债/短债）")
-    st.markdown("- ✅ 指数/ETF（含增强型）")
-    st.markdown("- ✅ 可转债/固收+")
-    st.markdown("- ❌ 不支持：货币基金 / QDII / 商品基金")
-
 
 # ============================================================
 # 主界面
 # ============================================================
 
+# 标题区域
+st.markdown('<h1 style="text-align: center; color: #E84747;">净值风云</h1>', unsafe_allow_html=True)
+st.markdown('<p style="text-align: center; font-size: 18px; color: #666;">养基之前搜一搜</p>', unsafe_allow_html=True)
+
+# 支持的基金类型（浅色小字）
+st.markdown(
+    '<p style="text-align: center; font-size: 12px; color: #999; margin-top: -10px; margin-bottom: 20px;">'
+    '支持：权益类 · 纯债类 · 指数/ETF · 可转债/固收+</p>',
+    unsafe_allow_html=True
+)
+
+# 输入区域（居中显示）
+col1, col2, col3 = st.columns([2, 3, 2])
+with col2:
+    fund_code = st.text_input(
+        "基金代码",
+        placeholder="输入6位基金代码，如 000001",
+        max_chars=6,
+        label_visibility="collapsed"
+    )
+
+    col_a, col_b, col_c = st.columns([1, 1, 1])
+    with col_a:
+        st.empty()
+    with col_b:
+        analysis_range = st.radio(
+            "分析周期",
+            options=["自成立以来", "现任基金经理以来"],
+            index=0,
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+    with col_c:
+        st.empty()
+
+    st.markdown("<br>", unsafe_allow_html=True)  # 增加间距
+
+    analyze_btn = st.button("🔍 开始分析", type="primary", use_container_width=True)
+
 if not analyze_btn or not fund_code:
-    # 欢迎页
-    st.info("👈 输入基金代码，【开始分析】")
     st.stop()
 
 
@@ -102,158 +106,36 @@ if not fund_code.isdigit() or len(fund_code) != 6:
     st.error("❌ 基金代码格式错误：请输入6位数字（如 000001）")
     st.stop()
 
-# 2. 基金代码智能验证 + 数据加载
-# 使用新的验证策略解决校验时间过长问题
+# 2. 基金分析（使用 spinner 提示）
+with st.spinner("🧠 净值大模型分析中，请稍候..."):
+    try:
+        # 根据用户选择确定分析参数
+        if analysis_range == "自成立以来":
+            years_to_load = 10
+            since_inception = True
+        else:
+            years_to_load = 3
+            since_inception = False
 
-progress_bar = st.progress(0)
-status_text = st.empty()
+        # 执行分析
+        report = analyze_fund(
+            symbol=fund_code,
+            years=years_to_load,
+            since_inception=since_inception,
+            verbose=True,
+        )
 
-# 第一步：智能验证基金代码（使用新策略）
-status_text.text("🔍 正在快速验证基金代码...")
-progress_bar.progress(10)
-
-try:
-    # 导入新的验证模块
-    from data_loader.validation_bypass import validate_fund_code
-    from data_loader.equity_loader import load_basic_info, load_nav
-    
-    # 使用智能验证策略（非严格模式，避免API调用延迟）
-    validation_result = validate_fund_code(fund_code, strict=False)
-    
-    # 显示验证结果
-    if not validation_result['valid']:
-        # 格式验证失败
-        st.error(f"❌ {validation_result['message']}")
-        if validation_result['warning']:
-            st.warning(validation_result['warning'])
+    except Exception as e:
+        st.error(f"❌ 基金分析失败：{str(e)}")
         st.stop()
-    
-    # 验证通过，显示验证方式和警告信息
-    validation_method = validation_result['method']
-    validation_message = validation_result['message']
-    
-    if validation_method == 'quick':
-        # 快速验证：仅格式检查
-        status_text.text(f"✅ {validation_message}（快速验证模式）")
-        progress_bar.progress(20)
-        if validation_result['warning']:
-            st.warning(f"⚠️ {validation_result['warning']}")
-    elif validation_method == 'local':
-        # 本地目录验证
-        status_text.text(f"✅ {validation_message}（本地目录验证）")
-        progress_bar.progress(25)
-    elif validation_method == 'api':
-        # API验证
-        status_text.text(f"✅ {validation_message}（API验证）")
-        progress_bar.progress(30)
-    else:
-        # 其他验证方式
-        status_text.text(f"✅ {validation_message}")
-        progress_bar.progress(20)
-    
-    # 继续进度
-    status_text.text("✅ 基金代码验证完成，开始加载数据...")
-    progress_bar.progress(40)
-    
-    # 第二步：并行加载基础信息和净值数据
-    import concurrent.futures
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        # 并行获取基础信息和净值数据
-        status_text.text("📥 并行加载基金基础信息...")
-        basic_future = executor.submit(load_basic_info, fund_code)
-        
-        status_text.text("📊 并行加载净值历史数据...")
-        nav_future = executor.submit(load_nav, fund_code, 1)  # 只拉取1年做快速校验
-        
-        try:
-            # 设置超时时间（基础信息可能较慢，增加超时时间）
-            status_text.text("⏳ 等待数据加载完成...")
-            progress_bar.progress(60)
-            
-            basic_info = basic_future.result(timeout=30.0)  # 增加到30秒
-            status_text.text("✅ 基础信息加载完成")
-            progress_bar.progress(80)
-            
-            nav_data = nav_future.result(timeout=15.0)
-            status_text.text("✅ 净值数据加载完成")
-            progress_bar.progress(100)
-            
-            # 校验净值数据
-            if nav_data is None or nav_data.df.empty:
-                status_text.text("❌ 无历史净值数据")
-                st.error(f"❌ 基金代码 {fund_code} 无历史净值数据，请检查后重新输入")
-                st.stop()
-                
-            status_text.text("✅ 数据校验完成，准备分析...")
-            
-        except concurrent.futures.TimeoutError:
-            status_text.text("⏱️ 数据加载超时")
-            st.error("⏱️ 数据加载超时，请稍后重试")
-            st.stop()
-        except Exception as e:
-            status_text.text("❌ 数据获取失败")
-            st.error(f"❌ 基金数据获取失败：{str(e)}")
-            st.stop()
-            
-except Exception as e:
-    # 如果数据获取失败（如网络问题），给出更友好的提示
-    status_text.text("❌ 系统异常")
-    st.error(f"❌ 系统异常：{str(e)}")
-    st.stop()
-
-# 根据用户选择确定分析参数
-if analysis_range == "自成立以来":
-    years_to_load = 10  # 自成立以来，用10年覆盖大部分情况（since_inception=True 会覆盖）
-    since_inception = True
-else:  # "现任基金经理以来" - 暂时不支持，使用3年默认值
-    years_to_load = 3
-    since_inception = False
-
-# 3. 基金分析阶段
-analysis_progress = st.progress(0)
-analysis_status = st.empty()
-
-analysis_status.text("🔬 开始基金深度分析...")
-analysis_progress.progress(10)
-
-try:
-    # 创建多个进度步骤
-    analysis_steps = [
-        "📈 计算收益率和波动率...",
-        "📊 分析持仓结构和风格...", 
-        "📉 评估风险和回撤表现...",
-        "🔍 计算Alpha和Beta因子...",
-        "📋 生成综合诊断报告..."
-    ]
-    
-    # 模拟进度更新（实际进度由analyze_fund内部控制）
-    for i, step_text in enumerate(analysis_steps):
-        analysis_status.text(step_text)
-        progress_value = 10 + (i * 18)  # 10%, 28%, 46%, 64%, 82%
-        analysis_progress.progress(min(progress_value, 90))
-        import time
-        time.sleep(0.3)  # 轻微延迟让用户看到进度更新
-    
-    analysis_status.text("⏳ 正在执行深度分析算法...")
-    report = analyze_fund(
-        symbol=fund_code,
-        years=years_to_load,
-        since_inception=since_inception,
-        verbose=True,
-    )
-    
-    analysis_status.text("✅ 分析完成！")
-    analysis_progress.progress(100)
-    
-except Exception as e:
-    analysis_status.text("❌ 分析过程中发生错误")
-    st.error(f"分析过程中发生错误：{e}")
-    st.stop()
 
 # ============================================================
 # 报告展示
 # ============================================================
+
+# 分隔线
+st.divider()
+
 if report is None:
     st.error("分析失败，请检查基金代码")
     st.stop()
