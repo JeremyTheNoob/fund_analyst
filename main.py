@@ -296,17 +296,16 @@ if basic:
 
     col_info = st.columns(4)
     with col_info[0]:
-        st.markdown(_format_info_item("基金公司", basic.company or "—"), unsafe_allow_html=True)
+        st.markdown(_format_info_item("基金名称", basic.name or "—", max_chars=20), unsafe_allow_html=True)
         st.markdown(_format_info_item("基金经理", basic.manager or "—"), unsafe_allow_html=True)
     with col_info[1]:
-        st.markdown(_format_info_item("成立日期", basic.establish_date or "—"), unsafe_allow_html=True)
+        st.markdown(_format_info_item("基金公司", basic.company or "—"), unsafe_allow_html=True)
         st.markdown(_format_info_item("基金类型", basic.type_raw or "—"), unsafe_allow_html=True)
     with col_info[2]:
-        st.markdown(_format_info_item("单位净值", f"{latest_nav} ({latest_nav_date})" if latest_nav else "—"), unsafe_allow_html=True)
+        st.markdown(_format_info_item("成立日期", basic.establish_date or "—"), unsafe_allow_html=True)
         st.markdown(_format_info_item("基金规模", basic.scale or "—"), unsafe_allow_html=True)
     with col_info[3]:
-        fee_text = f"{total_fee*100:.2f}%" if total_fee > 0 else "—"
-        st.markdown(_format_info_item("综合费率", fee_text), unsafe_allow_html=True)
+        st.markdown(_format_info_item("单位净值", f"{latest_nav} ({latest_nav_date})" if latest_nav else "—"), unsafe_allow_html=True)
         # 显示业绩比较基准（从解析后的组件生成描述）
         benchmark_display = basic.benchmark_text or "—"
         # 如果有解析后的基准信息，生成更清晰的描述
@@ -324,6 +323,9 @@ if basic:
     with col_info2[2]:
         min_purchase_text = f"{basic.min_purchase:.0f}元" if basic.min_purchase and basic.min_purchase > 0 else "—"
         st.markdown(_format_info_item("购买起点", min_purchase_text), unsafe_allow_html=True)
+    with col_info2[3]:
+        fee_text = f"{total_fee*100:.2f}%" if total_fee > 0 else "—"
+        st.markdown(_format_info_item("综合费率", fee_text), unsafe_allow_html=True)
 
 
 st.divider()
