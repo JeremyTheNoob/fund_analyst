@@ -230,7 +230,7 @@ def information_ratio(
         return 0.0
     excess = r[:n] - bm[:n]
     te = np.std(excess, ddof=1)
-    if te < 1e-10:
+    if te < 1e-6:
         return 0.0
     return float(np.mean(excess) / te * np.sqrt(periods_per_year))
 
@@ -439,6 +439,32 @@ def cumulative_excess_return(
     """
     if excess_ret.empty:
         return pd.Series(dtype=float)
-    
+
     cum_excess = (1 + excess_ret).cumprod() - 1
     return cum_excess
+
+
+def extract_credit_spread_history(yield_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """从债券收益率数据中提取信用利差历史。
+
+    Args:
+        yield_df: 债券收益率数据，必须包含 "date" 和 "credit_spread" 列
+
+    Returns:
+        包含 "date" 和 "spread" 列的 DataFrame，如果数据无效则返回 None
+    """
+    if yield_df.empty or "credit_spread" not in yield_df.columns:
+        return None
+
+    try:
+        # 提取日期和信用利差数据
+        spread_df = yield_df[["date", "credit_spread"]].copy()
+        spread_df["date"] = pd.to_datetime(spread_df["date"])
+        spread_df = spread_df.sort_values("date")
+        # 重命名列以匹配图表函数期望的格式
+        spread_df = spread_df.rename(columns={"credit_spread": "spread"})
+        # 移除 NaN 值
+        spread_df = spread_df.dropna(subset=["spread"])
+        return spread_df
+    except Exception:
+        return None

@@ -21,6 +21,7 @@ from engine.common_metrics import (
     sharpe_ratio, sortino_ratio, calmar_ratio,
     information_ratio, tracking_error, skewness, kurtosis,
     monthly_win_rate, normalize_score,
+    extract_credit_spread_history,
 )
 from models.schema import (
     CleanBondData, HoldingsData,
@@ -102,21 +103,9 @@ def run_bond_analysis(
     overall, grade = _compute_bond_score(common, wacs, hhi, duration, stress)
 
     # --- Step 8: 提取信用利差历史数据（用于信用利差走势图）---
-    credit_spread_history = None
-    if not yield_df.empty and "credit_spread" in yield_df.columns:
-        try:
-            # 提取日期和信用利差数据
-            spread_df = yield_df[["date", "credit_spread"]].copy()
-            spread_df["date"] = pd.to_datetime(spread_df["date"])
-            spread_df = spread_df.sort_values("date")
-            # 重命名列以匹配图表函数期望的格式
-            spread_df = spread_df.rename(columns={"credit_spread": "spread"})
-            # 移除 NaN 值
-            spread_df = spread_df.dropna(subset=["spread"])
-            credit_spread_history = spread_df
-            logger.info(f"[run_bond_analysis] 提取信用利差历史数据: {len(credit_spread_history)} 条记录")
-        except Exception as e:
-            logger.warning(f"[run_bond_analysis] 提取信用利差历史数据失败: {e}")
+    credit_spread_history = extract_credit_spread_history(yield_df)
+    if credit_spread_history is not None:
+        logger.info(f"[run_bond_analysis] 提取信用利差历史数据: {len(credit_spread_history)} 条记录")
 
     return BondMetrics(
         common=common,
