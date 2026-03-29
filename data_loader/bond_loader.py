@@ -8,17 +8,14 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
-import akshare as ak
 import pandas as pd
 import numpy as np
 
-from config import CACHE_TTL, DATA_CONFIG
+from config import CACHE_TTL
 from data_loader.base_api import (
-    cached, retry,
-    _ak_fund_holdings_bond, _ak_fund_asset_allocation,
+    cached, _ak_fund_holdings_bond, _ak_fund_asset_allocation,
     _ak_bond_us_rate, _ak_bond_china_yield, _ak_bond_composite_index,
     _ak_cb_info,
-    safe_df,
 )
 from models.schema import HoldingsData, BondYieldData
 

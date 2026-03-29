@@ -90,6 +90,11 @@ def _remove_outliers_mad(
     基于 MAD（中位数绝对偏差）剔除异常值。
     更稳健于标准差方法，不受极端值本身影响。
     """
+    # P0-修复：列存在性检查，避免 KeyError
+    if col not in df.columns:
+        logger.warning(f"[_remove_outliers_mad] 列 '{col}' 不存在，跳过异常值剔除")
+        return df, 0
+
     series = df[col].dropna()
     if len(series) < 10:
         return df, 0
@@ -425,7 +430,6 @@ class BenchmarkManager:
         if not text or text.strip() in ["本基金暂不设业绩比较基准", "该基金暂未披露业绩比较基准", ""]:
             return {"type": "unknown", "components": [], "warnings": ["基金未披露业绩比较基准"]}
 
-        import re
 
         # --- Step 1: 识别指数名称 ---
         found = []

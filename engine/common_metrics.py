@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 from typing import Optional, Union
+import logging
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # 统一类型别名
 ArrayLike = Union[pd.Series, np.ndarray]

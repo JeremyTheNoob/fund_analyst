@@ -5,6 +5,10 @@ _archive_final/
 # 旧工程文件（本地保留，不推送 GitHub）
 旧基金工程文件/
 
+# 临时文件和归档
+.temp_tests_archive/
+*.bak
+
 # Python
 __pycache__/
 *.pyc

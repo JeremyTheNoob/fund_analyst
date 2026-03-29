@@ -9,8 +9,7 @@
 4. 自动过期检查和重新生成
 """
 
-from typing import Dict, List, Tuple, Optional, Set
-from datetime import datetime, timedelta
+from typing import Dict
 import os
 
 # ============================================================

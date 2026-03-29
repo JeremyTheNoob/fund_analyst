@@ -20,14 +20,11 @@
 from __future__ import annotations
 import os
 import logging
-import hashlib
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
-from dataclasses import dataclass
+from typing import Optional, Union
 
 import akshare as ak
 import pandas as pd
-import numpy as np
 
 from config import (
     DEFAULT_DIV_YIELD,
@@ -36,9 +33,8 @@ from config import (
     SW_INDUSTRY_DIVIDEND_YIELD,
     SW_INDUSTRY_MAP,
     DATA_CONFIG,
-    CACHE_TTL,
 )
-from data_loader.base_api import retry, safe_df
+from data_loader.base_api import retry
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +349,7 @@ class DividendYieldFetcher:
             # 检查最大值，如果大于1，则认为是百分数形式，需要除以100
             if df["dividend_yield"].max() > 1.0:
                 df["dividend_yield"] = df["dividend_yield"] / 100.0
-                logger.debug(f"[DividendYieldFetcher] 股息率数据转换为小数形式（原为百分数）")
+                logger.debug("[DividendYieldFetcher] 股息率数据转换为小数形式（原为百分数）")
             
             df = df.dropna().sort_values("date")
             

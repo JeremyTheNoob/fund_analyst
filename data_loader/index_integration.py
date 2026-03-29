@@ -12,11 +12,10 @@
 from __future__ import annotations
 import os
 import logging
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 
 from data_loader.index_cache_manager import (
-    IndexCacheManager,
     get_index_cache_manager,
 )
 from data_loader.index_updater import (
@@ -468,7 +467,6 @@ def integrate_with_existing_system():
     logger.info("[index_integration] 开始与现有系统集成")
     
     # 获取现有系统的模块
-    import sys
     import importlib
     
     # 需要修改的模块
@@ -549,7 +547,7 @@ def initialize_new_system():
     
     try:
         # 1. 初始化缓存管理器
-        provider = get_total_return_provider()
+        get_total_return_provider()
         logger.info("[initialize_new_system] 缓存管理器初始化完成")
         
         # 2. 检查缓存目录

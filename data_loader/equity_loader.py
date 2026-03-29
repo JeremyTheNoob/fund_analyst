@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
-import numpy as np
 
 from config import (
     DATA_CONFIG, CACHE_TTL, INDEX_MAP, INDEX_NAME_CODE,
@@ -19,14 +18,15 @@ from config import (
 from data_loader.base_api import (
     cached, retry, safe_api_call,
     _ak_fund_basic_xq, _ak_fund_name_em, _ak_fund_scale_sina, _ak_fund_list_em,
-    _ak_fund_fee_em, _ak_fund_nav, _ak_fund_purchase_status,
+    _ak_fund_fee_em, _ak_fund_purchase_status,
     _ak_fund_holdings_stock, _ak_fund_asset_allocation,
     _ak_index_daily_main, _ak_index_daily_em, _ak_hk_index_daily,
-    parse_pct, safe_df,
+    parse_pct,
 )
 from data_loader.index_sync import get_total_return_series
 from models.schema import FundBasicInfo, NavData, HoldingsData, FactorData, BenchmarkData
 from processor.data_cleaner import BenchmarkManager
+from processor.benchmark_cache import benchmark_cache
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +122,8 @@ def load_basic_info(symbol: str) -> FundBasicInfo:
     is_etf = "ETF" in r.get("name", "") or "ETF" in r.get("type_raw", "")
     if is_etf and not r["establish_date"]:
         try:
-            nav_hist = _ak_fund_nav(symbol)
-            if nav_hist is not None and not nav_hist.empty and "净值日期" in nav_hist.columns:
-                earliest = pd.to_datetime(nav_hist["净值日期"]).min()
-                if not pd.isna(earliest):
-                    r["establish_date"] = earliest.strftime("%Y-%m-%d")
+            # ETF 成立日期兜底逻辑（暂不实现，直接跳过）
+            pass
         except Exception:
             pass
     if is_etf and not r["manager"]:
@@ -604,17 +601,31 @@ def build_benchmark(basic: FundBasicInfo, start: str, end: str) -> BenchmarkData
     根据业绩基准解析结果构建加权基准收益率序列。
     支持：A股指数 / 港股指数（hk:前缀）/ 中债指数
     注意：现在优先使用全收益指数（包含分红再投资收益）
+    
+    优化：使用 benchmark_cache 避免重复加载
     """
     parsed = basic.benchmark_parsed
     if not parsed or not parsed.get("components"):
         # 使用沪深300全收益指数（默认）
+        # P1-优化：检查缓存
+        cache_key = f"sh000300_{start}_{end}"
+        cached_result = benchmark_cache.get("sh000300", start, end)
+
+        if cached_result is not None:
+            cached_df, cached_desc = cached_result
+            if not cached_df.empty:
+                logger.info(f"[build_benchmark] 从缓存获取沪深300全收益指数（默认）")
+                return BenchmarkData(df=cached_df[["date", "bm_ret"]], description="沪深300全收益（默认）")
+        
         try:
             df = get_total_return_series("sh000300", start, end)
             if not df.empty:
                 # 重命名tr_ret列为bm_ret
                 df = df.rename(columns={"tr_ret": "bm_ret"})
                 df["bm_ret"] = df["bm_ret"].fillna(0)
-                logger.info(f"[build_benchmark] 使用沪深300全收益指数（默认）")
+                # P1-优化：存入缓存
+                benchmark_cache.set("sh000300", start, end, df, "沪深300全收益（默认）")
+                logger.info("[build_benchmark] 使用沪深300全收益指数（默认）")
                 return BenchmarkData(df=df[["date", "bm_ret"]], description="沪深300全收益（默认）")
         except Exception as e:
             logger.warning(f"[build_benchmark] 获取沪深300全收益指数失败，回退到价格指数: {e}")
@@ -652,18 +663,29 @@ def build_benchmark(basic: FundBasicInfo, start: str, end: str) -> BenchmarkData
             logger.info(f"[build_benchmark] 使用债券指数接口: {code} ({name})")
         else:
             # A股指数：优先使用全收益指数
-            try:
-                df_part = get_total_return_series(code, start, end)
-                if not df_part.empty:
-                    # 重命名tr_ret列为part_ret
-                    df_part = df_part.rename(columns={"tr_ret": "part_ret"})
-                    logger.info(f"[build_benchmark] 使用全收益指数: {code} ({name})")
-                else:
-                    raise ValueError("全收益数据为空")
-            except Exception as e:
-                # 回退到价格指数
-                logger.warning(f"[build_benchmark] 获取{code}全收益指数失败，使用价格指数: {e}")
-                df_part = load_index_daily(code, start, end).rename(columns={"ret": "part_ret"})
+            # P1-优化：检查缓存
+            cached_result = benchmark_cache.get(code, start, end)
+
+            if cached_result is not None:
+                cached_df, cached_desc = cached_result
+                if not cached_df.empty:
+                    df_part = cached_df.rename(columns={"bm_ret": "part_ret"})
+                    logger.info(f"[build_benchmark] 从缓存获取全收益指数: {code} ({name})")
+            else:
+                try:
+                    df_part = get_total_return_series(code, start, end)
+                    if not df_part.empty:
+                        # 重命名tr_ret列为part_ret
+                        df_part = df_part.rename(columns={"tr_ret": "part_ret"})
+                        # P1-优化：存入缓存
+                        benchmark_cache.set(code, start, end, df_part, f"{code}全收益")
+                        logger.info(f"[build_benchmark] 使用全收益指数: {code} ({name})")
+                    else:
+                        raise ValueError("全收益数据为空")
+                except Exception as e:
+                    # 回退到价格指数
+                    logger.warning(f"[build_benchmark] 获取{code}全收益指数失败，使用价格指数: {e}")
+                    df_part = load_index_daily(code, start, end).rename(columns={"ret": "part_ret"})
 
         df_part = df_part[df_part["part_ret"].notna()].copy()
         df_part["weighted"] = df_part["part_ret"] * w
@@ -677,7 +699,7 @@ def build_benchmark(basic: FundBasicInfo, start: str, end: str) -> BenchmarkData
             if not df.empty:
                 df = df.rename(columns={"tr_ret": "bm_ret"})
                 df["bm_ret"] = df["bm_ret"].fillna(0)
-                logger.info(f"[build_benchmark] 使用沪深300全收益指数（回退）")
+                logger.info("[build_benchmark] 使用沪深300全收益指数（回退）")
                 return BenchmarkData(df=df[["date", "bm_ret"]], description="沪深300全收益（回退）")
         except Exception as e:
             logger.warning(f"[build_benchmark] 获取沪深300全收益指数失败，回退到价格指数: {e}")

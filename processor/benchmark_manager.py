@@ -6,22 +6,36 @@
 
 import logging
 import re
-from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime
+from typing import Dict, Any, List
 
 import pandas as pd
-import numpy as np
 
 from config import (
     BENCHMARK_COMPONENTS,
     DEFAULT_BENCHMARK_WEIGHTS,
-    TYPE_KEYWORD_TO_DEFAULT,
     DEFAULT_CASH_RATE,
     TRADING_DAYS_PER_YEAR,
 )
 from data_loader.equity_loader import load_index_daily, load_hk_index_daily, load_bond_index
 
 logger = logging.getLogger(__name__)
+
+# 基金类型关键词映射（用于模糊匹配）
+TYPE_KEYWORD_MAPPING: Dict[str, str] = {
+    "股票": "股票型",
+    "权益": "股票型",
+    "混合": "混合型",
+    "配置": "混合型",
+    "平衡": "平衡混合型",
+    "偏股": "偏股混合型",
+    "偏债": "偏债混合型",
+    "债券": "纯债型",
+    "转债": "可转债基金",
+    "增强": "增强指数",
+    "指数": "增强指数",
+    "中短债": "中短债",
+    "长债": "长债",
+}
 
 
 class BenchmarkManager:
@@ -207,7 +221,7 @@ class BenchmarkManager:
         
         # 以基金净值日期为 Master Clock
         master_dates = fund_nav_df["date"].sort_values().unique()
-        master_df = pd.DataFrame({"date": master_dates})
+        pd.DataFrame({"date": master_dates})
         
         parts = []
         for comp in self.components:

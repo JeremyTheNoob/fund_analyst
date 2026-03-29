@@ -6,7 +6,6 @@ Pydantic 数据模型 — fund_quant_v2
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import pandas as pd
-import numpy as np
 from pydantic import BaseModel, ConfigDict, field_validator
 
 

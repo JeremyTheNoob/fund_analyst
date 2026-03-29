@@ -3,9 +3,8 @@
 生成专业且有温度的图表解读，遵循"数据驱动 + 行为诊断 + 建议引导"原则
 """
 
-import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -88,7 +87,6 @@ class ChartInterpreter:
         # 获取基金回报数据
         fund_return = 0.0
         alpha = 0.0
-        benchmark_return = 0.0
         
         if fund_type == 'equity' and hasattr(self.report, 'equity_metrics'):
             em = self.report.equity_metrics
@@ -451,13 +449,13 @@ class ChartInterpreter:
         
         # 添加特殊注意事项
         if max_dd_days > 60:
-            interpretation += f"\n⚠️ **修复周期警示**：最长回撤持续时间超过60天，需关注基金经理的修复能力。"
+            interpretation += "\n⚠️ **修复周期警示**：最长回撤持续时间超过60天，需关注基金经理的修复能力。"
         
         if defensive_ratio > 1.2:
             interpretation += f"\n🛑 **防御能力警示**：基金回撤深度超过基准{(defensive_ratio-1)*100:.0f}%，需关注风险控制能力。"
         
         if 'is_total_return' in locals() and is_total_return:
-            interpretation += f"\n📊 **基准说明**：使用全收益基准评估，已包含分红缓冲效应，更能真实反映经理面临的基准压力。"
+            interpretation += "\n📊 **基准说明**：使用全收益基准评估，已包含分红缓冲效应，更能真实反映经理面临的基准压力。"
         
         return interpretation
     
@@ -714,14 +712,13 @@ class ChartInterpreter:
         
         # 获取Alpha和信息比率（从报告数据）
         alpha = 0.0
-        report_information_ratio = 0.0
         
         if hasattr(self.report, 'equity_metrics'):
             em = self.report.equity_metrics
             if hasattr(em, 'alpha'):
                 alpha = em.alpha * 100
             if hasattr(em, 'information_ratio'):
-                report_information_ratio = em.information_ratio
+                pass
         
         # ===================== 能力边界识别 =====================
         # 使用从图表数据中计算的信息
@@ -900,7 +897,7 @@ class ChartInterpreter:
         
         # 添加数据质量说明（仅当有显著的超额收益时显示）
         if last_excess != 0 and abs(last_excess) > 0.1:
-            interpretation += f"\n\n📈 **数据可靠性**：超额收益结果基于对齐的基金与基准数据，评估结果可信。"
+            interpretation += "\n\n📈 **数据可靠性**：超额收益结果基于对齐的基金与基准数据，评估结果可信。"
         
         return interpretation
     
@@ -1047,13 +1044,10 @@ class ChartInterpreter:
             
         # 根据HHI判断集中度风险
         if hhi < 1000:
-            concentration_risk = "低"
             concentration_desc = "分散度良好"
         elif hhi < 1800:
-            concentration_risk = "中等"
             concentration_desc = "适度集中"
         else:
-            concentration_risk = "高"
             concentration_desc = "高度集中"
             
         return f"""💰 **信用策略分析**
@@ -1106,13 +1100,10 @@ class ChartInterpreter:
             
         # 判断工具质量
         if tool_score >= 80:
-            tool_quality = "优秀"
             tool_desc = "高效的指数投资工具"
         elif tool_score >= 60:
-            tool_quality = "合格"
             tool_desc = "基本满足配置需求"
         else:
-            tool_quality = "待改进"
             tool_desc = "需关注跟踪效率"
             
         return f"""🎯 **跟踪效率评估**

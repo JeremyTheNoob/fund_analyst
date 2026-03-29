@@ -5,7 +5,6 @@
 """
 
 from __future__ import annotations
-from typing import Optional
 
 from models.schema import (
     FundReport, FundBasicInfo,
@@ -254,7 +253,7 @@ def _translate_index(basic: FundBasicInfo, m: IndexMetrics) -> dict:
     total_cost = -(fee_pct + abs(drag_pct))
 
     cost_lines = [
-        f"**持有成本**\n\n",
+        "**持有成本**\n\n",
         f"管理损耗 -{fee_pct:.3f}%/年\n\n",
         f"现金拖累 {drag_pct:+.3f}%/年\n\n",
     ]
@@ -334,7 +333,7 @@ def _translate_cb(basic: FundBasicInfo, m: ConvertibleBondMetrics) -> dict:
 
     # 风险提示
     warnings = []
-    ann_ret = m.common.annualized_return * 100
+    m.common.annualized_return * 100
     mdd     = m.common.max_drawdown * 100
     if mdd < -15:
         warnings.append(f"⚠️ 最大回撤 {mdd:.1f}%，转债基金回撤较大，需关注正股下行风险\n\n")
@@ -358,7 +357,7 @@ def _translate_cb(basic: FundBasicInfo, m: ConvertibleBondMetrics) -> dict:
 # ============================================================
 
 def _equity_advice(m: EquityMetrics, basic: FundBasicInfo) -> str:
-    ann = m.common.annualized_return * 100
+    m.common.annualized_return * 100
     alpha = m.alpha * 100
     mdd   = abs(m.common.max_drawdown) * 100
 
@@ -378,7 +377,7 @@ def _equity_advice(m: EquityMetrics, basic: FundBasicInfo) -> str:
 def _bond_advice(m: BondMetrics) -> str:
     duration = m.duration
     wacs     = m.wacs_score
-    ann      = m.common.annualized_return * 100
+    m.common.annualized_return * 100
 
     lines = []
     if duration > 5 and wacs > 70:

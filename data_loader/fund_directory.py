@@ -8,13 +8,11 @@ import os
 import json
 import time
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
-import logging
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 
 from .base_api import (
-    logger, cached, retry, safe_api_call,
-    _ak_fund_list_em, _ak_fund_basic_xq
+    logger, retry, _ak_fund_list_em
 )
 
 # 配置

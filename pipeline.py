@@ -7,18 +7,16 @@
 
 from __future__ import annotations
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
 
 import pandas as pd
 
 from models.schema import (
     FundReport, PipelineState,
-    FundBasicInfo, NavData, HoldingsData,
+    FundBasicInfo, HoldingsData,
 )
 from data_loader.equity_loader import (
     load_basic_info, load_nav, load_stock_holdings,
-    load_ff_factors, build_benchmark, load_bond_index,
+    load_ff_factors, build_benchmark,
 )
 from data_loader.bond_loader import (
     load_bond_holdings, load_treasury_yields,

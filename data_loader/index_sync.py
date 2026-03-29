@@ -23,14 +23,11 @@
 from __future__ import annotations
 import os
 import logging
-import hashlib
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union, Any
-from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, Optional, Tuple, Union, Any
 
 import akshare as ak
 import pandas as pd
-import numpy as np
 
 from config import (
     DEFAULT_DIV_YIELD,
@@ -40,7 +37,7 @@ from config import (
     DATA_CONFIG,
     CACHE_TTL,
 )
-from data_loader.base_api import retry, safe_df
+from data_loader.base_api import retry
 
 logger = logging.getLogger(__name__)
 
@@ -463,7 +460,7 @@ class TotalReturnCalculator:
                     result["div_source"] = "aligned_data"
         
         else:
-            logger.warning(f"[TotalReturnCalculator] 股息率格式不支持，使用默认值")
+            logger.warning("[TotalReturnCalculator] 股息率格式不支持，使用默认值")
             div_rate = DEFAULT_DIV_YIELD / 100.0 / TRADING_DAYS_PER_YEAR
             result["div_ret"] = div_rate
             result["div_source"] = "fallback_default"
@@ -771,9 +768,9 @@ def _get_fallback_total_return_series(
         # 获取固定股息率
         if is_sw_index_code(index_code):
             std_code = standardize_sw_code(index_code)
-            fixed_div = SW_INDUSTRY_DIVIDEND_YIELD.get(std_code, DEFAULT_DIV_YIELD)
+            SW_INDUSTRY_DIVIDEND_YIELD.get(std_code, DEFAULT_DIV_YIELD)
         else:
-            fixed_div = DEFAULT_DIV_YIELD
+            pass
         
         # 这里需要获取价格数据，但作为兜底方案，我们可能只返回空DataFrame
         # 或者生成一个简单的全收益序列

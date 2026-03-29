@@ -3,12 +3,12 @@
 提供缓存、超时、重试等装饰器
 """
 
-from functools import wraps, lru_cache
-from datetime import datetime, timedelta
+from functools import wraps
 from typing import Callable, Any, Optional
 import logging
 import pandas as pd
 import akshare as ak
+from data_loader.akshare_timeout import call_with_timeout, with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 10.0
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
+
+# P1-优化：关键 API 超时配置
+API_TIMEOUTS = {
+    "fund_basic": 15.0,           # 基金基本信息
+    "fund_nav": 20.0,             # 基金净值历史
+    "fund_holdings": 15.0,        # 基金持仓
+    "index_daily": 10.0,          # 指数日线数据
+    "bond_index": 10.0,           # 债券指数
+    "default": 10.0               # 默认超时
+}
 
 def cached(ttl: int = 3600):
     """
@@ -31,15 +41,19 @@ def cached(ttl: int = 3600):
 
 def timeout(seconds: float = DEFAULT_TIMEOUT):
     """
-    超时装饰器（简化版，实际使用需要信号处理）
-    
+    超时装饰器（P1-优化：使用 call_with_timeout 实现真实超时控制）
+
     Args:
         seconds: 超时时间（秒）
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
-            return func(*args, **kwargs)
+            try:
+                return call_with_timeout(func, args=args, kwargs=kwargs, timeout=seconds)
+            except TimeoutError as e:
+                logger.error(f"{func.__name__} 超时（{seconds}秒）: {e}")
+                raise TimeoutError(f"{func.__name__} 超时（{seconds}秒）")
         return wrapper
     return decorator
 
@@ -77,7 +91,7 @@ def retry(max_retries: int = 3, delay: float = 2.0, logger_instance: Optional[lo
 
 def safe_api_call(api_func: Callable, timeout_seconds: float = DEFAULT_TIMEOUT, max_retries: int = 3) -> Any:
     """
-    安全的 API 调用包装器，带超时和重试
+    安全的 API 调用包装器，带超时和重试（P1-优化）
     
     Args:
         api_func: 要调用的 API 函数
@@ -89,7 +103,11 @@ def safe_api_call(api_func: Callable, timeout_seconds: float = DEFAULT_TIMEOUT, 
     """
     @retry(max_retries=max_retries, delay=1.0)
     def _call_with_timeout():
-        return api_func()
+        try:
+            return call_with_timeout(api_func, timeout=timeout_seconds)
+        except TimeoutError as e:
+            logger.error(f"safe_api_call 超时（{timeout_seconds}秒）: {e}")
+            raise
     
     return _call_with_timeout()
 

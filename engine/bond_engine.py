@@ -19,8 +19,8 @@ from engine.common_metrics import (
     annualized_return, cumulative_return, max_drawdown,
     max_drawdown_duration, recovery_days, volatility,
     sharpe_ratio, sortino_ratio, calmar_ratio,
-    information_ratio, tracking_error, skewness, kurtosis,
-    monthly_win_rate, normalize_score,
+    skewness, kurtosis,
+    normalize_score,
     extract_credit_spread_history,
 )
 from models.schema import (
@@ -260,7 +260,7 @@ def _infer_bond_duration(bond_name: str) -> float:
     从债券名称推断久期（年）。
     规则：关键词 + 期限匹配。
     """
-    name = bond_name.lower()
+    bond_name.lower()
 
     # 同业存单（极短期）
     if "同业存单" in bond_name or "NCD" in bond_name:

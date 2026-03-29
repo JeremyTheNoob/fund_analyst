@@ -4,7 +4,7 @@
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import numpy as np
 import pandas as pd
 import logging
@@ -120,7 +120,7 @@ def generate_excess_return_chart(
                 "color": colors,  # 动态颜色
             }
         ],
-        "title": f"累计超额收益曲线（几何归因法）",
+        "title": "累计超额收益曲线（几何归因法）",
         "y_label": "超额收益率 (%)",
         "zero_line": True,  # 标注零线
     }

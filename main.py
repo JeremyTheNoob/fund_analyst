@@ -4,9 +4,7 @@ Streamlit 主界面入口 — fund_quant_v2
 """
 
 import streamlit as st
-import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import sys
 import os
 import logging
@@ -19,7 +17,6 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import analyze_fund
-from models.schema import FundReport
 from services.chart_interpretation import get_chart_interpretation
 
 # ============================================================

@@ -12,8 +12,7 @@ import pandas as pd
 
 from engine.common_metrics import (
     annualized_return, max_drawdown, volatility,
-    sharpe_ratio, sortino_ratio, monthly_win_rate,
-    normalize_score,
+    sharpe_ratio, sortino_ratio, normalize_score,
 )
 from models.schema import (
     CleanNavData, HoldingsData, FundBasicInfo,
@@ -59,7 +58,7 @@ def run_cb_analysis(
         return _empty_cb_metrics()
 
     fund_rets = nav_df["ret"].values
-    dates     = pd.DatetimeIndex(nav_df["date"]) if "date" in nav_df.columns else None
+    pd.DatetimeIndex(nav_df["date"]) if "date" in nav_df.columns else None
 
     # --- Step 1: 基金类型识别 ---
     cb_type, confidence = _identify_cb_fund_type(basic, holdings)

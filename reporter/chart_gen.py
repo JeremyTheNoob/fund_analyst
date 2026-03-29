@@ -24,12 +24,15 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
     """
     为图表绘制替换基准数据。
     重要规则：使用全收益指数（包含分红再投资收益）。
-    
+
     返回用于图表绘制的基准数据。
+    防御性：永远不返回 None，返回空 DataFrame 以避免下游崩溃
     """
+    # P0-修复：空值保护，返回空 DataFrame 而非 None
     if benchmark_df is None or benchmark_df.empty:
-        return None
-    
+        logger.warning("[chart_gen] 基准数据为空，返回空 DataFrame")
+        return pd.DataFrame(columns=['date', 'bm_ret', 'tr_ret'])
+
     # 检查是否已经是全收益数据
     # 如果benchmark_df中包含'tr_ret'列，说明已经是全收益数据
     if 'tr_ret' in benchmark_df.columns:
@@ -37,7 +40,7 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
         result_df = benchmark_df.copy()
         result_df['bm_ret'] = result_df['tr_ret']
         return result_df
-    
+
     # 如果没有全收益数据，尝试重新获取
     # 从基准解析结果中提取指数代码
     if hasattr(basic, 'benchmark_parsed') and basic.benchmark_parsed and basic.benchmark_parsed.get('components'):
@@ -49,7 +52,7 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
             if not benchmark_df.empty and 'date' in benchmark_df.columns:
                 start_date = benchmark_df['date'].min().strftime('%Y%m%d')
                 end_date = benchmark_df['date'].max().strftime('%Y%m%d')
-                
+
                 try:
                     # 获取全收益指数数据
                     total_return_df = get_total_return_series(index_code, start_date, end_date)
@@ -60,9 +63,9 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
                         return total_return_df
                 except Exception as e:
                     logger.warning(f"[chart_gen] 获取全收益指数失败: {e}")
-    
+
     # 如果无法获取全收益数据，返回原始基准数据
-    logger.info(f"[chart_gen] 使用原始基准数据")
+    logger.info("[chart_gen] 使用原始基准数据")
     return benchmark_df
 
 
@@ -202,7 +205,7 @@ def _cumulative_return_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = 
         target_ret_col = 'tr_ret' if 'tr_ret' in bm_df.columns else 'bm_ret'
         
         if target_ret_col not in bm_df.columns:
-            logger.warning(f"[_cumulative_return_chart] 基准数据缺少收益率列，跳过基准曲线")
+            logger.warning("[_cumulative_return_chart] 基准数据缺少收益率列，跳过基准曲线")
             return data
         
         # 清理基准收益率数据
@@ -219,7 +222,7 @@ def _cumulative_return_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = 
             
             # 计算连续相同值的数量
             # 如果超过10个连续交易日基准收益率为0，可能表示数据问题
-            zero_streak = (bm_series == 0).astype(int)
+            (bm_series == 0).astype(int)
             # 这里先不剔除，记录警告
             
             # 计算基准累计收益
@@ -345,7 +348,7 @@ def _drawdown_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = None) -> 
         target_ret_col = 'tr_ret' if 'tr_ret' in bm_df.columns else 'bm_ret'
         
         if target_ret_col not in bm_df.columns:
-            logger.warning(f"[_drawdown_chart] 基准数据缺少收益率列，跳过基准曲线")
+            logger.warning("[_drawdown_chart] 基准数据缺少收益率列，跳过基准曲线")
             return data
         
         # 清理基准收益率数据
@@ -655,7 +658,7 @@ def _excess_return_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = None
         
         if target_ret_col is None:
             # 没有收益率数据时，显示零线
-            logger.warning(f"[_excess_return_chart] 基准数据缺少收益率列")
+            logger.warning("[_excess_return_chart] 基准数据缺少收益率列")
             data['series'].append({
                 'name': '超额收益',
                 'data': [0] * len(nav_df),

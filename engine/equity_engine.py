@@ -5,7 +5,6 @@ FF 因子回归 / Brinson 归因 / 风格分析 / 雷达图评分
 
 from __future__ import annotations
 import logging
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -16,9 +15,8 @@ from engine.common_metrics import (
     annualized_return, cumulative_return, max_drawdown,
     max_drawdown_duration, recovery_days, volatility,
     sharpe_ratio, sortino_ratio, calmar_ratio,
-    information_ratio, tracking_error, beta, capm_alpha,
-    skewness, kurtosis, monthly_win_rate,
-    normalize_score, safe_divide,
+    information_ratio, tracking_error, beta, skewness, kurtosis, monthly_win_rate,
+    normalize_score,
 )
 from models.schema import (
     CleanNavData, FactorData, HoldingsData, BenchmarkData,
@@ -406,8 +404,15 @@ def _align_benchmark(
     fund_ret: pd.Series,
     benchmark: BenchmarkData,
 ) -> np.ndarray:
-    """对齐基准收益率序列，返回与 fund_ret 等长的 ndarray"""
+    """
+    对齐基准收益率序列，返回与 fund_ret 等长的 ndarray
+    
+    新增功能：
+    - 对齐率低于 95% 时记录警告
+    - 对齐天数少于 10 天时记录警告并返回零数组
+    """
     if benchmark.df.empty:
+        logger.warning("[_align_benchmark] 基准数据为空")
         return np.zeros(len(fund_ret))
 
     bm_df = benchmark.df.copy()
@@ -416,8 +421,23 @@ def _align_benchmark(
 
     bm_s = bm_df.set_index("date")["bm_ret"]
     common_dates = fund_dates.intersection(bm_s.index)
-
+    
+    # 计算对齐率
+    alignment_rate = len(common_dates) / len(fund_dates) if len(fund_dates) > 0 else 0.0
+    
+    # 检查对齐率是否低于 95%
+    if alignment_rate < 0.95:
+        logger.warning(
+            f"[_align_benchmark] 基准对齐率较低: {alignment_rate:.1%} "
+            f"({len(common_dates)}/{len(fund_dates)} 天)，可能影响分析结果的准确性"
+        )
+    
+    # 检查对齐天数是否过少
     if len(common_dates) < 10:
+        logger.warning(
+            f"[_align_benchmark] 基准对齐天数不足: {len(common_dates)} 天 < 10 天，"
+            "将返回零数组，分析结果的可靠性较低"
+        )
         return np.zeros(len(fund_ret))
 
     aligned_bm = bm_s.reindex(fund_dates).fillna(0)

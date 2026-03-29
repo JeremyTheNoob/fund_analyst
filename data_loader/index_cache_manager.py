@@ -13,19 +13,16 @@ from __future__ import annotations
 import os
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union, Any
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import pandas as pd
-import numpy as np
 
 from data_loader.index_cache_config import (
     PRICE_INDEX_CACHE_DIR,
     TOTAL_RETURN_CACHE_DIR,
-    INDEX_METADATA_FILE,
     SUPPORTED_INDEXES,
     INDEX_ALIAS_MAP,
-    CACHE_TTL,
     SYNTHESIS_CONFIG,
     get_price_index_filename,
     get_total_return_filename,

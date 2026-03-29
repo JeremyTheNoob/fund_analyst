@@ -5,7 +5,7 @@
 """
 
 from __future__ import annotations
-from typing import Any, Optional
+from typing import Any
 from reporter.holdings_analyzer import analyze_equity_holdings
 
 
@@ -214,7 +214,7 @@ def _section1_cumulative_return(
         div_desc = (f"全收益基准包含约 {div_contribution:.1f}% 的分红再投资收益。"
                     f"在此严格标准下，经理真实Alpha为 **{net_alpha:.1f}%**。")
     else:
-        div_desc = f"统计期内行业分红贡献有限，超额收益主要反映经理的真实选股能力。"
+        div_desc = "统计期内行业分红贡献有限，超额收益主要反映经理的真实选股能力。"
 
     # 年化描述
     if ann_ret > 15:
@@ -375,7 +375,7 @@ def _section3_risk_defense(
 
 **深度解读**
 
-{f"更关键的是修复速度：" if recovery_days and recovery_days < 90 else ""}{f"相对快速的回血节奏，结合持仓分析，暗示经理在下跌过程中进行了前瞻性的防御性换仓，将头寸切换至更具弹性的品种，从而实现了跌得少、回血快的非对称优势。" if recovery_days and recovery_days < 60 else f"经理在回撤应对中展现了{('较强的仓位管理能力' if defense_ratio < 1.0 else '与市场基本同步的操作节奏')}，建议持续关注后续回撤修复进展。"}
+{"更关键的是修复速度：" if recovery_days and recovery_days < 90 else ""}{"相对快速的回血节奏，结合持仓分析，暗示经理在下跌过程中进行了前瞻性的防御性换仓，将头寸切换至更具弹性的品种，从而实现了跌得少、回血快的非对称优势。" if recovery_days and recovery_days < 60 else f"经理在回撤应对中展现了{('较强的仓位管理能力' if defense_ratio < 1.0 else '与市场基本同步的操作节奏')}，建议持续关注后续回撤修复进展。"}
 
 {"Beta 值为 " + str(round(beta_val, 2)) + ("，高于1的弹性特征意味着市场上涨时跑赢，但下跌时回撤也更大，这与上述数据吻合。" if beta_val > 1.1 else "，略低于1的防守特征与其较强的回撤控制能力高度吻合。" if beta_val < 0.9 else "，与市场波动基本同步，属于标准主动权益产品的Beta水平。")}"""
 
@@ -644,15 +644,13 @@ def _style_desc(smb: float, hml: float) -> str:
 
 def _style_edge_desc(smb: float, hml: float) -> str:
     """能力边界描述"""
-    size = "小盘" if smb > 0.3 else ("大盘" if smb < -0.3 else "中盘")
-    style = "成长" if hml < -0.3 else ("价值" if hml > 0.3 else "均衡")
 
     if hml < -0.3:
-        return f"从超额曲线的斜率分析，经理在**成长风格占优**的市场环境中 Alpha 创造能力最强，选股爆发力突出；而在价值/红利风格主导的行情中，超额趋于平缓甚至出现回落"
+        return "从超额曲线的斜率分析，经理在**成长风格占优**的市场环境中 Alpha 创造能力最强，选股爆发力突出；而在价值/红利风格主导的行情中，超额趋于平缓甚至出现回落"
     elif hml > 0.3:
-        return f"经理在**价值风格占优**的市场中（低估值、高分红）超额生成效率最高；在成长/科技风格领跑时，Alpha 可能有所消退"
+        return "经理在**价值风格占优**的市场中（低估值、高分红）超额生成效率最高；在成长/科技风格领跑时，Alpha 可能有所消退"
     else:
-        return f"经理风格相对均衡，在成长与价值的切换中均能保持一定超额，但在极端单一风格行情中，超额创造能力有一定的局限性"
+        return "经理风格相对均衡，在成长与价值的切换中均能保持一定超额，但在极端单一风格行情中，超额创造能力有一定的局限性"
 
 
 def _style_opposite(smb: float, hml: float) -> str:

@@ -40,15 +40,9 @@ def __getattr__(name):
     elif name == "load_bond_data":
         from .bond_loader import load_bond_data
         return load_bond_data
-    elif name in ["load_etf_nav_and_price", "load_benchmark_index", 
+    elif name in ["load_etf_nav_and_price", "load_benchmark_index",
                   "load_etf_holdings_ratios", "load_etf_daily_trading", "infer_benchmark_code"]:
-        from .index_loader import (
-            load_etf_nav_and_price,
-            load_benchmark_index,
-            load_etf_holdings_ratios,
-            load_etf_daily_trading,
-            infer_benchmark_code,
-        )
-        return globals()[name]
+        from . import index_loader
+        return getattr(index_loader, name)
     else:
         raise AttributeError(f"module 'fund_quant_v2.data_loader' has no attribute '{name}'")

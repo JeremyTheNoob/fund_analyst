@@ -15,18 +15,13 @@ import json
 import time
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 import pandas as pd
 
 from data_loader.index_cache_config import (
     SUPPORTED_INDEXES,
-    UPDATE_SCHEDULE,
-    get_price_index_filename,
-    get_total_return_filename,
-    get_metadata_filename,
 )
 from data_loader.index_cache_manager import (
-    IndexCacheManager,
     get_index_cache_manager,
 )
 
@@ -307,7 +302,7 @@ class IndexUpdateScheduler:
     
     def get_update_status(self) -> Dict[str, any]:
         """获取更新状态"""
-        now = datetime.now()
+        datetime.now()
         
         # 计算下次更新时间
         next_update_daily = None

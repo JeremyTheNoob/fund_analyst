@@ -11,14 +11,12 @@ import akshare as ak
 import pandas as pd
 import numpy as np
 
-from config import CACHE_TTL, DATA_CONFIG
+from config import CACHE_TTL
 from data_loader.base_api import (
-    cached, retry,
-    _ak_fund_nav, _ak_fund_asset_allocation,
+    cached, _ak_fund_nav, _ak_fund_asset_allocation,
     _ak_index_daily_main, _ak_index_daily_em,
-    safe_df,
 )
-from models.schema import NavData, HoldingsData
+from models.schema import HoldingsData
 
 logger = logging.getLogger(__name__)
 

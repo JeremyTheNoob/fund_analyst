@@ -4,9 +4,7 @@
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
-import pandas as pd
-import numpy as np
+from typing import Any, Dict, List
 
 
 # ============================================================
@@ -155,7 +153,7 @@ def analyze_cb_holdings(report: Any) -> Dict[str, Any]:
     # 资产配置比例
     stock_ratio = holdings.get("stock_ratio", 0.0) * 100
     bond_ratio = holdings.get("bond_ratio", 0.0) * 100
-    cash_ratio = holdings.get("cash_ratio", 0.0) * 100
+    holdings.get("cash_ratio", 0.0) * 100
     cb_ratio = holdings.get("cb_ratio", 0.0) * 100
     
     # 纯债占比（总债券 - 转债）

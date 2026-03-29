@@ -9,9 +9,8 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 
-from config import MODEL_CONFIG, RISK_THRESHOLDS
+from config import MODEL_CONFIG
 from engine.common_metrics import (
     annualized_return, max_drawdown, volatility,
     sharpe_ratio, tracking_error, information_ratio,
