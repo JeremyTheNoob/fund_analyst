@@ -27,6 +27,7 @@ from models.schema import (
     CleanBondData, HoldingsData,
     CommonMetrics, BondMetrics,
 )
+from utils.common import audit_logger, FinancialConfig
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ BOND_MATURITY_DURATION_MAP = {
 # 主入口
 # ============================================================
 
+@audit_logger
 def run_bond_analysis(
     clean_data: CleanBondData,
     holdings: HoldingsData,
@@ -184,7 +186,7 @@ def _run_bond_three_factor(
         result = sm.OLS(y, X).fit()
         params = result.params
         return {
-            "alpha":    round(float(params[0]) * 252, 4),
+            "alpha":    round(float(params[0]) * FinancialConfig.TRADING_DAYS_YEAR, 4),
             "b_short":  round(float(params[1]), 4),
             "b_long":   round(float(params[2]), 4),
             "b_credit": round(float(params[3]), 4),
@@ -243,7 +245,7 @@ def _estimate_duration_from_holdings(holdings: HoldingsData) -> tuple[float, flo
         return default_dur, default_dur ** 2 / 100
 
     # 业务逻辑红线：权重和必须接近 1.0（允许浮点误差）
-    assert abs(total_w - 1.0) < 1e-6, f"债券权重和异常: {total_w}，应接近 1.0"
+    assert abs(total_w - 1.0) < FinancialConfig.PRECISION_EPSILON, f"债券权重和异常: {total_w}，应接近 1.0"
 
     # 加权平均久期
     wav_duration = sum(d * w / total_w for d, w in zip(durations, weights))

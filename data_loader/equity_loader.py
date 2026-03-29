@@ -27,6 +27,7 @@ from data_loader.index_sync import get_total_return_series
 from models.schema import FundBasicInfo, NavData, HoldingsData, FactorData, BenchmarkData
 from processor.data_cleaner import BenchmarkManager
 from processor.benchmark_cache import benchmark_cache
+from utils.common import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 @cached(ttl=CACHE_TTL["medium"])
+@audit_logger
 def load_basic_info(symbol: str) -> FundBasicInfo:
     """
     加载基金基本信息。
@@ -359,6 +361,7 @@ def load_unit_nav(symbol: str) -> Optional[float]:
 
 @cached(ttl=CACHE_TTL["short"])
 @cached(ttl=CACHE_TTL["medium"])
+@audit_logger
 def load_nav(
     symbol: str,
     years: int = None,

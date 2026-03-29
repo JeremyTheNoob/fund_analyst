@@ -10,12 +10,14 @@ from models.schema import (
     FundReport, FundBasicInfo,
     EquityMetrics, BondMetrics, IndexMetrics, ConvertibleBondMetrics,
 )
+from utils.common import audit_logger
 
 
 # ============================================================
 # 统一入口
 # ============================================================
 
+@audit_logger
 def generate_text_report(report: FundReport) -> dict:
     """
     根据基金类型分发到对应翻译器，生成文字报告。

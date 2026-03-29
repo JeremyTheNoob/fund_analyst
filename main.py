@@ -9,12 +9,13 @@ import sys
 import os
 import logging
 
-# 配置日志
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger(__name__)
-
 # 将项目根目录加入 PYTHONPATH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 配置日志
+from utils.common import setup_global_logging
+setup_global_logging()
+logger = logging.getLogger(__name__)
 
 from pipeline import analyze_fund
 from services.chart_interpretation import get_chart_interpretation

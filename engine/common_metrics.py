@@ -10,12 +10,15 @@ import logging
 import numpy as np
 import pandas as pd
 
+from utils.common import FinancialConfig
+
 logger = logging.getLogger(__name__)
 
 # 统一类型别名
 ArrayLike = Union[pd.Series, np.ndarray]
 
-TRADING_DAYS = 252  # A 股全年交易日
+# 使用统一配置（向后兼容）
+TRADING_DAYS = FinancialConfig.TRADING_DAYS_YEAR
 
 
 def _to_array(x: ArrayLike) -> np.ndarray:
@@ -233,7 +236,7 @@ def information_ratio(
         return 0.0
     excess = r[:n] - bm[:n]
     te = np.std(excess, ddof=1)
-    if te < 1e-6:
+    if te < FinancialConfig.PRECISION_EPSILON:
         return 0.0
     return float(np.mean(excess) / te * np.sqrt(periods_per_year))
 

@@ -18,10 +18,12 @@ from engine.common_metrics import (
     information_ratio, tracking_error, beta, skewness, kurtosis, monthly_win_rate,
     normalize_score,
 )
+from utils.common import FinancialConfig
 from models.schema import (
     CleanNavData, FactorData, HoldingsData, BenchmarkData,
     CommonMetrics, EquityMetrics,
 )
+from utils.common import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ logger = logging.getLogger(__name__)
 # 主入口
 # ============================================================
 
+@audit_logger
 def run_equity_analysis(
     nav: CleanNavData,
     factors: FactorData,
@@ -180,7 +183,7 @@ def _run_ff_regression(
 
     params = result.params
     # alpha 日频 → 年化
-    alpha_annual = float(params[0]) * 252
+    alpha_annual = float(params[0]) * FinancialConfig.TRADING_DAYS_YEAR
     beta_mkt     = float(params[1]) if len(params) > 1 else 1.0
 
     factor_loadings = {

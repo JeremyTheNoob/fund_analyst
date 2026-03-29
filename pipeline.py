@@ -37,6 +37,7 @@ from reporter.translator import (
     generate_text_report, generate_equity_tags,
 )
 from reporter.chart_gen import generate_chart_data
+from utils.common import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ UNSUPPORTED_TYPES = {
 # 主分析函数（外部调用入口）
 # ============================================================
 
+@audit_logger
 def analyze_fund(
     symbol: str,
     years: int = 5,

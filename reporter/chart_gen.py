@@ -12,6 +12,8 @@ import pandas as pd
 
 # 导入数据加载器以获取全收益指数
 from data_loader.index_sync import get_total_return_series
+from utils.common import audit_logger
+
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,7 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
 # 统一入口
 # ============================================================
 
+@audit_logger
 def generate_chart_data(report: Any) -> Dict[str, Any]:
     """
     生成所有图表所需数据结构（供前端 Plotly/ECharts 使用）。

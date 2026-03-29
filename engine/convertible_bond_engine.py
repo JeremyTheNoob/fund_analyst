@@ -18,6 +18,7 @@ from models.schema import (
     CleanNavData, HoldingsData, FundBasicInfo,
     CommonMetrics, ConvertibleBondMetrics,
 )
+from utils.common import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ DELTA_BY_PREMIUM = [
 # 主入口
 # ============================================================
 
+@audit_logger
 def run_cb_analysis(
     nav: CleanNavData,
     holdings: HoldingsData,
