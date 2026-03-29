@@ -229,6 +229,13 @@ def _run_equity_pipeline(
 
     chart_data = {
         "nav_df": clean_nav.df,
+        "holdings": {
+            "top10_stocks": holdings.top10_stocks,
+            "stock_ratio": holdings.stock_ratio,
+            "bond_ratio": holdings.bond_ratio,
+            "cash_ratio": holdings.cash_ratio,
+            "cb_ratio": holdings.cb_ratio,
+        },
     }
     if has_benchmark:
         chart_data["benchmark_df"] = benchmark.df
@@ -290,7 +297,17 @@ def _run_bond_pipeline(
         basic=basic,
         bond_metrics=metrics,
         tags=[],
-        chart_data={"nav_df": clean_nav.df},
+        chart_data={
+            "nav_df": clean_nav.df,
+            "holdings": {
+                "top10_stocks": [],
+                "stock_ratio": holdings.stock_ratio,
+                "bond_ratio": holdings.bond_ratio,
+                "cash_ratio": holdings.cash_ratio,
+                "cb_ratio": holdings.cb_ratio,
+                "bond_details": holdings.bond_details,
+            },
+        },
     )
 
     report.text_report = generate_text_report(report)
@@ -374,7 +391,17 @@ def _run_cb_pipeline(
         basic=basic,
         cb_metrics=metrics,
         tags=[],
-        chart_data={"nav_df": clean_nav.df},
+        chart_data={
+            "nav_df": clean_nav.df,
+            "holdings": {
+                "top10_stocks": [],
+                "stock_ratio": holdings.stock_ratio,
+                "bond_ratio": holdings.bond_ratio,
+                "cash_ratio": holdings.cash_ratio,
+                "cb_ratio": holdings.cb_ratio,
+                "bond_details": holdings.bond_details,
+            },
+        },
     )
 
     report.text_report = generate_text_report(report)

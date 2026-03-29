@@ -3,300 +3,125 @@
 ## 项目基本信息
 - **产品**：基金穿透式分析工具，对外运营，含付费功能
 - **部署地址**：https://fundanalyst-supq2s7qdckbk9468a83bc.streamlit.app/
-- **GitHub**：https://github.com/JeremyTheNoob/fund_analyst
+- **GitHub**：https://github.com/JeremyTheNoob/fund_analyst（Public）
 - **获客渠道**：小红书 + 抖音（图文 + AI配音）
 - **商业模式**：免费3次/天 + 付费会员（无限 + 高级功能）
 - **技术栈**：Python + Streamlit，数据源 AkShare
-- **当前版本**：fund_quant_v2（2026-03-28）
+- **启动命令**：`cd /Users/liuweihua/WorkBuddy/基金穿透式分析 && streamlit run main.py`
 
-## 核心技术特性
-
-### 1. 申万行业全收益指数
-- **固定股息率参数表**：31个行业年度化股息率（煤炭6.0%~国防军工0.5%）
-- **Alpha计算修正**：银行/煤炭基金不考虑分红会高估Alpha 5-6%
-- **智能识别**：支持 `801230.SI`、`SW煤炭.SI`、`SW银行.SI` 等多种格式
-- **性能优化**：固定参数避免接口不稳定，计算速度提升300%
-
-### 2. 图表数据专业解读引擎
-- **新增模块**：`services/chart_interpretation.py`（550行，新增140行）
-- **7个核心图表**：累计收益曲线、水下回撤图、月度热力图、超额收益曲线、晨星风格箱、信用利差趋势图、跟踪误差直方图
-- **设计原则**：数据驱动 + 行为诊断 + 建议引导 + 填充式逻辑
-- **自动化解读模板**：基于数据特征的填充式逻辑模板（累计收益曲线 + 水下回撤图 + 超额收益曲线）
-- **集成效果**：每个图表下方显示150-200字专业解读，使用浅灰色解读框
-
-#### **累计收益曲线自动化解读模板**
-```
-[总评] 本基金在统计期内实现了 {cum_fund_last}% 的累计回报，对比全收益基准（含分红补偿）表现出 {performance_status}。
-
-[核心拆解]
-真实 Alpha 提取：剔除行业约 {div_contribution}% 的分红贡献后，经理通过选股贡献了 {net_alpha}% 的超额收益。曲线斜率显示，超额主要集中在 {alpha_period}。
-
-形态映射：
-    {shape_desc}：曲线形态呈现 {consistency_type}，反映经理在 {market_phase} 阶段采取了 {manager_action}。
-    分红敏感度：由于所属 {industry_name} 行业分红特征明显，全收益基准线显著高于价格指数，这要求经理必须具备更强的择股能力才能跑赢。
-
-[结论] 经理表现出 {skill_tag}，建议关注其在 {next_focus_period} 的仓位稳定性。
-```
-
-#### **水下回撤图自动化解读模板**
-```
-[风险总评] 在统计期内，本基金最大回撤为 {max_dd_fund}%，相比全收益基准的 {max_dd_bm}%，表现出 {defensive_quality}。
-
-[防御韧性拆解]
-抗压能力：在 {market_drop_period} 市场剧烈波动期间，基金回撤控制在 {period_dd}%，优于基准的 {period_bm_dd}%。这反映了经理在极端行情下的 {action_type}（如：主动避险/仓位控制）。
-
-修复效率（回血速度）：
-{recovery_speed_desc}：最长回撤持续天数为 {max_dd_days} 天。
-形态观察：回撤曲线呈现 {dd_shape}（如：V型反转/U型磨底）。基金在回撤发生后的 {half_recovery_days} 天内即收复了 50% 的失地，修复弹性 {elasticity_status}。
-
-[结论] 该基金属于 {risk_personality}（如：回撤大、弹性强 / 控回撤、稳健型），适合 {investor_fit}。
-```
-
-#### **超额收益曲线自动化解读模板**（2026-03-28新增）
-```
-🎯 **超额收益画像 - Alpha的含金量与能力边界**
-
-[Alpha概貌] 在统计期内，本基金相对于{ret_type}基准实现了 **{last_excess:.1f}%** 的累计超额收益，超额曲线呈现 **{curve_trend}**。
-
-[能力边界识别]
-强势期分析：曲线在 **{up_period}** 斜率最陡，说明经理在 **{market_style_up}** 环境下具备极强的选股爆发力。
-回撤/平淡期：在 **{down_period}** 期间超额曲线回落，反映出经理在 **{market_style_down}** 环境下表现相对吃力，存在一定的能力边界。
-
-[超额质量评估]
-稳定性：超额收益的月度胜率为 **{monthly_win_rate}%**，曲线走势 **{stability_desc}**（超额日波动 **{excess_std:.2f}%**）。
-性价比：信息比率（Information Ratio）为 **{ir_color} {ir_value:.2f}（{ir_quality}）**，意味着每承担一单位的偏离风险，能换取 **{ir_unit}** 单位的超额回报。
-
-[几何超额专业度]
-算法验证：{algorithm_note}
-基准对齐：{benchmark_note}
-
-[结论] 经理的 Alpha 来源属于 **{alpha_source_type}**，建议在 **{suitable_env}** 时期加大配置。
-```
-
-### 3. 业绩基准曲线
-- **全收益集成**：累计收益曲线和水下回撤图均显示基金+业绩基准双曲线
-- **实现方式**：pipeline.py中benchmark.df添加到chart_data，chart_gen.py中读取绘制
-- **颜色方案**：基金（红色）、基准（灰色 #95a5a6）
-
-### 4. 新架构（fund_quant_v2）
+## 架构说明
 ```
 data_loader/ → processor/ → engine/ → reporter/ → main.py
 数据获取    →  标准化清洗 → 模块化计算 → 统一报告分发
 ```
+- `pipeline.py`：核心流水线，`analyze_fund()` 入口
+- `models/schema.py`：FundReport / FundBasicInfo / EquityMetrics 等数据模型
+- `reporter/chart_gen.py`：生成 chart_data（cumulative_return / drawdown / monthly_heatmap / excess_return）
+- `reporter/translator.py`：生成 text_report（headline / body / advice / risk_warning）
+- `services/chart_interpretation.py`：图表下方专业解读文字（7个图表类型）
+- `reporter/equity_report_writer.py`：新增，权益类基金深度评价报告生成器（1000字，4章节+结论）
 
-## 已修复的关键问题
+## 支持的基金类型
+- ✅ 权益类（股票型/偏股混合）→ `report.equity_metrics`
+- ✅ 固收类（纯债/可转债）→ `report.bond_metrics`
+- ✅ 指数/ETF（含增强型）→ `report.index_metrics`
+- ✅ 可转债/固收+ → `report.cb_metrics`
+- ❌ 不支持：QDII、货币基金、商品基金
 
-### 2026-03-28修复记录
-1. **基金代码000001净值数据获取失败**
-   - 问题：`safe_api_call`导入缺失 + `nav_data.empty`属性访问错误
-   - 修复：equity_loader.py添加导入，main.py改为`nav_data.df.empty`
-   - 结果：成功加载241行净值数据
+## 核心技术特性
 
-2. **图表解读集成问题**
-   - MockCharts类不支持下标访问 → 添加`__getitem__`方法
-   - 除零风险 → 添加防除零逻辑
-   - tab索引错误 → 重新计算索引位置
+### 申万行业全收益指数系统（2026-03-29）
+- **全收益合成算法**：`全收益率 = (1 + 价格收益率) × (1 + 股息收益率) - 1`
+- **本地缓存**：`data/index_cache/`（price_indices/ + total_return_indices/ + index_metadata.json）
+- **关键文件**：`data_loader/index_cache_config.py`、`index_cache_manager.py`、`index_integration.py`
+- **固定股息率**：31个申万行业（煤炭6.0% ~ 国防军工0.5%）
 
-3. **沪深300全收益指数错误配置**
-   - 问题：配置文件中使用无法获取的`H00019`
-   - 修复：改回`sh000300`，移除错误条目，简化图表生成逻辑
+### 图表数据结构（chart_data）
+- `cumulative_return`: x, series（name/data/color）, benchmark_info（bm_last_return, is_total_return）
+- `drawdown`: x, series, drawdown_info（bm_max_dd, defensive_ratio, recovery_info）
+- `monthly_heatmap`: data, x, y, heatmap_info（annual_stats, monthly_details）
+- `excess_return`: x, series, excess_info（last_excess, curve_trend, excess_std, ir_value, ir_quality, monthly_win_rate）
+- **颜色方案**：基金（红色 #e74c3c）、基准（灰色 #95a5a6）
 
-4. **累计收益曲线三个关键潜伏错误（15:30修复）**
-   - 问题1：计算逻辑冲突（基准不一）→ 使用`bm_ret`而非全收益`tr_ret`
-   - 问题2：归一化起点错误（利滚利偏差）→ 起点跳空导致曲线不对齐
-   - 问题3：频率对齐导致的"平仓幻觉"→ 数据缺失产生误导性水平线
-   - 修复：统一基准算力 + 强制零点对齐 + 数据清洗预处理
-   - 结果：准确性提升 + 数据一致性 + 避免误导解读
+### 权益类深度报告（2026-03-29 新建）
+- **文件**：`reporter/equity_report_writer.py`
+- **入口**：`generate_equity_deep_report(report) -> dict`
+- **返回 key**：meta / headline / section1~4 / conclusion / full_text
+- **图表标记**：`[INSERT_CHART: CUM_RET]` / `EXCESS_ALPH` / `DRAWDOWN` / `HEATMAP`
+- **集成状态**：✅ 已完全集成到 main.py（2026-03-29 11:10）
 
-5. **水下回撤图三个关键错误（15:45修复）**
-   - 问题1：基准选择的"苹果比橘子"错误 → 价格基准vs全收益基准
-   - 问题2：起始点"虚假回撤"风险 → 区间回撤vs绝对回撤混淆
-   - 问题3：恢复期的"假死"逻辑 → 未定义回撤结束阈值
-   - 修复：全收益基准对齐 + 高水位线清洗 + 修复阈值标记 + 单元测试断言
-   - 结果：防御能力准确评估 + 修复弹性智能分析 + 数据正确性保障
+### 债券型基金深度报告（2026-03-29 新建）
+- **文件**：`reporter/bond_report_writer.py`
+- **入口**：`generate_bond_deep_report(report) -> dict`
+- **返回 key**：meta / headline / section1~3 / conclusion / full_text
+- **图表标记**：`[INSERT_CHART: CUM_RET]` / `DRAWDOWN` / `HEATMAP`
+- **章节**：一（收益逻辑：票息vs久期博弈）/ 二（回撤与修复效率）/ 三（月度胜率与持有体验）/ 四（结论与投资建议）
+- **集成状态**：✅ 已完全集成到 main.py（2026-03-29 11:35）
 
-6. **超额收益曲线三个关键错误（17:25修复）**
-   - 问题1：计算方法的"算术陷阱" → 使用算术减法而非几何除法
-   - 问题2：全收益基准缺失 → 仅使用价格收益率导致虚假Alpha
-   - 问题3：起始点对齐漂移 → 没有强制excess_curve[0] = 0导致曲线"悬空"
-   - 修复：几何超额算法 + 全收益基准优先级 + 净值起点强制对齐 + 自动化解读模板
-   - 结果：真实Alpha评估 + 能力边界识别 + 信息比率量化 + 专业解读生成
+### 指数/ETF 深度报告（2026-03-29 新建）
+- **文件**：`reporter/index_report_writer.py`
+- **入口**：`generate_index_deep_report(report) -> dict`
+- **返回 key**：meta / headline / section1~3 / conclusion / full_text
+- **图表标记**：`[INSERT_CHART: CUM_RET]` / `TRACKING_ERROR_SCATTER`（超额曲线+±2σ带）/ `PREMIUM_DISCOUNT`（热力图+折溢价标注）
+- **章节**：一（净值拟合与贝塔回归）/ 二（跟踪偏离度与精细化管理）/ 三（场内流动性与交易成本）/ 四（综合结论与配置建议）
+- **集成状态**：✅ 已完全集成到 main.py（2026-03-29 12:00）
 
-### 2026-03-28用户反馈问题修复（21:58-22:10修复）
-针对用户报告的Streamlit应用问题，进行了以下修复：
+### 可转债/固收+深度报告（2026-03-29 新建）
+- **文件**：`reporter/cb_report_writer.py`
+- **入口**：`generate_cb_deep_report(report) -> dict`
+- **返回 key**：meta / headline / section1~3 / conclusion / full_text
+- **图表标记**：`[INSERT_CHART: CUM_RET]` / `CAPTURE_RATIO`（超额曲线+填充）/ `DRAWDOWN`
+- **章节**：一（资产配置逻辑与复合收益）/ 二（非对称捕获能力分析）/ 三（回撤深度与底层支撑）/ 四（综合结论与配置建议）
+- **集成状态**：✅ 已完全集成到 main.py（2026-03-29 13:00）
+- **2026-03-29 14:00 更新**：新增 section4（大类资产穿透分析），支持转债估值压缩风险自动提示
 
-#### 问题1：基金代码000001分析时的警告和数据显示问题
-- **全收益指数获取失败**：修复`_get_generic_total_return_series`函数，正确处理宽基指数代码格式（如`000300.SH` → `sh000300`），确保股息率配置正确读取
-- **净值起点未对齐**：修复`_excess_return_chart`函数，强制基金和基准净值都从1.0开始计算，避免"悬空曲线"
-- **超额收益计算矛盾**：使用几何超额算法`(fund_nav / bm_nav) - 1`，确保真实反映"1块钱投入基金比投入基准多赚了多少"
+### 权益类基金持仓分析（2026-03-29 新增）
+- **文件**：`reporter/holdings_analyzer.py`
+- **入口**：`analyze_equity_holdings(report) -> dict`
+- **分析维度**：集中度/经理风格/个股留存率/行业配置/重仓股特征/风险集中行业
+- **图表设计**：
+  - 图表一：动态行业配置与偏离度（堆叠柱状图 + 散点/蜘蛛图，需多期数据支持）
+  - 图表二：持仓集中度与个股留存率（双轴图，柱状图 + 折线图）
+- **集成状态**：✅ 已完全集成到 equity_report_writer.py section5（2026-03-29 14:00）
 
-#### 问题2：基金代码000069（纯债基金）的警告和描述准确性问题
-- **债券基金描述不准确**：为债券基金创建专门的解读模板，使用"收益捕获能力"而非"选股爆发力"等股票相关术语
-- **分红贡献为0.0%**：债券基金确实不涉及股票分红，0.0%显示正确
-- **基准描述优化**：调整债券基金的基准描述，使用"债券财富指数基准"而非"全收益基准"
+### 固收+基金资产配置分析（2026-03-29 新增）
+- **文件**：`reporter/holdings_analyzer.py`
+- **入口**：`analyze_cb_holdings(report) -> dict`
+- **分析维度**：大类资产配置（纯债/权益/转债/现金）/ 转债风格/ 风险水平/ 经理行为
+- **图表设计**：大类资产穿透与仓位变动图（百分比堆叠面积图，需多期数据支持）
+- **集成状态**：✅ 已完全集成到 cb_report_writer.py section4（2026-03-29 14:00）
 
-#### 问题3：算法验证备注显示问题
-- **技术性备注隐藏**：将"几何超额算法验证通过"等技术性描述改为"数据质量验证通过"等用户友好语言
-- **验证问题不显示**：不再向用户显示"净值起点未对齐，可能存在数据预处理问题"等技术性警告
-- **基准描述友好化**：将"使用价格基准，未能包含分红补偿，可能高估经理能力"改为"基准数据获取中，结果可能高估经理能力"
-
-#### 修复文件
-1. `fund_quant_v2/data_loader/index_sync.py` - 全收益指数获取修复
-2. `fund_quant_v2/reporter/chart_gen.py` - 净值起点对齐修复
-3. `fund_quant_v2/services/chart_interpretation.py` - 图表解读优化
-
-#### 验证结果
-✅ 全收益指数获取功能修复 - 支持沪深300等宽基指数  
-✅ 净值起点对齐修复 - 确保基金和基准都从1.0开始  
-✅ 债券基金描述优化 - 使用"收益捕获能力"而非"选股爆发力"  
-✅ 算法验证备注隐藏 - 使用友好的"数据质量验证通过"描述  
-✅ 基准描述优化 - 对用户更友好的语言
-
-#### 待处理问题
-- 基金代码000297的"数据加载超时"问题（可能网络或API限制）
-- 纯债基金类型识别逻辑优化（000069被fallback到权益分析）
-
-### 2026-03-29全收益指数新系统部署（00:15完成）
-
-#### 新系统架构概述
-根据用户要求，完全重写了全收益指数获取系统，采用全新的架构：
-
-1. **核心设计理念**：
-   - 价格指数获取 + 全收益合成算法（替代直接获取全收益指数）
-   - 本地Parquet文件缓存，大幅提高访问速度
-   - 支持增量更新和自动过期检查
-   - 与原有系统无缝集成，保持向后兼容
-
-2. **主要组件**：
-   - `index_cache_config.py` - 系统配置文件（指数列表、股息率配置、缓存设置）
-   - `index_cache_manager.py` - 缓存管理器（价格获取器、全收益合成器、主管理器）
-   - `index_updater.py` - 定期更新机制（调度器、自动化任务）
-   - `index_integration.py` - 系统集成模块（向后兼容接口）
-   - `index_sync.py` - 修改后的主接口函数（支持系统切换）
-
-#### 新系统技术特性
-
-1. **全收益指数合成算法**：
-   ```
-   全收益率 = (1 + 价格收益率) × (1 + 股息收益率) - 1
-   其中：股息收益率 = 年化股息率 ÷ 年交易天数
-   ```
-
-2. **缓存架构**：
-   ```
-   data/index_cache/
-   ├── price_indices/        # 价格指数缓存 (.parquet)
-   ├── total_return_indices/ # 全收益指数缓存 (.parquet)
-   └── index_metadata.json   # 指数元数据
-   ```
-
-3. **定期更新机制**：
-   - 每日增量更新：仅更新最新数据
-   - 每周完整更新：重新验证数据质量
-   - 自动过期检查：TTL配置（默认7天）
-
-4. **向后兼容设计**：
-   - 原有接口不变：`get_total_return_series()` 函数签名保持兼容
-   - 系统切换标志：`use_new_system` 参数（默认True）
-   - 错误回退机制：新系统失败时自动回退到原有系统
-
-#### 已修复的问题
-✅ **缓存目录创建问题** - 修复了子目录结构，确保price_indices和total_return_indices目录正确创建  
-✅ **配置导入问题** - 添加了CACHE_CONFIG配置，修复了导入错误  
-✅ **向后兼容性** - 修复了`get_total_return_series()`函数调用参数问题  
-✅ **大小写兼容性** - 修复了指数代码大小写转换问题（sh000300 ↔ SH000300）
-
-#### 系统验证结果
-通过简化测试验证：
-```
-✓ 配置导入成功 - 12个指数配置
-✓ 缓存管理器创建成功
-✓ 新系统可用性标志已启用 (NEW_SYSTEM_AVAILABLE = True)
-```
-
-#### 部署状态
-- ✅ 新系统代码已全部编写完成
-- ✅ 配置文件已更新
-- ✅ 集成测试通过
-- ✅ 缓存目录结构就绪
-- ⚠️ 等待实际Streamlit应用验证
-
-#### 用户原始问题预期解决
-1. **基金000001的全收益指数问题**：
-   - 新系统使用本地缓存，不再依赖外部API
-   - 合成算法确保全收益数据始终可用
-   
-2. **基金000069的债券基金描述问题**：
-   - 新系统不影响类型识别逻辑
-   - 图表解读已单独优化
-   
-3. **基金000297的数据加载超时问题**：
-   - 本地缓存大幅减少网络依赖
-   - 即使网络失败，仍有缓存数据可用
-
-#### 配置每日更新任务
-建议配置cron job：
-```bash
-# 每天18:00执行指数更新
-0 18 * * * cd /Users/liuweihua/WorkBuddy/基金穿透式分析 && python3 fund_quant_v2/data_loader/index_updater.py
-```
-
-#### 下一步验证
-1. 启动Streamlit应用验证新系统在实际环境中的表现
-2. 测试用户报告的3个基金代码问题是否完全解决
-3. 监控缓存命中率和性能指标
-4. 根据实际使用情况进一步优化配置
-
-## 关键Bug历史记录（勿重踩）
+## 关键 Bug 记录（勿重踩）
 1. `fund_portfolio_asset_allocation_em`接口不存在 → 改用`fund_portfolio_hold_em`
 2. `_align_bm()`必须明确取`ret`列，取`close`会导致跟踪误差异常（669740%）
 3. `FundReport`要有`warnings: List[str] = []`字段，否则pipeline赋值报错
 4. 基准数据列名统一为`bm_ret`，schema文档必须与实际代码一致
 5. bond模式下`translate_results()`传入的是`{'bond': bond_res}`嵌套字典，需先展开
-6. **累计收益曲线三大关键错误**（2026-03-28修复）：
-   - 基准不一：必须优先使用`tr_ret`全收益数据，否则虚增Alpha
-   - 起点跳空：必须强制零点对齐，确保基金与基准同时从(0,0)出发
-   - 平仓幻觉：必须数据清洗预处理，剔除数据缺失导致的误导性水平线
-7. **水下回撤图三大关键错误**（2026-03-28修复）：
-   - 苹果比橘子：基准必须使用全收益`tr_ret`，避免虚增基金防御能力
-   - 虚假回撤：必须区分区间回撤和绝对回撤，避免起始点失真
-   - 假死逻辑：必须定义修复阈值（-0.1%），避免微小差距导致的永久回撤判定
-8. **超额收益曲线三大关键错误**（2026-03-28修复）：
-   - 算术陷阱：必须使用几何超额算法 `excess_curve = (fund_nav / bm_nav) - 1`，避免复利效应下的数值偏差
-   - 虚假Alpha：必须优先使用全收益`tr_ret`数据，避免高分红行业虚增超额
-   - 起点漂移：必须强制净值起点对齐到1.0，第一天超额反映相对表现
+6. **累计收益曲线**：必须优先使用全收益`tr_ret`；强制零点对齐；数据清洗预处理
+7. **水下回撤图**：基准用全收益；修复阈值`-0.1%`；区分区间回撤vs绝对回撤
+8. **超额收益曲线**：必须几何超额算法 `(fund_nav / bm_nav) - 1`；优先全收益基准；强制起点对齐为0
+9. 全收益指数`H00019`无法获取 → 改用`sh000300`，宽基指数代码需格式转换（`000300.SH` → `sh000300`）
 
-9. **数据质量验证断言**（必须始终包含）：
-   - 回撤数据最大值校验：`assert drawdown_fund.max() <= 0`
-   - 终点校验：如果当前净值是历史最高点，则当天的drawdown必须为0
-   - 基准逻辑验证：全收益回撤应小于价格回撤（分红缓冲效应）
-   - 几何一致性检查：`assert abs((1+fund_ret)/(1+bm_ret) - (1+excess_ret)) < 1e-6`
-   - 分红压力测试：验证全收益基准下的超额低于价格基准
-   - 起点合理性检查：`assert abs(excess_curve[0] * 100) < 10`（第一天超额<10%）
-
-## 验证过的AkShare接口
+## 验证过的 AkShare 接口
 - `fund_open_fund_info_em()` - 历史净值
-- `fund_individual_basic_info_xq()` - 雪球基础信息  
+- `fund_individual_basic_info_xq()` - 雪球基础信息
 - `fund_portfolio_hold_em()` - 股票前十大持仓
 - `fund_portfolio_bond_hold_em()` - 债券全部持仓
-- `stock_zh_index_daily()` - 指数日行情（主力）
+- `stock_zh_index_daily()` - 指数日行情
 - `bond_new_composite_index_cbond(indicator="财富")` - 中债综合指数
 
-## 支持的基金类型
-- ✅ 权益类（股票型/偏股混合）
-- ✅ 固收类（纯债/可转债）
-- ✅ 指数/ETF（含增强型）
-- ✅ 行业/主题、混合型
-- ❌ 不支持：QDII、货币基金、商品基金
+## UI 结构（main.py 当前状态）
+- **无侧边栏**：`initial_sidebar_state="collapsed"`
+- **输入区**：居中三列，基金代码 + 分析周期单选 + 开始分析按钮
+- **加载提示**：`st.spinner("🧠 净值大模型分析中，请稍候...")`
+- **Part 1**：基础信息（4列×2行：名称/公司/成立/净值 + 经理/类型/规模/基准 + 第三行申购/赎回/购买起点/费率）
+- **Part 2**：4个图表 Tab（收益曲线/回撤分析/月度热力图/超额收益曲线），每图下方有专业解读框
+- **Part 3**：关键指标（st.markdown 文字展示，需重构）
+- **Part 4**：深度诊断 + 投资建议（两列，需重构为新的深度报告）
 
-## 系统状态
-- ✅ **新架构**：`fund_quant_v2`完全正常工作
-- ⚠️ **旧架构**：项目根目录`main.py`仅作兼容性重定向
-- ✅ **核心基金代码**：支持000001、000069、011891、510300等
-- ✅ **性能优化**：快速校验+并行加载，总时间3-5秒
-
-## 运行指南
-```bash
-cd /Users/liuweihua/WorkBuddy/基金穿透式分析
-streamlit run fund_quant_v2/main.py
-```
+## 待处理事项
+- ✅ main.py 集成 `equity_report_writer.py`（权益类深度报告已完成，含图表内联，2026-03-29）
+- ✅ main.py 集成 `bond_report_writer.py`（债券类深度报告已完成，含图表内联，2026-03-29）
+- ✅ main.py 集成 `index_report_writer.py`（指数/ETF 深度报告已完成，含图表内联，2026-03-29）
+- ✅ main.py 集成 `cb_report_writer.py`（可转债/固收+深度报告已完成，含图表内联，2026-03-29）
+- ⚠️ 基金 000297 数据加载超时问题（可能网络/API 限制）
