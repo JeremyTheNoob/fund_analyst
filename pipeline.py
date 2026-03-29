@@ -50,6 +50,49 @@ UNSUPPORTED_TYPES = {
 
 
 # ============================================================
+# 类型映射（中文类型 → 英文类型码）
+# ============================================================
+
+def _map_type_category(chinese_type: str) -> str:
+    """
+    将中文类型分类映射到英文类型码
+
+    Args:
+        chinese_type: 中文类型（如 "纯债型"、"股票型"、"偏股混合型"）
+
+    Returns:
+        英文类型码（"equity", "bond", "mixed", "sector", "index", "convertible_bond"）
+    """
+    # 债券类
+    if chinese_type in ("纯债型", "中短债", "长债", "债券型"):
+        return "bond"
+
+    # 股票/指数类
+    if chinese_type in ("股票型", "增强指数"):
+        return "equity"
+
+    # 混合类
+    if chinese_type in ("偏股混合型", "偏债混合型", "平衡混合型", "混合型"):
+        return "mixed"
+
+    # 行业/主题类
+    if chinese_type == "sector":
+        return "sector"
+
+    # 指数/ETF
+    if chinese_type == "index":
+        return "index"
+
+    # 可转债
+    if chinese_type == "可转债基金":
+        return "convertible_bond"
+
+    # 默认 fallback 到权益
+    logger.warning(f"[_map_type_category] 未知类型 {chinese_type}，fallback 到 equity")
+    return "equity"
+
+
+# ============================================================
 # 主分析函数（外部调用入口）
 # ============================================================
 
@@ -101,11 +144,15 @@ def analyze_fund(
         return _error_report(symbol, msg)
 
     # =========================================================
-    # Stage 2: 不支持类型检查
+    # Stage 2: 类型标准化（中文 → 英文）
     # =========================================================
     fund_type = basic.type_category
-    if fund_type in UNSUPPORTED_TYPES:
-        return _unsupported_report(basic, UNSUPPORTED_TYPES[fund_type])
+    fund_type_en = _map_type_category(fund_type)
+    logger.info(f"[analyze_fund] {symbol} 类型映射: {fund_type} → {fund_type_en}")
+
+    # 不支持类型检查（使用英文类型码）
+    if fund_type_en in UNSUPPORTED_TYPES:
+        return _unsupported_report(basic, UNSUPPORTED_TYPES[fund_type_en])
 
     # =========================================================
     # Stage 3: 净值数据
@@ -128,7 +175,7 @@ def analyze_fund(
     # Stage 4: 持仓数据（并行策略）
     # =========================================================
     try:
-        if fund_type in ("bond", "convertible_bond"):
+        if fund_type_en in ("bond", "convertible_bond"):
             holdings = load_bond_holdings(symbol)
         else:
             holdings = load_stock_holdings(symbol)
@@ -139,8 +186,8 @@ def analyze_fund(
         state.holdings = holdings
 
     # 自动识别转债基金（cb_ratio > 30%）
-    if fund_type in ("bond", "mixed") and holdings.cb_ratio > 0.30:
-        fund_type = "convertible_bond"
+    if fund_type_en in ("bond", "mixed") and holdings.cb_ratio > 0.30:
+        fund_type_en = "convertible_bond"
         logger.info(f"[analyze_fund] {symbol} 自动识别为转债基金（cb_ratio={holdings.cb_ratio:.1%}）")
 
     # =========================================================
@@ -161,21 +208,21 @@ def analyze_fund(
     start_str, end_str = _get_date_range(clean_nav.df)
 
     try:
-        if fund_type in ("equity", "mixed", "sector"):
-            report = _run_equity_pipeline(symbol, basic, clean_nav, holdings, start_str, end_str, fund_type)
+        if fund_type_en in ("equity", "mixed", "sector"):
+            report = _run_equity_pipeline(symbol, basic, clean_nav, holdings, start_str, end_str, fund_type_en)
 
-        elif fund_type == "bond":
+        elif fund_type_en == "bond":
             report = _run_bond_pipeline(symbol, basic, clean_nav, holdings, start_str, end_str)
 
-        elif fund_type == "index":
+        elif fund_type_en == "index":
             report = _run_index_pipeline(symbol, basic, clean_nav, holdings, start_str, end_str)
 
-        elif fund_type == "convertible_bond":
+        elif fund_type_en == "convertible_bond":
             report = _run_cb_pipeline(symbol, basic, clean_nav, holdings, start_str, end_str)
 
         else:
             # 未知类型 fallback 到权益
-            logger.warning(f"[analyze_fund] {symbol} 未知类型 {fund_type}，fallback 到权益分析")
+            logger.warning(f"[analyze_fund] {symbol} 未知类型 {fund_type_en}，fallback 到权益分析")
             report = _run_equity_pipeline(symbol, basic, clean_nav, holdings, start_str, end_str, "equity")
 
     except Exception as e:
