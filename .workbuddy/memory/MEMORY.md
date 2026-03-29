@@ -2,7 +2,7 @@
 
 ## 项目基本信息
 - **产品**：基金穿透式分析工具，对外运营，含付费功能
-- **部署地址**：https://fundanalyst-supq2s7qdckbk9468a83bc.streamlit.app/
+- **部署地址**：https://fundanalyst.streamlit.app/（新地址，2026-03-29 更新）
 - **GitHub**：https://github.com/JeremyTheNoob/fund_analyst（Public）
 - **获客渠道**：小红书 + 抖音（图文 + AI配音）
 - **商业模式**：免费3次/天 + 付费会员（无限 + 高级功能）
