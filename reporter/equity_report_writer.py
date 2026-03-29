@@ -174,11 +174,6 @@ def generate_equity_deep_report(report: Any) -> dict:
         "conclusion": conclusion,
         "full_text":  full_text,
     }
-        "section3":   section3,
-        "section4":   section4,
-        "conclusion": conclusion,
-        "full_text":  full_text,
-    }
 
 
 # ============================================================
@@ -380,7 +375,7 @@ def _section3_risk_defense(
 
 **深度解读**
 
-{"更关键的是修复速度：" if recovery_days and recovery_days < 90 else ""}{"相对快速的回血节奏，结合持仓分析，暗示经理在下跌过程中进行了前瞻性的防御性换仓，将头寸切换至更具弹性的品种，从而实现了**"跌得少、回血快"的非对称优势**。" if recovery_days and recovery_days < 60 else "经理在回撤应对中展现了" + ("较强的仓位管理能力" if defense_ratio < 1.0 else "与市场基本同步的操作节奏") + "，建议持续关注后续回撤修复进展。"}
+{f"更关键的是修复速度：" if recovery_days and recovery_days < 90 else ""}{f"相对快速的回血节奏，结合持仓分析，暗示经理在下跌过程中进行了前瞻性的防御性换仓，将头寸切换至更具弹性的品种，从而实现了跌得少、回血快的非对称优势。" if recovery_days and recovery_days < 60 else f"经理在回撤应对中展现了{('较强的仓位管理能力' if defense_ratio < 1.0 else '与市场基本同步的操作节奏')}，建议持续关注后续回撤修复进展。"}
 
 {"Beta 值为 " + str(round(beta_val, 2)) + ("，高于1的弹性特征意味着市场上涨时跑赢，但下跌时回撤也更大，这与上述数据吻合。" if beta_val > 1.1 else "，略低于1的防守特征与其较强的回撤控制能力高度吻合。" if beta_val < 0.9 else "，与市场波动基本同步，属于标准主动权益产品的Beta水平。")}"""
 
@@ -743,8 +738,8 @@ def _manager_portrait(net_alpha, max_dd_fund, monthly_win_rate, ir_value, m) -> 
     defense_type = "强防御" if max_dd_fund < 15 else ("中等防御" if max_dd_fund < 25 else "弱防御")
 
     return (
-        f"该经理是一位**"{alpha_type}、{defense_type}"**的主动管理者。"
-        f"其 Alpha 来源{"并非依赖择时（仓位变动），而是通过在擅长的行业内挖掘具备超额弹性的个股" if ir_value > 0.3 else "显示出对市场节奏的一定敏感性，但选股能力的稳定性需进一步观察"}。"
+        f'该经理是一位**"{alpha_type}、{defense_type}"**的主动管理者。'
+        f"其 Alpha 来源{'并非依赖择时（仓位变动），而是通过在擅长的行业内挖掘具备超额弹性的个股' if ir_value > 0.3 else '显示出对市场节奏的一定敏感性，但选股能力的稳定性需进一步观察'}。"
         f"月度胜率 {monthly_win_rate:.1f}% {'表明其对市场节奏的把握较为精准' if monthly_win_rate > 55 else '显示其表现受市场风格影响较大，存在一定的风格依赖性'}。"
     )
 
