@@ -116,7 +116,8 @@ def analyze_fund(
         )
         state.nav_raw = nav_raw
 
-        if nav_raw.df.empty:
+        # 三重守卫：None 检查 + df None 检查 + 空 DataFrame 检查
+        if nav_raw is None or nav_raw.df is None or nav_raw.df.empty:
             return _error_report(symbol, "净值数据为空，无法进行分析")
 
         logger.info(f"[analyze_fund] {symbol} 净值数据: {len(nav_raw.df)} 行")

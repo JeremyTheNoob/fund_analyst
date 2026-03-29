@@ -253,6 +253,9 @@ def _estimate_duration_from_holdings(holdings: HoldingsData) -> tuple[float, flo
         default_dur = 3.5
         return default_dur, default_dur ** 2 / 100
 
+    # 业务逻辑红线：权重和必须接近 1.0（允许浮点误差）
+    assert abs(total_w - 1.0) < 1e-6, f"债券权重和异常: {total_w}，应接近 1.0"
+
     # 加权平均久期
     wav_duration = sum(d * w / total_w for d, w in zip(durations, weights))
     wav_duration = min(max(wav_duration, 0.1), MODEL_CONFIG["duration"]["max_duration"])

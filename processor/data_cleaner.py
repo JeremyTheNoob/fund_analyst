@@ -143,8 +143,7 @@ class BondDataPipeline:
         yield_data: BondYieldData,
         bond_index_ret: Optional[pd.DataFrame] = None,
     ) -> CleanBondData:
-        """
-        执行完整清洗流水线。
+        """执行完整清洗流水线。
 
         Args:
             nav: 原始净值数据
@@ -154,6 +153,9 @@ class BondDataPipeline:
         Returns:
             CleanBondData
         """
+        # 状态重置：每次 run() 调用前清空 warnings 列表
+        self.warnings = []
+
         # --- 1. 净值清洗 ---
         clean_nav = clean_nav_data(nav)
         self.warnings.extend(clean_nav.warnings)
