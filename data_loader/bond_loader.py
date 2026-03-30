@@ -58,17 +58,26 @@ def load_bond_holdings(symbol: str) -> HoldingsData:
     for year in ["2024", "2023", "2022"]:
         df_bond = _ak_fund_holdings_bond(symbol, year)
         if df_bond is not None and not df_bond.empty and "占净值比例" in df_bond.columns:
-            r["bond_details"] = df_bond.to_dict("records")
+            # 只保留最新季度的数据（"季度"列值最大的）
+            if "季度" in df_bond.columns:
+                # 找到最新的季度
+                latest_quarter = df_bond["季度"].iloc[0]  # API 返回的第一个季度通常是最新的
+                df_bond_latest = df_bond[df_bond["季度"] == latest_quarter].copy()
+                logger.info(f"[load_bond_holdings] {symbol} 使用最新季度: {latest_quarter}, 债券数量: {len(df_bond_latest)}")
+            else:
+                df_bond_latest = df_bond
+            
+            r["bond_details"] = df_bond_latest.to_dict("records")
 
             # 识别可转债持仓占比
-            cb_mask = df_bond["债券名称"].str.contains("可转债|转债|可交换", na=False) \
-                if "债券名称" in df_bond.columns else pd.Series(False, index=df_bond.index)
-            cb_total = df_bond.loc[cb_mask, "占净值比例"].sum() if cb_mask.any() else 0.0
+            cb_mask = df_bond_latest["债券名称"].str.contains("可转债|转债|可交换", na=False) \
+                if "债券名称" in df_bond_latest.columns else pd.Series(False, index=df_bond_latest.index)
+            cb_total = df_bond_latest.loc[cb_mask, "占净值比例"].sum() if cb_mask.any() else 0.0
             r["cb_ratio"] = min(cb_total / 100.0, 1.0)
 
             # 若资产配置未能获取债券仓位，从持仓汇总
             if r["bond_ratio"] == 0.0:
-                total = df_bond["占净值比例"].sum()
+                total = df_bond_latest["占净值比例"].sum()
                 r["bond_ratio"] = min(total / 100.0, 1.0)
             break
 
@@ -252,12 +261,12 @@ def load_multi_tenor_yields(start: str, end: str) -> pd.DataFrame:
     raw = raw[(raw["date"] >= pd.to_datetime(start)) & (raw["date"] <= pd.to_datetime(end))]
 
     col_map = {
-        "中国国债收益率1年": "y1y",
         "中国国债收益率2年": "y2y",
         "中国国债收益率5年": "y5y",
         "中国国债收益率7年": "y7y",
         "中国国债收益率10年": "y10y",
         "中国国债收益率30年": "y30y",
+        "中国国债收益率10年-2年": "term_spread_10y_2y",
     }
     df = raw[["date"]].copy()
     for src, dst in col_map.items():
@@ -320,7 +329,7 @@ def load_rate_environment(lookback_years: int = 3) -> dict:
         "term_spread_status": "unknown",
         "y10y_trend": "unknown",
         "y10y_series": pd.Series(dtype=float),
-        "y1y_series":  pd.Series(dtype=float),
+        "y2y_series":  pd.Series(dtype=float),
     }
 
     try:
@@ -337,19 +346,21 @@ def load_rate_environment(lookback_years: int = 3) -> dict:
         result["current_y10y"] = float(y10y.iloc[-1])
         result["y10y_percentile"] = round(float((y10y < result["current_y10y"]).mean() * 100), 1)
 
-        # 期限利差
-        if "y1y" in df.columns:
-            y1y = df["y1y"].dropna()
-            result["y1y_series"] = y1y
-            common = y10y.index.intersection(y1y.index)
-            if len(common) > 0:
-                spread = y10y.loc[common] - y1y.loc[common]
-                cur_spread = float(spread.iloc[-1])
+        # 期限利差（使用 API 返回的 10Y-2Y 列）
+        if "term_spread_10y_2y" in df.columns:
+            spread_series = df["term_spread_10y_2y"].dropna()
+            result["y2y_series"] = df["y2y"].dropna() if "y2y" in df.columns else pd.Series(dtype=float)
+            if not spread_series.empty:
+                cur_spread = float(spread_series.iloc[-1])
                 result["term_spread"] = round(cur_spread, 3)
-                pct = float((spread < cur_spread).mean() * 100)
+                pct = float((spread_series < cur_spread).mean() * 100)
                 result["term_spread_status"] = (
                     "flat" if pct < 20 else ("steep" if pct > 70 else "normal")
                 )
+            else:
+                logger.warning("[load_rate_environment] 期限利差数据为空")
+        else:
+            logger.warning("[load_rate_environment] 未找到期限利差列")
 
         # 近 3 个月趋势（约 60 个交易日）
         if len(y10y) > 60:

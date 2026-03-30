@@ -68,7 +68,11 @@ def _map_type_category(chinese_type: str) -> str:
         return "bond"
 
     # 股票/指数类
-    if chinese_type in ("股票型", "增强指数"):
+    if chinese_type == "标准指数":
+        return "index"
+    if chinese_type == "股票型":
+        return "equity"
+    if chinese_type == "增强指数":
         return "equity"
 
     # 混合类
@@ -347,6 +351,7 @@ def _run_bond_pipeline(
         tags=[],
         chart_data={
             "nav_df": clean_nav.df,
+            "benchmark_df": bond_idx,
             "holdings": {
                 "top10_stocks": [],
                 "stock_ratio": holdings.stock_ratio,
@@ -401,7 +406,10 @@ def _run_index_pipeline(
         basic=basic,
         index_metrics=metrics,
         tags=[],
-        chart_data={"nav_df": clean_nav.df},
+        chart_data={
+            "nav_df": clean_nav.df,
+            "benchmark_df": bm_df,  # 添加基准数据
+        },
     )
 
     report.text_report = generate_text_report(report)
@@ -425,6 +433,10 @@ def _run_cb_pipeline(
     except Exception:
         pass
 
+    # 加载基准数据（股债复合基准）
+    # 转债基金需要基准来计算超额收益和绘制对比图表
+    bond_idx = load_bond_composite_index(start_str, end_str)
+
     # 计算
     metrics = run_cb_analysis(
         nav=clean_nav,
@@ -441,6 +453,7 @@ def _run_cb_pipeline(
         tags=[],
         chart_data={
             "nav_df": clean_nav.df,
+            "benchmark_df": bond_idx,  # 添加基准数据
             "holdings": {
                 "top10_stocks": [],
                 "stock_ratio": holdings.stock_ratio,

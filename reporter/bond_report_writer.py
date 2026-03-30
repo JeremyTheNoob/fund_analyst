@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 from typing import Any
+import logging
+
+from data_loader.rate_prediction import predict_rate_trend, generate_rate_prediction_chart
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -23,7 +28,7 @@ def generate_bond_deep_report(report: Any) -> dict:
           "section1":   收益获取逻辑（含 [INSERT_CHART: CUM_RET]）,
           "section2":   回撤深度与修复效率（含 [INSERT_CHART: DRAWDOWN]）,
           "section3":   月度胜率与持有体验（含 [INSERT_CHART: HEATMAP]）,
-          "conclusion": 综合结论与投资建议,
+          "conclusion": 综合结论与投资建议（含 [INSERT_CHART: RATE_PREDICTION]）,
           "full_text":  完整纯文本（所有章节合并）
         }
     """
@@ -51,7 +56,7 @@ def generate_bond_deep_report(report: Any) -> dict:
     # 基准数据
     bm_info     = charts.get("cumulative_return", {}).get("benchmark_info", {})
     cum_bm      = round(bm_info.get("bm_last_return", 0) * 100, 1)
-    ann_bm      = round(cum_bm / max(_year_count(start_date, end_date), 1), 2)  # 简单估算基准年化
+    ann_bm      = round(bm_info.get("bm_annual_return", 0) * 100, 2)  # 使用正确的基准年化收益
     excess_bps  = round((ann_ret - ann_bm) * 100, 0)   # 超额收益（bps）
 
     # 风险数据
@@ -105,6 +110,9 @@ def generate_bond_deep_report(report: Any) -> dict:
         "D":  "弱势，不建议持有",
     }.get(grade, "稳健固收品种")
 
+    # ── 利率预测分析 ─────────────────────────────────────
+    rate_prediction = _get_rate_prediction()
+
     # ── 生成各章节文本 ─────────────────────────────────────
     headline = _build_headline(fund_name, style_tag, grade_desc, start_date, end_date, grade)
     section1 = _section1_return_logic(
@@ -123,7 +131,7 @@ def generate_bond_deep_report(report: Any) -> dict:
     conclusion = _conclusion_advice(
         fund_name, style_tag, grade, grade_desc,
         max_dd, calmar, duration, wacs_score,
-        ann_ret, excess_bps
+        ann_ret, excess_bps, rate_prediction
     )
 
     full_text = "\n\n".join([headline, section1, section2, section3, conclusion])
@@ -363,6 +371,7 @@ def _conclusion_advice(
     wacs_score: float,
     ann_ret: float,
     excess_bps: float,
+    rate_prediction: dict,
 ) -> str:
     """综合结论与投资建议"""
 
@@ -385,25 +394,8 @@ def _conclusion_advice(
             "在利率趋势判断上表现积极，收益弹性较大但回撤相对明显。"
         )
 
-    # 核心风险点
-    if duration >= 5.0:
-        risk_point = (
-            f"该基金久期约 {duration:.1f} 年，**久期风险较高**。"
-            f"在债市快速熊市（利率急升）阶段，净值回撤可能超出预期。"
-            f"建议关注宏观利率拐点信号，择机调整仓位。"
-        )
-    elif wacs_score < 60:
-        risk_point = (
-            f"持仓信用质量评分（WACS）为 {int(wacs_score)} 分，信用资质偏低。"
-            f"在信用风险事件冲击（债券违约潮）下，"
-            f"净值可能面临非系统性跳水风险，需持续关注持仓个券资质。"
-        )
-    else:
-        risk_point = (
-            "由于其持仓偏向中短端且信用等级较高，"
-            "在债市大幅走牛（利率急剧下行）阶段，该基金可能因久期不足而**跟涨偏慢**。"
-            "这并非缺陷，而是稳健策略的必然代价。"
-        )
+    # 核心风险点（基于利率预测 + 基金久期）
+    risk_point = _generate_risk_point(duration, wacs_score, rate_prediction)
 
     # 配置建议
     if grade in ("A+", "A"):
@@ -425,12 +417,18 @@ def _conclusion_advice(
             "待风格和数据企稳后再考虑增持。"
         )
 
+    # 利率预测图表（仅在预测置信度 >= 0.5 时显示）
+    chart_insertion = ""
+    if rate_prediction["confidence"] >= 0.5:
+        chart_insertion = "\n\n[INSERT_CHART: RATE_PREDICTION]\n\n"
+
     return (
         f"### 四、综合结论与投资建议\n\n"
         f"**1. 经理画像**\n\n"
         f"{manager_portrait}\n\n"
         f"**2. 核心风险点**\n\n"
-        f"{risk_point}\n\n"
+        f"{risk_point}"
+        f"{chart_insertion}"
         f"**3. 配置建议**\n\n"
         f"{allocation}\n\n"
         f"> **风险提示：** 债券基金并非无风险，利率风险、信用风险、流动性风险均可能导致净值损失。"
@@ -441,6 +439,108 @@ def _conclusion_advice(
 # ============================================================
 # 辅助函数
 # ============================================================
+
+def _get_rate_prediction() -> dict:
+    """
+    获取利率预测结果（技术指标模型）
+
+    Returns:
+        {
+            "direction": "up" / "down" / "sideways",
+            "confidence": 0.75,
+            "y10y_forecast": {...},
+            "key_factors": [...],
+            "risk_signals": [...],
+            "chart_data": {...},
+        }
+    """
+    try:
+        return predict_rate_trend(horizon="3m")
+    except Exception as e:
+        logger.warning(f"[bond_report_writer] 获取利率预测失败: {e}")
+        return {
+            "direction": "sideways",
+            "confidence": 0.3,
+            "y10y_forecast": {"current": 2.5, "mid_term": 2.5},
+            "key_factors": ["数据不足，无法做出有效预测"],
+            "risk_signals": [],
+            "chart_data": {},
+        }
+
+
+def _generate_risk_point(duration: float, wacs_score: float, rate_prediction: dict) -> str:
+    """
+    生成核心风险点（基于基金久期 + 利率预测）
+
+    Args:
+        duration: 基金久期（年）
+        wacs_score: 持仓信用质量评分
+        rate_prediction: 利率预测结果
+
+    Returns:
+        风险点描述文本
+    """
+    direction = rate_prediction["direction"]
+    confidence = rate_prediction["confidence"]
+    factors = rate_prediction["key_factors"]
+    risks = rate_prediction["risk_signals"]
+
+    # 利率环境总结
+    forecast = rate_prediction["y10y_forecast"]
+    current = forecast["current"]
+    mid_term = forecast["mid_term"]
+
+    direction_map = {"up": "上行", "down": "下行", "sideways": "震荡"}
+    direction_cn = direction_map.get(direction, "震荡")
+    confidence_cn = f"{int(confidence * 100)}%"
+
+    # 基础风险描述（基金自身）
+    if duration >= 5.0:
+        base_risk = f"该基金久期约 {duration:.1f} 年，**久期风险较高**。"
+    elif wacs_score < 60:
+        base_risk = f"持仓信用质量评分（WACS）为 {int(wacs_score)} 分，信用资质偏低。"
+    else:
+        base_risk = "该基金持仓偏向中短端且信用等级较高，防御能力较强。"
+
+    # 利率环境影响分析
+    if direction == "up" and duration >= 3.0:
+        rate_impact = (
+            f"\n\n**利率环境影响：**\n"
+            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"\n\n由于该基金久期较长，在利率上行阶段，净值可能面临**资本利得亏损风险**，回撤幅度可能加大。"
+        )
+    elif direction == "down" and duration <= 2.0:
+        rate_impact = (
+            f"\n\n**利率环境影响：**\n"
+            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"\n\n由于该基金久期较短，在利率下行阶段，可能因久期不足而**跟涨偏慢**，超额收益空间受限。"
+        )
+    elif direction == "down" and duration >= 3.0:
+        rate_impact = (
+            f"\n\n**利率环境影响：**\n"
+            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"\n\n该基金久期较长，在利率下行阶段有望通过**资本利得放大收益**，但需警惕利率反弹时的回撤风险。"
+        )
+    else:
+        rate_impact = (
+            f"\n\n**利率环境影响：**\n"
+            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"\n\n利率环境对基金表现影响中性，建议关注后续政策面变化。"
+        )
+
+    # 关键因素
+    if factors and confidence >= 0.5:
+        factors_text = "\n\n**关键判断依据：**\n" + "\n".join(f"• {f}" for f in factors[:3])
+    else:
+        factors_text = ""
+
+    # 风险信号
+    if risks:
+        risks_text = "\n\n**需警惕的风险信号：**\n" + "\n".join(f"• {r}" for r in risks[:2])
+    else:
+        risks_text = ""
+
+    return f"{base_risk}{rate_impact}{factors_text}{risks_text}"
 
 def _infer_return_style(volatility: float, duration: float, calmar: float) -> tuple[str, str]:
     """

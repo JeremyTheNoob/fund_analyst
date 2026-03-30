@@ -194,7 +194,7 @@ def generate_cb_deep_report(report: Any) -> dict:
 
     # ── 第四章：综合结论与配置建议 ─────────────────────────
     conclusion = f"""
-### 四、 综合结论与配置建议
+### 五、 综合结论与配置建议
 
 **1. 经理画像：**
 
@@ -327,7 +327,7 @@ def _infer_alpha_source(stock_alpha: float, iv_spread: float, equity_weight: flo
 def _core_conclusion_template(grade: str, cum_ret: float, max_dd: float, up_capture: float, down_capture: float) -> str:
     """生成核心结论模板"""
     if grade == "A+":
-        return f"该基金成功实现了"低波动、高弹性"的配置目标。其在权益资产端（尤其是可转债）的择券能力显著，且在债底防御上表现稳健，是典型的震荡市"减震器"。"
+        return f"该基金成功实现了'低波动、高弹性'的配置目标。其在权益资产端（尤其是可转债）的择券能力显著，且在债底防御上表现稳健，是典型的震荡市'减震器'。"
     elif grade == "A":
         return f"该基金展现了优秀的股债配置能力，上行捕获率达{up_capture}%，下行捕获率仅{down_capture}%，整体风险收益比突出。"
     elif grade == "B":
@@ -376,7 +376,7 @@ def _section4_asset_allocation(
 
 **进攻性识别：**
 
-图表显示，在 **{quarter_market_up}** 期间，经理显著调增了股票和转债的合计仓位（由 **{old_ratio:.1f}%** 上升至 **{new_ratio:.1f}%**）。这种主动的仓位跃迁，直接贡献了该阶段跑赢复合基准的 **{alpha_boost:.1f}%** 超额收益。这说明经理具备较强的市场敏感度，能够及时捕捉进攻机会。
+数据显示，在 **{quarter_market_up}** 期间，经理显著调增了股票和转债的合计仓位（由 **{old_ratio:.1f}%** 上升至 **{new_ratio:.1f}%**）。这种主动的仓位跃迁，直接贡献了该阶段跑赢复合基准的 **{alpha_boost:.1f}%** 超额收益。这说明经理具备较强的市场敏感度，能够及时捕捉进攻机会。
 
 **防守性验证：**
 

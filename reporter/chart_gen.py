@@ -67,8 +67,19 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
                     logger.warning(f"[chart_gen] 获取全收益指数失败: {e}")
 
     # 如果无法获取全收益数据，返回原始基准数据
+    # 修复：确保列名为bm_ret以兼容现有代码
     logger.info("[chart_gen] 使用原始基准数据")
-    return benchmark_df
+    result_df = benchmark_df.copy()
+    
+    # 如果原始数据的收益率列名为ret，重命名为bm_ret
+    if 'ret' in result_df.columns and 'bm_ret' not in result_df.columns:
+        result_df['bm_ret'] = result_df['ret']
+    elif 'bm_ret' not in result_df.columns:
+        # 如果既没有ret也没有bm_ret，创建一个空列
+        result_df['bm_ret'] = 0.0
+        logger.warning("[chart_gen] 原始基准数据既没有ret列也没有bm_ret列")
+    
+    return result_df
 
 
 # ============================================================
@@ -100,6 +111,22 @@ def generate_chart_data(report: Any) -> Dict[str, Any]:
         # 重要：为图表绘制替换基准数据（沪深300使用全收益指数）
         benchmark_df_for_charts = _replace_benchmark_for_charts(benchmark_df, report.basic)
         charts['benchmark_df'] = benchmark_df_for_charts if benchmark_df_for_charts is not None else benchmark_df
+    else:
+        # P0-修复：如果基准数据缺失，尝试加载默认基准（沪深300全收益）
+        logger.warning("[chart_gen] 基准数据缺失，尝试加载沪深300全收益指数作为默认基准")
+        if nav_df is not None and not nav_df.empty:
+            try:
+                start_date = nav_df['date'].min().strftime('%Y%m%d')
+                end_date = nav_df['date'].max().strftime('%Y%m%d')
+                default_bm = get_total_return_series("sh000300", start_date, end_date)
+                if not default_bm.empty and 'tr_ret' in default_bm.columns:
+                    default_bm['bm_ret'] = default_bm['tr_ret']
+                    charts['benchmark_df'] = default_bm
+                    logger.info("[chart_gen] 成功加载沪深300全收益指数作为默认基准")
+                else:
+                    logger.warning("[chart_gen] 无法加载沪深300全收益指数，图表将缺少基准曲线")
+            except Exception as e:
+                logger.warning(f"[chart_gen] 加载默认基准失败: {e}")
     
     # 3. 累计收益曲线（包含基金和基准）
     if nav_df is not None:
@@ -135,7 +162,9 @@ def generate_chart_data(report: Any) -> Dict[str, Any]:
     # 6.4 跟踪误差直方图（指数类基金）
     if report.fund_type == 'index':
         charts['tracking_diff'] = _tracking_diff_histogram(report)
-    
+        charts['tracking_error_scatter'] = _tracking_error_scatter_chart(report)
+        charts['premium_discount'] = _premium_discount_chart(report)
+
     return charts
 
 
@@ -247,11 +276,21 @@ def _cumulative_return_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = 
             })
             
             # 将基准数据信息添加到图表数据中，供解读引擎使用
+            # 修复 NaN 问题：确保所有值都是有效数字
+            fund_last = float(nav_df['cum_fund'].iloc[-1]) if not nav_df.empty and not pd.isna(nav_df['cum_fund'].iloc[-1]) else 0
+            bm_last = float(bm_aligned['cum_bm'].iloc[-1]) if not bm_aligned.empty and 'cum_bm' in bm_aligned.columns and not pd.isna(bm_aligned['cum_bm'].iloc[-1]) else 0
+            
+            # 计算基准年化收益（使用正确的复利公式）
+            # 基准年化 = (1 + 累计收益)^(252/交易日数) - 1
+            bm_trading_days = len(bm_aligned)
+            bm_annual = ((1 + bm_last) ** (252 / bm_trading_days) - 1) if bm_trading_days > 0 else 0
+            
             data['benchmark_info'] = {
                 'ret_column': target_ret_col,
                 'is_total_return': target_ret_col == 'tr_ret',
-                'fund_last_return': nav_df['cum_fund'].iloc[-1] if not nav_df.empty else 0,
-                'bm_last_return': bm_aligned['cum_bm'].iloc[-1] if not bm_aligned.empty else 0
+                'fund_last_return': fund_last,
+                'bm_last_return': bm_last,
+                'bm_annual_return': bm_annual  # 新增：基准年化收益
             }
     
     return data
@@ -963,7 +1002,7 @@ def _tracking_diff_histogram(report: Any) -> Dict:
     # 模拟正态分布数据
     np.random.seed(42)
     tracking_diffs = np.random.normal(0, tracking_error/100, 1000)
-    
+
     return {
         'type': 'histogram',
         'data': tracking_diffs.tolist(),
@@ -971,4 +1010,95 @@ def _tracking_diff_histogram(report: Any) -> Dict:
         'title': f'跟踪误差直方图（跟踪误差: {tracking_error:.2f}%）',
         'x_label': '跟踪误差 (%)',
         'y_label': '频次'
+    }
+
+
+def _tracking_error_scatter_chart(report: Any) -> Dict:
+    """
+    跟踪误差散点图（逐日跟踪偏离度曲线+±2σ带）
+
+    返回格式与 main.py 中 TRACKING_ERROR_SCATTER 渲染逻辑兼容。
+    """
+    if not hasattr(report, 'index_metrics') or not report.index_metrics:
+        return {}
+
+    metrics = report.index_metrics
+    nav_df = _get_nav_df(report)
+
+    if nav_df is None or nav_df.empty:
+        return {}
+
+    # 获取基准数据
+    benchmark_df = report.chart_data.get('benchmark_df')
+    if benchmark_df is None or benchmark_df.empty:
+        return {}
+
+    # 准备数据
+    nav_df = nav_df.sort_values('date').copy()
+    nav_df['date'] = pd.to_datetime(nav_df['date'])
+
+    # 对齐基准
+    bm_df = benchmark_df.copy()
+    bm_df['date'] = pd.to_datetime(bm_df['date'])
+    bm_df = bm_df.sort_values('date')
+
+    # 确定使用哪一列（优先 tr_ret）
+    ret_col = 'tr_ret' if 'tr_ret' in bm_df.columns else ('bm_ret' if 'bm_ret' in bm_df.columns else None)
+    if ret_col is None:
+        return {}
+
+    # 对齐日期
+    bm_aligned = bm_df.set_index('date').reindex(nav_df['date'], method='ffill')
+
+    # 计算逐日跟踪偏离度
+    fund_ret = nav_df['ret'].fillna(0).values
+    bm_ret = bm_aligned[ret_col].fillna(0).values
+
+    # 跟踪偏离度 = 基金收益率 - 基准收益率（逐日）
+    tracking_diffs = fund_ret - bm_ret
+
+    # 获取年化跟踪误差
+    te_ann = getattr(metrics, 'tracking_error_annualized', getattr(metrics, 'tracking_error', 0.0))
+
+    # 返回数据（格式与 excess_return 相同）
+    return {
+        'type': 'line',
+        'x': nav_df['date'].tolist(),
+        'series': [{
+            'name': '跟踪偏离度',
+            'data': (tracking_diffs * 100).round(4).tolist(),  # 转为百分比
+            'color': '#8e44ad'
+        }],
+        'title': f'跟踪偏离度（%）— 年化跟踪误差: {te_ann*100:.2f}%',
+        'y_label': '偏离度 (%)',
+        'tracking_error': te_ann
+    }
+
+
+def _premium_discount_chart(report: Any) -> Dict:
+    """
+    折溢价图表
+
+    返回格式与 main.py 中 PREMIUM_DISCOUNT 渲染逻辑兼容。
+    如果是场外指数基金（非ETF），返回空数据，让 main.py 使用 monthly_heatmap 作为 fallback。
+    """
+    if not hasattr(report, 'index_metrics') or not report.index_metrics:
+        return {}
+
+    metrics = report.index_metrics
+
+    # 检查是否有折溢价数据
+    # 如果 mean 和 std 都接近 0，说明没有折溢价数据（场外基金）
+    pd_mean = getattr(metrics, 'premium_discount_mean', 0.0)
+    pd_std = getattr(metrics, 'premium_discount_std', 0.0)
+
+    # 如果折溢价数据接近 0，说明是场外基金，返回空字典
+    if abs(pd_mean) < 0.001 and abs(pd_std) < 0.001:
+        return {}
+
+    # 如果有真实的折溢价数据，返回提示信息（目前系统不支持渲染折溢价图表）
+    # 未来可以扩展支持
+    return {
+        'type': 'message',
+        'message': f'平均折溢价率: {pd_mean*100:.3f}%, 标准差: {pd_std*100:.3f}%'
     }

@@ -163,14 +163,16 @@ def load_basic_info(symbol: str) -> FundBasicInfo:
     benchmark_manager = BenchmarkManager()
     parsed_contract = benchmark_manager.parse_contract(r["benchmark_text"])
 
+    # 无论业绩基准是否解析成功，都需要根据基金原始类型设置 type_category
+    fund_category = _classify_fund(r)
+    r["type_category"] = fund_category
+
     if parsed_contract["components"]:
         # 一级优先级成功：使用合同解析结果
         r["benchmark_parsed"] = parsed_contract
         logger.info(f"[load_basic_info] {symbol} 使用合同解析的业绩比较基准")
     else:
         # 二级优先级：根据基金分类映射
-        fund_category = _classify_fund(r)
-        r["type_category"] = fund_category
         default_benchmark = benchmark_manager.get_default_benchmark(fund_category)
 
         # 转换为标准格式
@@ -266,7 +268,12 @@ def _classify_fund(info: dict) -> str:
 
     # 支持类型 - 返回适合 BenchmarkManager DEFAULT_BENCHMARK_WEIGHTS 的名称
     if any(k in t for k in thresholds["index_keywords"]) or any(k in name for k in ["ETF", "etf"]):
-        return "增强指数" if "增强" in t else "股票型"
+        if "增强" in t:
+            return "增强指数"
+        elif "标准指数" in t or "被动指数" in t:
+            return "标准指数"
+        else:
+            return "股票型"
     if any(k in t for k in thresholds["sector_keywords"]):
         return "股票型"  # 行业/主题基金使用股票型基准
     if any(k in t for k in thresholds["bond_keywords"]):
@@ -650,7 +657,10 @@ def build_benchmark(basic: FundBasicInfo, start: str, end: str) -> BenchmarkData
             logger.info(f"[build_benchmark] 使用债券指数: {name}")
         elif code is not None and code.startswith("hk:"):
             # 港股指数不支持全收益计算，使用价格指数
+            # 转换格式: HSI.HI → HSI（新浪格式）
             hk_sym = code[3:]
+            if '.' in hk_sym:
+                hk_sym = hk_sym.split('.')[0]
             df_part = load_hk_index_daily(hk_sym, start, end).rename(columns={"ret": "part_ret"})
             logger.info(f"[build_benchmark] 使用港股指数: {hk_sym}")
         elif code is None:

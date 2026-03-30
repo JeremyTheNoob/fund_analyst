@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 from typing import Any
-from reporter.holdings_analyzer import analyze_equity_holdings
 
 
 # ============================================================
@@ -87,20 +86,6 @@ def generate_equity_deep_report(report: Any) -> dict:
     heatmap_info = charts.get("monthly_heatmap", {}).get("heatmap_info", {})
     annual_stats = heatmap_info.get("annual_stats", {})
 
-    # ── 持仓分析 ───────────────────────────────────────────
-    holdings_analysis = analyze_equity_holdings(report)
-    top10_concentration = holdings_analysis["top10_concentration"]
-    concentration_level = holdings_analysis["concentration_level"]
-    manager_style_tag = holdings_analysis["manager_style_tag"]
-    retained_stocks_count = holdings_analysis["retained_stocks_count"]
-    holding_period_tag = holdings_analysis["holding_period_tag"]
-    profit_source = holdings_analysis["profit_source"]
-    risk_industry_name = holdings_analysis["risk_industry_name"]
-    overweight_industry = holdings_analysis["overweight_industry"]
-    underweight_industry = holdings_analysis["underweight_industry"]
-    industry_allocation = holdings_analysis["industry_allocation"]
-    alpha_jump_period = _infer_alpha_jump_period(curve_trend, ex_info)
-
     # ── 生成各章节 ────────────────────────────────────────
     meta = {
         "fund_name": fund_name,
@@ -138,15 +123,12 @@ def generate_equity_deep_report(report: Any) -> dict:
         beta_val, r2, tags
     )
 
-    # ── 持仓分析章节（新增）────────────────────────────────
-    section5_holdings = _section5_holdings_analysis(
-        fund_name, manager_style_tag, concentration_level,
-        top10_concentration, retained_stocks_count,
-        holding_period_tag, profit_source,
-        risk_industry_name, overweight_industry,
-        underweight_industry, alpha_jump_period,
-        industry_allocation, holdings_analysis
-    )
+    # ── 持仓分析章节（新的深度持仓穿透分析）────────────────
+    # 不在报告生成阶段调用深度持仓分析，而是返回占位符
+    # 由 main.py 在渲染阶段按需调用（避免重复加载）
+    section5_holdings = """### 五、持仓穿透分析：微观归因与风格定性
+
+[DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]"""
 
     conclusion = _section5_conclusion(
         fund_name, grade, score, tags,
@@ -226,7 +208,7 @@ def _section1_cumulative_return(
     else:
         ann_desc = f"年化收益率 {ann_ret:.1f}%，统计期内呈负值"
 
-    text = f"""## 一、全收益框架下的收益穿透
+    text = f"""### 一、全收益框架下的收益穿透
 
 [INSERT_CHART: CUM_RET]
 
@@ -285,7 +267,7 @@ def _section2_alpha_persistence(
     else:
         stability = f"超额收益波动较大（日均波动 {excess_std:.2f}%），经理博弈属性较强，适合能接受短期波动的投资者"
 
-    text = f"""## 二、Alpha 的持续性与能力边界
+    text = f"""### 二、Alpha 的持续性与能力边界
 
 [INSERT_CHART: EXCESS_ALPH]
 
@@ -363,7 +345,7 @@ def _section3_risk_defense(
     else:
         risk_reward = f"夏普比率 {sharpe:.2f}（偏低），风险调整后回报不足"
 
-    text = f"""## 三、风险控制与修复弹性
+    text = f"""### 三、风险控制与修复弹性
 
 [INSERT_CHART: DRAWDOWN]
 
@@ -419,7 +401,7 @@ def _section4_stability_style(
     # 季节性规律
     seasonal_desc = _seasonal_analysis(heatmap_info)
 
-    text = f"""## 四、盈利稳定性与风格定性
+    text = f"""### 四、盈利稳定性与风格定性
 
 [INSERT_CHART: HEATMAP]
 
@@ -445,7 +427,7 @@ def _section5_conclusion(
     net_alpha, max_dd_fund, monthly_win_rate,
     ir_value, m
 ) -> str:
-    """五、综合结论与投资建议"""
+    """六、综合结论与投资建议"""
 
     # 经理画像
     portrait = _manager_portrait(net_alpha, abs(max_dd_fund), monthly_win_rate, ir_value, m)
@@ -466,7 +448,7 @@ def _section5_conclusion(
 
     tag_str = "、".join([f"「{t}」" for t in tags[:3]]) if tags else "综合型"
 
-    text = f"""## 五、综合结论与投资建议
+    text = f"""### 六、综合结论与投资建议
 
 **一、经理画像**
 
@@ -489,85 +471,7 @@ def _section5_conclusion(
 # 持仓分析章节（新增）
 # ============================================================
 
-def _section5_holdings_analysis(
-    fund_name, manager_style_tag, concentration_level,
-    top10_concentration, retained_stocks_count,
-    holding_period_tag, profit_source,
-    risk_industry_name, overweight_industry,
-    underweight_industry, alpha_jump_period,
-    industry_allocation, holdings_analysis
-) -> str:
-    """五、持仓穿透分析：微观归因与风格定性"""
 
-    # 行业配置摘要
-    industry_text = ""
-    if industry_allocation:
-        top_industries = sorted(industry_allocation, key=lambda x: x.get("ratio", 0), reverse=True)[:3]
-        industry_text = "\n".join([
-            f"- **{item['industry']}**：{item['ratio']:.1f}%（示例：{item.get('stock_name', 'N/A')}）"
-            for item in top_industries
-        ])
-    else:
-        industry_text = "- 需多期持仓数据支持行业配置分析"
-
-    text = f"""## 五、持仓穿透分析：微观归因与风格定性
-
-[总评] 通过对本基金最新报告期持仓的穿透分析，我们发现经理表现出典型的 **{manager_style_tag}**。
-
-### 大类行业归因
-
-**1. 主动偏离**
-
-图表一显示，经理目前显著超配了 **{overweight_industry}** 行业（相比基准高出约 5-10%），同时低配了 **{underweight_industry}**。
-
-**2. 操作动态**
-
-在统计期内，经理展现出极强的季节性调仓特征。例如，在去年四季度果断减持了防御性板块，转而增持了成长性资产。这种基于行业估值性价比的动态调整，很好地解释了超额收益曲线在 **{alpha_jump_period}** 期间的阶梯式爆发。
-
-**3. 行业配置摘要**
-
-{industry_text}
-
-> ⚠️ *注：完整的时序行业配置图表需要多期季报/半年报数据支持，当前展示为最新一期快照。*
-
-### 微观选股穿透
-
-**1. 集中度与自信度**
-
-图表二显示，前十大重仓股合计权重达 **{top10_concentration:.1f}%**，选股自信度 **{concentration_level}**。
-
-**2. 个股留存与换手**
-
-本期前十大重仓股中有 **{retained_stocks_count}** 只为上期留存。这种 **{holding_period_tag}** 的操作风格，证明了经理更倾向于赚取企业 **{profit_source}**。
-
-**3. 重仓股特征**
-
-从持仓细节来看，经理偏好：
-
-- **高置信度龙头**：前五大重仓股合计占比超过 40%
-- **长期持有逻辑**：核心持股持仓周期在 6-12 个月
-- **适度分散**：单一重仓股权重不超过 8%，有效降低个股黑天鹅风险
-
-### 持仓风险预警
-
-由于持仓在 **{risk_industry_name}** 行业过于集中，投资者需警惕该行业出现系统性利空对净值造成的短期冲击。建议关注行业政策变化和估值波动，适时调整仓位。
-
----
-
-*数据说明：当前持仓分析基于最新一期季报/半年报数据。完整的时序行业配置、个股留存率、资产配置穿透等高级分析需要历史多期数据支持，将在后续版本中完善。*
-"""
-
-    return text
-
-
-def _infer_alpha_jump_period(curve_trend: str, ex_info: dict) -> str:
-    """推断超额收益爆发期"""
-    if "上升" in curve_trend:
-        return "统计期后半段"
-    elif "下降" in curve_trend:
-        return "统计期前半段"
-    else:
-        return "无显著爆发期"
 
 
 # ============================================================

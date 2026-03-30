@@ -12,7 +12,8 @@ import pandas as pd
 
 from engine.common_metrics import (
     annualized_return, max_drawdown, volatility,
-    sharpe_ratio, sortino_ratio, normalize_score,
+    sharpe_ratio, sortino_ratio, calmar_ratio,
+    recovery_days, normalize_score,
 )
 from models.schema import (
     CleanNavData, HoldingsData, FundBasicInfo,
@@ -71,8 +72,11 @@ def run_cb_analysis(
         cumulative_return=round(float(np.prod(1 + fund_rets) - 1), 4),
         volatility=round(volatility(fund_rets), 4),
         max_drawdown=round(max_drawdown(fund_rets), 4),
+        max_drawdown_duration=0,
+        recovery_days=recovery_days(fund_rets),
         sharpe_ratio=round(sharpe_ratio(fund_rets), 3),
         sortino_ratio=round(sortino_ratio(fund_rets), 3),
+        calmar_ratio=round(calmar_ratio(fund_rets), 3),
         monthly_win_rate=0.5,
     )
 

@@ -401,15 +401,15 @@ def _ak_index_daily_em(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
 def _ak_hk_index_daily(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     港股指数日线行情（新浪）
-    
+
     Args:
-        symbol: 指数代码
-    
+        symbol: 指数代码（如 "HSI"）
+
     Returns:
         指数行情 DataFrame
     """
     return safe_api_call(
-        lambda: ak.stock_hk_index_daily_sina()
+        lambda: ak.stock_hk_index_daily_sina(symbol=symbol)
     )
 
 

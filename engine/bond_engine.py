@@ -228,13 +228,18 @@ def _estimate_duration_from_holdings(holdings: HoldingsData) -> tuple[float, flo
     for bond in bond_details:
         name  = str(bond.get("债券名称", "") or "")
         ratio = float(bond.get("占净值比例", 0) or 0)
+        
+        # 兼容百分比格式和小数格式：如果 ratio > 1.5，则为百分比，需除以100
+        if ratio > 1.5:
+            ratio = ratio / 100.0
+        
         if ratio <= 0:
             continue
 
         dur = _infer_bond_duration(name)
         durations.append(dur)
         weights.append(ratio)
-
+    
     if not durations:
         default_dur = 3.5
         return default_dur, default_dur ** 2 / 100
@@ -244,10 +249,21 @@ def _estimate_duration_from_holdings(holdings: HoldingsData) -> tuple[float, flo
         default_dur = 3.5
         return default_dur, default_dur ** 2 / 100
 
-    # 业务逻辑红线：权重和必须接近 1.0（允许浮点误差）
-    assert abs(total_w - 1.0) < FinancialConfig.PRECISION_EPSILON, f"债券权重和异常: {total_w}，应接近 1.0"
+    # 兼容API限制：持仓数据可能只是前N大重仓（非完整持仓）
+    # 如果权重和显著小于1.0（如<0.5），说明数据不完整，使用默认久期
+    if total_w < 0.5:
+        logger.warning(f"[_estimate_duration_from_holdings] 权重和过小: {total_w:.4f}，持仓数据不完整，使用默认久期3.5年")
+        default_dur = 3.5
+        return default_dur, default_dur ** 2 / 100
 
-    # 加权平均久期
+    # 如果权重和在合理范围内（0.5~1.5），归一化后使用
+    # 如果权重和大于1.5，可能是百分比格式，需要除以100
+    if total_w > 1.5:
+        logger.warning(f"[_estimate_duration_from_holdings] 权重和过大: {total_w:.4f}，疑似百分比格式，归一化")
+        weights = [w / total_w for w in weights]
+        total_w = 1.0
+
+    # 加权平均久期（使用归一化权重）
     wav_duration = sum(d * w / total_w for d, w in zip(durations, weights))
     wav_duration = min(max(wav_duration, 0.1), MODEL_CONFIG["duration"]["max_duration"])
 

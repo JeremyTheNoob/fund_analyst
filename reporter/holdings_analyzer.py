@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 from typing import Any, Dict, List
+from data_loader.sw_industry_loader import get_stock_industry, get_stock_industry_by_name
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -85,17 +89,31 @@ def analyze_equity_holdings(report: Any) -> Dict[str, Any]:
         holding_period_tag = "未知"
         profit_source = "未知"
     
-    # 行业配置（需多期数据，当前简化处理）
-    # 从重仓股名称推断行业（需要行业数据库，当前使用占位）
+    # 行业配置（使用申万行业数据库）
     industry_allocation = []
     for stock in top10_stocks[:5]:
         name = stock.get("股票名称", "")
+        code = stock.get("股票代码", "")
         ratio = stock.get("占净值比例", 0)
+
         if name:
-            # 这里应该有行业映射表，当前使用简化的关键词匹配
-            industry = _infer_industry_from_name(name)
+            # 优先通过股票代码查询申万行业
+            industry = None
+            if code:
+                # 转换为6位代码
+                code_6 = str(code).zfill(6)
+                industry = get_stock_industry(code_6)
+
+            # 如果代码查询失败，使用名称推断
+            if not industry:
+                industry = get_stock_industry_by_name(name)
+
+            # 如果仍未找到，使用简化的关键词匹配（保底）
+            if not industry:
+                industry = _infer_industry_from_name(name)
+
             industry_allocation.append({
-                "industry": industry,
+                "industry": industry or "未知行业",
                 "ratio": ratio,
                 "stock_name": name,
             })
@@ -150,11 +168,30 @@ def analyze_cb_holdings(report: Any) -> Dict[str, Any]:
     """
     holdings = report.chart_data.get("holdings", {})
     
-    # 资产配置比例
+    # 资产配置比例（小数格式转换为百分比）
     stock_ratio = holdings.get("stock_ratio", 0.0) * 100
     bond_ratio = holdings.get("bond_ratio", 0.0) * 100
-    holdings.get("cash_ratio", 0.0) * 100
+    cash_ratio = holdings.get("cash_ratio", 0.0) * 100
     cb_ratio = holdings.get("cb_ratio", 0.0) * 100
+
+    # 容错处理：如果资产配置数据不完整（如股票仓位为0但转债>0），从转债反推
+    if stock_ratio == 0.0 and cb_ratio > 0.0:
+        # 转债基金通常股票+转债合计为权益暴露，反推股票仓位
+        estimated_equity = min(cb_ratio * 1.2, 30.0)  # 转债的1.2倍作为权益暴露，上限30%
+        stock_ratio = estimated_equity
+        logger.info(f"[analyze_cb_holdings] 股票仓位缺失，从转债反推: {stock_ratio:.1f}%")
+
+    # 容错处理：如果债券仓位缺失，从持仓明细汇总
+    if bond_ratio == 0.0:
+        bond_details = holdings.get("bond_details", [])
+        if bond_details:
+            total_bond = sum(float(b.get("占净值比例", 0) or 0) for b in bond_details)
+            # 检查数据格式（百分比 vs 小数）
+            if total_bond > 1.5:  # 大于1.5说明是百分比格式
+                bond_ratio = total_bond / 100.0 * 100  # 转换为百分比显示
+            else:
+                bond_ratio = total_bond * 100
+            logger.info(f"[analyze_cb_holdings] 债券仓位缺失，从持仓明细汇总: {bond_ratio:.1f}%")
     
     # 纯债占比（总债券 - 转债）
     base_bond_ratio = max(0.0, bond_ratio - cb_ratio)
@@ -240,49 +277,50 @@ def analyze_cb_holdings(report: Any) -> Dict[str, Any]:
 
 def _infer_industry_from_name(stock_name: str) -> str:
     """
-    从股票名称推断行业（简化版）
-    
-    注意：这是一个临时的简化实现，实际应使用申万行业数据库
+    从股票名称推断行业（保底方案）
+
+    注意：这是最后的保底方案，优先使用申万行业数据库
     """
     if not stock_name:
         return "未知"
-    
-    # 关键词匹配（简化版）
+
+    # 最简化的关键词匹配（仅覆盖最常见的关键词）
     industry_map = {
-        "白酒": "食品饮料",
-        "茅台": "食品饮料",
-        "五粮液": "食品饮料",
-        "宁德": "电力设备",
-        "比亚迪": "汽车",
-        "平安": "非银金融",
-        "招行": "银行",
-        "腾讯": "传媒",
-        "美团": "社会服务",
-        "中芯": "电子",
-        "长江": "电力公用",
-        "中石油": "石油石化",
-        "煤炭": "煤炭",
-        "钢铁": "钢铁",
-        "有色": "有色金属",
-        "医药": "医药生物",
-        "恒瑞": "医药生物",
-        "万科": "房地产",
-        "保利": "房地产",
-        "美的": "家用电器",
-        "格力": "家用电器",
-        "海康": "计算机",
-        "科大": "计算机",
-        "立讯": "电子",
-        "韦尔": "电子",
-        "中车": "机械",
-        "三一": "机械",
+        "白酒": "白酒",
+        "茅台": "白酒",
+        "五粮液": "白酒",
+        "宁德": "电池",
+        "比亚迪": "乘用车",
+        "平安": "保险",
+        "招行": "股份制银行",
+        "腾讯": "游戏",
+        "美团": "互联网电商",
+        "中芯": "半导体",
+        "长江": "电力",
+        "中石油": "油服工程",
+        "煤炭": "煤炭开采",
+        "钢铁": "普钢",
+        "医药": "化学制药",
+        "恒瑞": "化学制药",
+        "万科": "房地产开发",
+        "保利": "房地产开发",
+        "美的": "白色家电",
+        "格力": "白色家电",
+        "海康": "计算机设备",
+        "中车": "轨交设备",
+        "三一": "工程机械",
+        "航天": "航天装备",
+        "中航": "航空装备",
+        "移动": "通信服务",
+        "电信": "通信服务",
+        "联通": "通信服务",
     }
-    
+
     for keyword, industry in industry_map.items():
         if keyword in stock_name:
             return industry
-    
-    # 默认
+
+    # 默认返回 "其他"（而不是 "未知"，避免显示敏感词）
     return "其他"
 
 

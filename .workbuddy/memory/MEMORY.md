@@ -37,11 +37,25 @@ data_loader/ → processor/ → engine/ → reporter/ → main.py
 - **固定股息率**：31个申万行业（煤炭6.0% ~ 国防军工0.5%）
 
 ### 图表数据结构（chart_data）
-- `cumulative_return`: x, series（name/data/color）, benchmark_info（bm_last_return, is_total_return）
+- `cumulative_return`: x, series（name/data/color）, benchmark_info（bm_last_return, is_total_return, bm_annual_return）
 - `drawdown`: x, series, drawdown_info（bm_max_dd, defensive_ratio, recovery_info）
 - `monthly_heatmap`: data, x, y, heatmap_info（annual_stats, monthly_details）
 - `excess_return`: x, series, excess_info（last_excess, curve_trend, excess_std, ir_value, ir_quality, monthly_win_rate）
 - **颜色方案**：基金（红色 #e74c3c）、基准（灰色 #95a5a6）
+
+### 利率预测模块（2026-03-30 新建）
+- **文件**：`data_loader/rate_prediction.py`
+- **入口**：`predict_rate_trend(horizon)` / `generate_rate_prediction_chart(prediction)`
+- **预测模型**：技术指标组合（均值回归 + 期限利差 + 趋势动量 + 波动率调整）
+- **数据源**：AkShare `bond_zh_us_rate()`（国债收益率）+ `bond_china_yield()`（期限利差）
+- **关键指标**：
+  - 均值回归信号：10Y收益率历史分位数（≥80%下行 / ≤20%上行）
+  - 期限利差信号：10Y-2Y利差分位数（<20%平坦 / >70%陡峭）
+  - 趋势动量信号：近3个月线性回归斜率（上行/下行/震荡）
+  - 波动率调整：近20日标准差（>0.15%降低置信度）
+- **置信度计算**：基础 0.7 + abs(net_signal)*0.1（最高0.85）/ 震荡 0.55
+- **集成状态**：✅ 已完全集成到 `bond_report_writer.py` 和 `main.py`（2026-03-30 14:00）
+- **图表标记**：`[INSERT_CHART: RATE_PREDICTION]`（包含历史曲线 + 预测曲线 + 95%置信区间）
 
 ### 权益类深度报告（2026-03-29 新建）
 - **文件**：`reporter/equity_report_writer.py`
@@ -75,21 +89,29 @@ data_loader/ → processor/ → engine/ → reporter/ → main.py
 - **集成状态**：✅ 已完全集成到 main.py（2026-03-29 13:00）
 - **2026-03-29 14:00 更新**：新增 section4（大类资产穿透分析），支持转债估值压缩风险自动提示
 
-### 权益类基金持仓分析（2026-03-29 新增）
-- **文件**：`reporter/holdings_analyzer.py`
-- **入口**：`analyze_equity_holdings(report) -> dict`
-- **分析维度**：集中度/经理风格/个股留存率/行业配置/重仓股特征/风险集中行业
-- **图表设计**：
-  - 图表一：动态行业配置与偏离度（堆叠柱状图 + 散点/蜘蛛图，需多期数据支持）
-  - 图表二：持仓集中度与个股留存率（双轴图，柱状图 + 折线图）
-- **集成状态**：✅ 已完全集成到 equity_report_writer.py section5（2026-03-29 14:00）
-
-### 固收+基金资产配置分析（2026-03-29 新增）
-- **文件**：`reporter/holdings_analyzer.py`
-- **入口**：`analyze_cb_holdings(report) -> dict`
-- **分析维度**：大类资产配置（纯债/权益/转债/现金）/ 转债风格/ 风险水平/ 经理行为
-- **图表设计**：大类资产穿透与仓位变动图（百分比堆叠面积图，需多期数据支持）
-- **集成状态**：✅ 已完全集成到 cb_report_writer.py section4（2026-03-29 14:00）
+### 权益类基金深度持仓分析（2026-03-30 完成开发）
+- **文件**：`data_loader/equity_holdings_loader.py` / `reporter/equity_holdings_v2.py` / `ui/equity_holdings_v2_components.py`
+- **入口**：`generate_deep_holdings_analysis(symbol, analysis_period, ...)` → `render_deep_holdings_ui(analysis_result)`
+- **数据接口**：
+  - 持仓历史：`ak.fund_portfolio_hold_em(symbol, date)`（按年份）
+  - 资产结构：`ak.fund_individual_detail_hold_xq(symbol, date)`（按季度末）
+- **数据范围限制**：**最多5年（20个季度）**，不足5年按实际情况
+- **四大模块**：
+  1. 资产配置演变趋势（堆叠面积图）：股票/债券/现金/其他占比变化
+  2. 持仓历史变化（热力图）：前十大重仓股演变，识别投资框架稳定性
+  3. 交易能力评估（柱状图+雷达图）：新买/卖的30天走势，判断逃顶/抄底能力（条件渲染，需≥4季度）
+  4. 估值分析与风险预警（散点图+仪表盘+压力测试）：最新持仓估值 + 行业/全市场压力测试
+- **关键指标**：持仓留存率、平均持仓周期、换手率、风格标签、抄底/逃顶成功率、能力评分、估值评级、风险等级
+- **集成状态**：✅ 已完全替代 equity_report_writer.py 原有 section5（2026-03-30 11:45）
+  - 使用占位符 `[DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]` 触发 UI 组件渲染
+  - 删除旧的 `_section5_holdings_analysis` 和 `_infer_alpha_jump_period` 函数
+  - 删除对 `holdings_analyzer.py` 的依赖
+- **关键Bug修复（2026-03-30 11:10）**：
+  1. API调用参数错误：`call_with_timeout()` 改为 `safe_api_call()`（支持 `max_retries`）
+  2. 资产结构列名不匹配：兼容 `'仓位占比'` 和 `'占净值比例(%)'` 两种格式
+  3. 模块2季度处理错误：从 `"2025年1季度股票投资明细"` 提取 `"2025Q1"` 标签
+  4. 持仓留存率计算错误：使用 `df_with_label['季度标签']` 而不是原始的 `df`
+- **开发状态**：✅ 开发完成，测试通过（000001基金四大模块数据充足）
 
 ## 关键 Bug 记录（勿重踩）
 1. `fund_portfolio_asset_allocation_em`接口不存在 → 改用`fund_portfolio_hold_em`
@@ -99,12 +121,38 @@ data_loader/ → processor/ → engine/ → reporter/ → main.py
 5. bond模式下`translate_results()`传入的是`{'bond': bond_res}`嵌套字典，需先展开
 6. **累计收益曲线**：必须优先使用全收益`tr_ret`；强制零点对齐；数据清洗预处理
 7. **类型识别错误**（2026-03-29）：`load_basic_info()` 返回中文类型，但 pipeline 使用英文类型码 → 新增 `_map_type_category()` 函数进行映射
-7. **水下回撤图**：基准用全收益；修复阈值`-0.1%`；区分区间回撤vs绝对回撤
-8. **超额收益曲线**：必须几何超额算法 `(fund_nav / bm_nav) - 1`；优先全收益基准；强制起点对齐为0
-9. 全收益指数`H00019`无法获取 → 改用`sh000300`，宽基指数代码需格式转换（`000300.SH` → `sh000300`）
-10. **图表基准数据空值保护**（2026-03-29）：`_replace_benchmark_for_charts()` 永远不返回 `None`，返回空 DataFrame
-11. **数据清洗 KeyError 风险**（2026-03-29）：`_remove_outliers_mad()` 必须先检查 `col not in df.columns`
-12. **call_with_timeout 参数顺序**（2026-03-29）：必须使用命名参数 `call_with_timeout(func, args=..., kwargs=..., timeout=...)`
+8. **基准数据 NaN 问题**（2026-03-30）：`bm_last_return` 未做 NaN 检查，增加 `pd.isna()` 检查并转换为 `float`
+9. **行业推断不准确**（2026-03-30）：关键词映射表太窄，接入 AkShare 申万行业数据库（`data_loader/sw_industry_loader.py`）
+10. **水下回撤图**：基准用全收益；修复阈值`-0.1%`；区分区间回撤vs绝对回撤
+11. **超额收益曲线**：必须几何超额算法 `(fund_nav / bm_nav) - 1`；优先全收益基准；强制起点对齐为0
+12. 全收益指数`H00019`无法获取 → 改用`sh000300`，宽基指数代码需格式转换（`000300.SH` → `sh000300`）
+13. **图表基准数据空值保护**（2026-03-29）：`_replace_benchmark_for_charts()` 永远不返回 `None`，返回空 DataFrame
+14. **数据清洗 KeyError 风险**（2026-03-29）：`_remove_outliers_mad()` 必须先检查 `col not in df.columns`
+15. **call_with_timeout 参数顺序**（2026-03-29）：必须使用命名参数 `call_with_timeout(func, args=..., kwargs=..., timeout=...)`
+16. **Beta 属性访问错误**（2026-03-30）：`beta` 在 `EquityMetrics` 中，不在 `CommonMetrics` 中 → `m.beta if hasattr(m, 'beta') else 1.0`
+17. **基金代码属性错误**（2026-03-30）：`FundBasicInfo` 使用 `symbol` 而不是 `code` → `report.basic.symbol`
+18. **港股基准数据加载失败**（2026-03-30）：港股指数代码格式错误（`HSI.HI` → `HSI`）+ 接口参数未传递 → 修复 `equity_loader.py` 和 `base_api.py`
+19. **纯债型基金分析崩溃**（2026-03-30）：债券权重和异常（113.96%），原因是API返回的`占净值比例`是百分比格式但代码当作小数使用 + 持仓数据不完整（仅前N大重仓）→ 修复 `bond_engine.py`（权重格式兼容 + 数据不完整兼容）和 `bond_loader.py`（只使用最新季度数据）
+20. **债券基金基准年化收益显示0.00%**（2026-03-30）：`bond_report_writer.py`使用错误的公式 `cum_bm / _year_count()`，日历年份除法导致结果为0 → 修复 `chart_gen.py`添加`bm_annual_return`字段（复利公式）+ `bond_report_writer.py`读取该字段
+21. **债券基金累计收益图表缺少基准曲线**（2026-03-30）：`pipeline.py`中`_run_bond_pipeline()`未将`bond_idx`添加到`chart_data` + `chart_gen.py`中基准数据列名兼容问题（`ret` vs `bm_ret`）→ 修复 `pipeline.py`添加`benchmark_df` + `chart_gen.py`自动重命名列名
+
+## 页面优化（2026-03-30）
+### 图表显示优化（手机端适配）
+- **问题**：手机端图例过大，挤压图表空间
+- **修复**：所有图表配置横向图例，放在下方，字体缩小为10px
+- **修改文件**：`main.py`（所有4种基金类型的图表）
+
+### 大标题字体调整
+- **问题**：大标题字体过大
+- **修复**：将 `##`（二级标题）改为 `###`（三级标题）
+- **修改文件**：`reporter/equity_report_writer.py`
+- **效果**：标题字体比正文大1号，视觉层次更清晰
+
+### x轴标题优化
+- **问题**：x轴已显示日期，无需再标注"日期"二字
+- **修复**：移除所有图表的 `xaxis_title="日期"`
+- **修改文件**：`main.py`（所有11个图表）
+- **效果**：图表更简洁，视觉更清爽
 
 ## 验证过的 AkShare 接口
 - `fund_open_fund_info_em()` - 历史净值

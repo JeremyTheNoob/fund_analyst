@@ -188,9 +188,17 @@ if report.equity_metrics:
                     ))
                 fig.update_layout(
                     title="累计收益率（%）",
-                    xaxis_title="日期", yaxis_title="收益率 (%)",
+                    yaxis_title="收益率 (%)",
                     hovermode="x unified", height=380,
                     margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",  # 横向图例
+                        yanchor="bottom",
+                        y=-0.25,  # 图例放在图表下方
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),  # 图例字体缩小
+                    )
                 )
                 return fig
 
@@ -220,8 +228,16 @@ if report.equity_metrics:
                 fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="超额=0")
                 fig.update_layout(
                     title="超额收益曲线（%）",
-                    xaxis_title="日期", yaxis_title="超额收益 (%)",
+                    yaxis_title="超额收益 (%)",
                     height=350, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
@@ -255,8 +271,16 @@ if report.equity_metrics:
                     ))
                 fig.update_layout(
                     title="水下回撤（%）",
-                    xaxis_title="日期", yaxis_title="回撤 (%)",
+                    yaxis_title="回撤 (%)",
                     height=320, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
@@ -274,11 +298,19 @@ if report.equity_metrics:
                     texttemplate="%{text:.1f}%",
                     hovertemplate="年份: %{y}<br>月份: %{x}<br>收益率: %{z:.2f}%",
                 ))
-                fig.update_layout(title="月度收益热力图（%）", height=380, margin=dict(t=40, b=30))
+                fig.update_layout(title="月度收益热力图（%）", height=380, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
+                )
                 return fig
         except Exception:
             return None
-        return None
 
     # ── 辅助：渲染带图表插入点的章节 ──────────────────────────
     def _render_section_with_charts(section_text: str):
@@ -306,7 +338,56 @@ if report.equity_metrics:
     # ── 渲染5个章节（含持仓分析）──────────────────────────
     for sec_key in ("section1", "section2", "section3", "section4", "section5"):
         if sec_key in deep:  # 兼容旧版报告（只有4个章节）
-            _render_section_with_charts(deep[sec_key])
+
+            # 特殊处理：section5 包含深度持仓分析的占位符
+            if sec_key == "section5" and "[DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]" in deep[sec_key]:
+                # 渲染标题（不包括占位符）
+                section_lines = deep[sec_key].split('\n')
+                for line in section_lines:
+                    if line.strip() and "[DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]" not in line:
+                        st.markdown(line)
+                    elif "[DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]" in line:
+                        break  # 遇到占位符停止渲染
+
+                # 渲染深度持仓分析UI
+                try:
+                    # 获取基金Beta（用于市场压力测试）
+                    fund_beta = report.equity_metrics.beta if report.equity_metrics and hasattr(report.equity_metrics, 'beta') else 1.0
+
+                    from reporter.equity_holdings_v2 import generate_deep_holdings_analysis
+                    from ui.equity_holdings_v2_components import render_deep_holdings_ui
+
+                    # 确定分析周期：只有"自成立以来"才使用成立日期，其他都使用默认5年
+                    if analysis_range == "自成立以来":
+                        analysis_period_str = "成立以来"
+                    else:
+                        # "3年"、"1年"等使用默认加载逻辑
+                        analysis_period_str = "默认"
+
+                    # 生成深度持仓分析
+                    with st.spinner("📊 加载持仓数据中（最多5年历史），请稍候..."):
+                        holdings_analysis = generate_deep_holdings_analysis(
+                            symbol=report.basic.symbol,  # 修复：使用 symbol 而不是 code
+                            analysis_period=analysis_period_str,
+                            establish_date=report.basic.establish_date if analysis_period_str == "成立以来" else None,
+                            manager_start_date=None,
+                            max_years=5,
+                            fund_beta=fund_beta,
+                            n_quarters_for_trading=4,
+                            top_n_for_valuation=10
+                        )
+
+                    # 渲染UI
+                    render_deep_holdings_ui(holdings_analysis)
+                except Exception as e:
+                    import traceback
+                    error_detail = traceback.format_exc()
+                    logger.error(f"[深度持仓分析] 加载失败: {e}\n{error_detail}")
+                    st.info(f"💡 深度持仓分析加载失败：{str(e)[:200]}")
+            else:
+                # 普通章节渲染
+                _render_section_with_charts(deep[sec_key])
+
             st.markdown("")  # 章节间空行
 
     # ── 结论章节（无图表，直接渲染）──────────────────────────
@@ -350,9 +431,17 @@ elif report.bond_metrics:
                     ))
                 fig.update_layout(
                     title="累计收益率（%）",
-                    xaxis_title="日期", yaxis_title="收益率 (%)",
+                    yaxis_title="收益率 (%)",
                     hovermode="x unified", height=360,
                     margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
@@ -379,8 +468,16 @@ elif report.bond_metrics:
                     ))
                 fig.update_layout(
                     title="水下回撤（%）",
-                    xaxis_title="日期", yaxis_title="回撤 (%)",
+                    yaxis_title="回撤 (%)",
                     height=300, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
@@ -398,11 +495,105 @@ elif report.bond_metrics:
                     texttemplate="%{text:.2f}%",
                     hovertemplate="年份: %{y}<br>月份: %{x}<br>收益率: %{z:.2f}%",
                 ))
-                fig.update_layout(title="月度收益热力图（%）", height=380, margin=dict(t=40, b=30))
+                fig.update_layout(
+                    title="月度收益热力图（%）",
+                    height=380,
+                    margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
+                )
                 return fig
-        except Exception:
+
+            elif chart_key == "RATE_PREDICTION":
+                # 利率预测图表
+                try:
+                    from data_loader.rate_prediction import predict_rate_trend, generate_rate_prediction_chart
+
+                    # 获取预测结果
+                    prediction = predict_rate_trend(horizon="3m")
+
+                    # 生成图表数据
+                    chart_data = generate_rate_prediction_chart(prediction)
+
+                    if not (chart_data and "x" in chart_data and "series" in chart_data):
+                        return None
+
+                    fig = go.Figure()
+
+                    # 绘制各条曲线
+                    for series in chart_data["series"]:
+                        fig.add_trace(go.Scatter(
+                            x=chart_data["x"],
+                            y=series["data"],
+                            mode="lines",
+                            name=series["name"],
+                            line=dict(
+                                color=series.get("color", "#3498db"),
+                                width=2,
+                                dash=series.get("dash", "solid"),
+                            ),
+                        ))
+
+                    # 添加预测信息注释
+                    pred_info = chart_data.get("prediction_info", {})
+                    direction = pred_info.get("direction", "")
+                    confidence = pred_info.get("confidence", "")
+                    current = pred_info.get("current", 0)
+                    mid_term = pred_info.get("mid_term_forecast", 0)
+
+                    annotation_text = (
+                        f"方向: {direction}<br>"
+                        f"置信度: {confidence}<br>"
+                        f"当前: {current:.2f}%<br>"
+                        f"3个月后预测: {mid_term:.2f}%"
+                    )
+
+                    fig.add_annotation(
+                        x=chart_data["x"][-1],
+                        y=chart_data["series"][0]["data"][-1] if chart_data["series"][0]["data"][-1] else mid_term,
+                        text=annotation_text,
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor="#e74c3c",
+                        bgcolor="rgba(255, 255, 255, 0.9)",
+                        bordercolor="#e74c3c",
+                        borderwidth=1,
+                        font=dict(size=11),
+                        xshift=10,
+                    )
+
+                    fig.update_layout(
+                        title="10Y国债收益率预测（技术指标模型）",
+                        yaxis_title="收益率 (%)",
+                        hovermode="x unified",
+                        height=400,
+                        margin=dict(t=50, b=30, l=60, r=60),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.3,
+                            xanchor="center",
+                            x=0.5,
+                            font=dict(size=10),
+                        )
+                    )
+                    return fig
+                except Exception as e:
+                    import traceback
+                    logger.error(f"[利率预测图表] 渲染失败: {e}\n{traceback.format_exc()}")
+                    return None
+        except Exception as e:
+            import traceback
+            logger.error(f"[债券图表] 渲染失败: {e}\n{traceback.format_exc()}")
             return None
-        return None
 
     def _render_bond_section(section_text: str):
         """渲染带图表插入点的债券章节"""
@@ -427,9 +618,9 @@ elif report.bond_metrics:
         _render_bond_section(deep_bond[sec_key])
         st.markdown("")  # 章节间空行
 
-    # ── 结论章节 ──────────────────────────────────────────────
+    # ── 结论章节（可能包含利率预测图表）────────────────────────
     st.divider()
-    st.markdown(deep_bond["conclusion"])
+    _render_bond_section(deep_bond["conclusion"])
 
 elif report.index_metrics:
     # ── 指数/ETF：调用新指数深度报告生成器 ─────────────────────
@@ -467,16 +658,29 @@ elif report.index_metrics:
                     ))
                 fig.update_layout(
                     title="累计收益率（%）— 基金 vs 指数",
-                    xaxis_title="日期", yaxis_title="收益率 (%)",
+                    yaxis_title="收益率 (%)",
                     hovermode="x unified", height=360,
                     margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
             elif chart_key == "TRACKING_ERROR_SCATTER":
-                # 用超额收益曲线代替散点图（数据更真实）
+                # 优先使用 tracking_error_scatter 数据，否则使用 excess_return
+                te_data = charts.get("tracking_error_scatter", {})
                 ex_data = charts.get("excess_return", {})
-                if ex_data and "x" in ex_data and "series" in ex_data:
+
+                # 选择数据源：优先 tracking_error_scatter
+                data_source = te_data if te_data and "x" in te_data and "series" in te_data else ex_data
+
+                if data_source and "x" in data_source and "series" in data_source:
                     fig = go.Figure()
                     for series in ex_data["series"]:
                         color = series.get("color", "#8e44ad")
@@ -503,8 +707,16 @@ elif report.index_metrics:
                     te_daily_pct = te_ann / (252 ** 0.5) * 100  # 日化跟踪误差(%)
                     fig.update_layout(
                         title=f"跟踪偏离度（%）— 年化跟踪误差: {te_ann*100:.2f}%",
-                        xaxis_title="日期", yaxis_title="偏离度 (%)",
+                        yaxis_title="偏离度 (%)",
                         height=340, margin=dict(t=40, b=30),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.25,
+                            xanchor="center",
+                            x=0.5,
+                            font=dict(size=10),
+                        ),
                         shapes=[
                             dict(type="rect", xref="paper", yref="y",
                                  x0=0, x1=1,
@@ -523,7 +735,9 @@ elif report.index_metrics:
                 if not (hm_data and "data" in hm_data and "x" in hm_data and "y" in hm_data):
                     return None
                 pd_mean = report.index_metrics.premium_discount_mean * 100
-                pd_std  = report.index_metrics.premium_discount_std  * 100
+                pd_std  = report.index_metrics.premium_discount_std * 100
+                # 场外指数基金折溢价数据为0，显示为"无数据"
+                pd_display = f"{pd_mean:+.3f}%，σ: {pd_std:.3f}%" if abs(pd_mean) > 0.001 or abs(pd_std) > 0.001 else "无数据（场外基金）"
                 fig = go.Figure(data=go.Heatmap(
                     z=hm_data["data"],
                     x=hm_data["x"],
@@ -535,8 +749,16 @@ elif report.index_metrics:
                     hovertemplate="年份: %{y}<br>月份: %{x}<br>收益率: %{z:.2f}%",
                 ))
                 fig.update_layout(
-                    title=f"月度收益热力图（折溢价均值: {pd_mean:+.3f}%，σ: {pd_std:.3f}%）",
+                    title=f"月度收益热力图（折溢价: {pd_display}）",
                     height=380, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
@@ -562,14 +784,21 @@ elif report.index_metrics:
                     ))
                 fig.update_layout(
                     title="水下回撤（%）",
-                    xaxis_title="日期", yaxis_title="回撤 (%)",
+                    yaxis_title="回撤 (%)",
                     height=300, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
         except Exception:
             return None
-        return None
 
     def _render_idx_section(section_text: str):
         """渲染带图表插入点的指数章节"""
@@ -634,9 +863,17 @@ elif report.cb_metrics:
                     ))
                 fig.update_layout(
                     title="累计收益率（%）— 基金 vs 股债复合基准",
-                    xaxis_title="日期", yaxis_title="收益率 (%)",
+                    yaxis_title="收益率 (%)",
                     hovermode="x unified", height=360,
                     margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
@@ -658,8 +895,16 @@ elif report.cb_metrics:
                                   annotation_text="超额=0")
                     fig.update_layout(
                         title="超额收益曲线（%）— 体现非对称捕获能力",
-                        xaxis_title="日期", yaxis_title="超额收益率 (%)",
+                        yaxis_title="超额收益率 (%)",
                         height=340, margin=dict(t=40, b=30),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.25,
+                            xanchor="center",
+                            x=0.5,
+                            font=dict(size=10),
+                        )
                     )
                     return fig
                 # fallback：月度热力图
@@ -675,7 +920,16 @@ elif report.cb_metrics:
                         texttemplate="%{text:.2f}%",
                         hovertemplate="年份: %{y}<br>月份: %{x}<br>收益率: %{z:.2f}%",
                     ))
-                    fig.update_layout(title="月度收益热力图（%）", height=380, margin=dict(t=40, b=30))
+                    fig.update_layout(title="月度收益热力图（%）", height=380, margin=dict(t=40, b=30),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.25,
+                            xanchor="center",
+                            x=0.5,
+                            font=dict(size=10),
+                        )
+                    )
                     return fig
                 return None
 
@@ -701,14 +955,21 @@ elif report.cb_metrics:
                     ))
                 fig.update_layout(
                     title="水下回撤（%）",
-                    xaxis_title="日期", yaxis_title="回撤 (%)",
+                    yaxis_title="回撤 (%)",
                     height=300, margin=dict(t=40, b=30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.25,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    )
                 )
                 return fig
 
         except Exception:
             return None
-        return None
 
     def _render_cb_section(section_text: str):
         """渲染带图表插入点的转债章节"""
