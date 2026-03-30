@@ -122,6 +122,8 @@ def run_bond_analysis(
         convexity=round(convexity, 4),
         wacs_score=round(wacs, 1),
         credit_breakdown=credit_breakdown,
+        bond_classification=holdings.bond_classification,  # P1-新增：债券持仓分类
+        credit_rating_distribution={},  # P1-待接入：信用评级分布
         hhi=round(hhi, 1),
         stress_results=stress,
         credit_spread_history=credit_spread_history,  # 新增：信用利差历史数据

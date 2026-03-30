@@ -73,7 +73,7 @@ def _map_type_category(chinese_type: str) -> str:
     if chinese_type == "股票型":
         return "equity"
     if chinese_type == "增强指数":
-        return "equity"
+        return "index_enhanced"
 
     # 混合类
     if chinese_type in ("偏股混合型", "偏债混合型", "平衡混合型", "混合型"):

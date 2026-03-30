@@ -112,7 +112,7 @@ def generate_index_deep_report(report: Any) -> dict:
     conclusion = _section4_conclusion(
         fund_name, index_name, grade, tool_score, tags,
         te_annual, pd_grade, enhanced_ret, ann_ret, year_count,
-        m
+        m, basic
     )
 
     full_text = "\n\n".join([headline, section1, section2, section3, conclusion])
@@ -380,7 +380,7 @@ def _section3_liquidity_cost(
 def _section4_conclusion(
     fund_name, index_name, grade, tool_score, tags,
     te_annual, pd_grade, enhanced_ret, ann_ret, year_count,
-    m
+    m, basic
 ) -> str:
     """四、综合结论与配置建议"""
 
@@ -432,6 +432,12 @@ def _section4_conclusion(
     # 标签展示
     tag_line = "、".join(tags) if tags else "工具型、指数基金"
 
+    # 成本项披露
+    mgmt_fee = basic.fee_manage * 100 if hasattr(basic, 'fee_manage') and basic.fee_manage else 0.0
+    custody_fee = basic.fee_custody * 100 if hasattr(basic, 'fee_custody') and basic.fee_custody else 0.0
+    purchase_fee = basic.fee_sale * 100 if hasattr(basic, 'fee_sale') and basic.fee_sale else 0.0
+    redeem_fee = basic.fee_redeem * 100 if hasattr(basic, 'fee_redeem') and basic.fee_redeem else 0.0
+
     return f"""---
 
 ### 四、综合结论与配置建议
@@ -457,7 +463,16 @@ def _section4_conclusion(
 - 📌 **网格交易**：借助折溢价波动或净值波动区间，低买高卖积累收益  
 - 📌 **核心卫星配置**：作为"核心仓位"锁定市场整体回报，卫星仓位配置主动管理基金
 
-> ⚠️ **重要提示**：指数基金不提供保本保障，当目标指数下跌时，基金将同步承受亏损。请在充分了解所跟踪指数的行业/风格特征后，结合自身风险偏好合理配置。"""
+> ⚠️ **重要提示**：指数基金不提供保本保障，当目标指数下跌时，基金将同步承受亏损。请在充分了解所跟踪指数的行业/风格特征后，结合自身风险偏好合理配置。
+
+---
+
+**成本项披露：**
+
+- 管理费率：{mgmt_fee:.2f}%
+- 托管费率：{custody_fee:.2f}%
+- 最大申购费率：{purchase_fee:.2f}%
+- 最大赎回费率：{redeem_fee:.2f}%"""
 
 
 # ============================================================

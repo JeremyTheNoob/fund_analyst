@@ -86,6 +86,17 @@ with col2:
     with col_c:
         st.empty()
 
+    # P1-配置建议细化：风险偏好选择器
+    st.markdown("<div style='text-align: center; margin: 10px 0 5px 0; font-size: 14px; color: #666;'>您的风险偏好类型</div>", unsafe_allow_html=True)
+    risk_preference = st.selectbox(
+        "风险偏好",
+        options=["保守型", "稳健型", "积极型"],
+        index=1,
+        label_visibility="collapsed",
+        help="根据您的风险承受能力选择，系统将生成个性化配置建议",
+        key="risk_preference"
+    )
+
     st.markdown("<br>", unsafe_allow_html=True)  # 增加间距
 
     analyze_btn = st.button("🔍 开始分析", type="primary", use_container_width=True)
@@ -398,7 +409,9 @@ elif report.bond_metrics:
     # ── 债券类：调用新债基深度报告生成器 ──────────────────────
     from reporter.bond_report_writer import generate_bond_deep_report
 
-    deep_bond = generate_bond_deep_report(report)
+    # 获取风险偏好参数
+    risk_preference = st.session_state.get("risk_preference", "稳健型")
+    deep_bond = generate_bond_deep_report(report, risk_preference=risk_preference)
 
     # 标题行
     st.markdown(deep_bond["headline"])
@@ -506,6 +519,36 @@ elif report.bond_metrics:
                         xanchor="center",
                         x=0.5,
                         font=dict(size=10),
+                    )
+                )
+                return fig
+
+            elif chart_key == "BOND_HOLDINGS_PIE":
+                # 债券持仓分类饼图
+                pie_data = charts.get("bond_holdings_pie", {})
+                if not (pie_data and "labels" in pie_data and "values" in pie_data):
+                    return None
+                fig = go.Figure(data=go.Pie(
+                    labels=pie_data["labels"],
+                    values=pie_data["values"],
+                    hole=0.4,  # 甜甜圈效果
+                    marker=dict(colors=pie_data.get("colors", ["#27ae60", "#3498db", "#e67e22", "#e74c3c"])),
+                    textinfo="label+percent",
+                    textposition="outside",
+                    textfont=dict(size=12),
+                ))
+                fig.update_layout(
+                    title="债券持仓分类占比",
+                    height=380,
+                    margin=dict(t=50, b=30, l=60, r=60),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="v",
+                        yanchor="middle",
+                        y=0.5,
+                        xanchor="left",
+                        x=1.05,
+                        font=dict(size=11),
                     )
                 )
                 return fig
@@ -622,8 +665,9 @@ elif report.bond_metrics:
     st.divider()
     _render_bond_section(deep_bond["conclusion"])
 
-elif report.index_metrics:
+elif report.index_metrics or report.fund_type == "index_enhanced":
     # ── 指数/ETF：调用新指数深度报告生成器 ─────────────────────
+    # 支持：标准指数、指数增强型
     from reporter.index_report_writer import generate_index_deep_report
 
     deep_idx = generate_index_deep_report(report)

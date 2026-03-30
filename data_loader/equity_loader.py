@@ -289,8 +289,11 @@ def _classify_fund(info: dict) -> str:
             return "混合型"
     if any(k in t for k in ["股票", "权益"]):
         return "股票型"
-    if "可转债" in t or "转债" in name:
+    # 修复：增加更宽松的可转债识别逻辑（只要名称或类型中包含"转债"即可）
+    if "可转债" in t or "转债" in name or "转债" in t:
         return "可转债基金"
+    # 如果无法识别，检查持仓数据（如果可用）
+    # 最终 fallback 到股票型
     return "股票型"
 
 

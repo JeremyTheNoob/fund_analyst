@@ -81,6 +81,13 @@ def load_bond_holdings(symbol: str) -> HoldingsData:
                 r["bond_ratio"] = min(total / 100.0, 1.0)
             break
 
+    # --- 债券分类分析 ---
+    if r["bond_details"]:
+        bond_classification = _classify_bonds_by_type(r["bond_details"])
+        r["bond_classification"] = bond_classification
+    else:
+        r["bond_classification"] = {}
+
     # --- 默认值 ---
     if r["stock_ratio"] == 0.0 and r["bond_ratio"] == 0.0:
         logger.warning(f"[load_bond_holdings] {symbol} 持仓数据全部失败，使用纯债默认值")
@@ -89,6 +96,66 @@ def load_bond_holdings(symbol: str) -> HoldingsData:
         r["stock_ratio"] = 0.02
 
     return HoldingsData(**r)
+
+
+def _classify_bonds_by_type(bond_details: list) -> dict:
+    """
+    根据债券名称分类债券类型
+    
+    Args:
+        bond_details: 债券持仓明细列表
+        
+    Returns:
+        {
+            "gov_bond": {"name": "利率债", "ratio": 0.65, "details": [...]},
+            "credit_bond": {"name": "信用债", "ratio": 0.25, "details": [...]},
+            "urban_construction": {"name": "城投债", "ratio": 0.08, "details": [...]},
+            "real_estate": {"name": "地产债", "ratio": 0.02, "details": [...]}
+        }
+    """
+    if not bond_details:
+        return {}
+    
+    total_ratio = sum(b.get("占净值比例", 0) for b in bond_details)
+    if total_ratio == 0:
+        return {}
+    
+    classification = {
+        "gov_bond": {"name": "利率债", "ratio": 0.0, "details": []},
+        "credit_bond": {"name": "信用债", "ratio": 0.0, "details": []},
+        "urban_construction": {"name": "城投债", "ratio": 0.0, "details": []},
+        "real_estate": {"name": "地产债", "ratio": 0.0, "details": []},
+    }
+    
+    for bond in bond_details:
+        name = str(bond.get("债券名称", "")).upper()
+        ratio = bond.get("占净值比例", 0)
+        
+        # 利率债识别
+        if any(keyword in name for keyword in ["国债", "国开", "进出口", "农发", "央票", "地方政府"]):
+            classification["gov_bond"]["ratio"] += ratio
+            classification["gov_bond"]["details"].append(bond)
+        
+        # 城投债识别
+        elif any(keyword in name for keyword in ["城投", "城建", "城控", "城发", "城投控股", "城市建设"]):
+            classification["urban_construction"]["ratio"] += ratio
+            classification["urban_construction"]["details"].append(bond)
+        
+        # 地产债识别
+        elif any(keyword in name for keyword in ["地产", "置业", "房产", "房地产开发", "房地产", "置业有限"]):
+            classification["real_estate"]["ratio"] += ratio
+            classification["real_estate"]["details"].append(bond)
+        
+        # 其他归为信用债
+        else:
+            classification["credit_bond"]["ratio"] += ratio
+            classification["credit_bond"]["details"].append(bond)
+    
+    # 转换为百分比
+    for key in classification:
+        classification[key]["ratio"] = round(classification[key]["ratio"] / total_ratio, 4)
+    
+    return classification
 
 
 # ============================================================

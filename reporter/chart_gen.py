@@ -158,6 +158,11 @@ def generate_chart_data(report: Any) -> Dict[str, Any]:
     # 6.3 信用利差趋势图（固收类基金）
     if report.fund_type == 'bond':
         charts['credit_spread'] = _credit_spread_chart(report)
+        # P1-新增：债券持仓分类饼图
+        if hasattr(report, 'bond_metrics') and report.bond_metrics:
+            bond_class = getattr(report.bond_metrics, 'bond_classification', {})
+            if bond_class:
+                charts['bond_holdings_pie'] = _bond_holdings_pie_chart(bond_class)
     
     # 6.4 跟踪误差直方图（指数类基金）
     if report.fund_type == 'index':
@@ -1101,4 +1106,48 @@ def _premium_discount_chart(report: Any) -> Dict:
     return {
         'type': 'message',
         'message': f'平均折溢价率: {pd_mean*100:.3f}%, 标准差: {pd_std*100:.3f}%'
+    }
+
+
+def _bond_holdings_pie_chart(bond_classification: dict) -> Dict:
+    """
+    债券持仓分类饼图（利率债/信用债/城投债/地产债）
+    
+    Args:
+        bond_classification: 债券分类数据
+        
+    Returns:
+        {
+            'type': 'pie',
+            'labels': ['利率债', '信用债', '城投债', '地产债'],
+            'values': [65, 25, 8, 2],
+            'colors': ['#27ae60', '#3498db', '#e67e22', '#e74c3c'],
+            'title': '债券持仓分类占比'
+        }
+    """
+    if not bond_classification:
+        return {}
+    
+    # 过滤掉占比接近0的类别
+    labels = []
+    values = []
+    colors = ['#27ae60', '#3498db', '#e67e22', '#e74c3c', '#9b59b6']
+    
+    # 按顺序添加分类（确保颜色对应）
+    category_order = ['gov_bond', 'credit_bond', 'urban_construction', 'real_estate']
+    
+    for i, key in enumerate(category_order):
+        if key in bond_classification and bond_classification[key]['ratio'] > 0.001:
+            labels.append(bond_classification[key]['name'])
+            values.append(round(bond_classification[key]['ratio'] * 100, 1))
+    
+    if not values:
+        return {}
+    
+    return {
+        'type': 'pie',
+        'labels': labels,
+        'values': values,
+        'colors': colors[:len(labels)],
+        'title': '债券持仓分类占比'
     }

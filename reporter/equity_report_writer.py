@@ -124,16 +124,23 @@ def generate_equity_deep_report(report: Any) -> dict:
     )
 
     # ── 持仓分析章节（新的深度持仓穿透分析）────────────────
+    # P2-新增：Top 3贡献股/拖累股分析（轻量级分析）
+    top_contributors = _section5_top_contributors(
+        report, fund_name, start_date, end_date
+    )
+    
     # 不在报告生成阶段调用深度持仓分析，而是返回占位符
     # 由 main.py 在渲染阶段按需调用（避免重复加载）
-    section5_holdings = """### 五、持仓穿透分析：微观归因与风格定性
+    section5_holdings = f"""### 五、持仓穿透分析：微观归因与风格定性
+
+{top_contributors}
 
 [DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]"""
 
     conclusion = _section5_conclusion(
         fund_name, grade, score, tags,
         net_alpha, max_dd_fund, monthly_win_rate,
-        ir_value, m
+        ir_value, m, basic
     )
 
     # 标题行
@@ -345,6 +352,9 @@ def _section3_risk_defense(
     else:
         risk_reward = f"夏普比率 {sharpe:.2f}（偏低），风险调整后回报不足"
 
+    # P2-新增：回撤原因分析（系统性风险 vs 主动性失误）
+    drawdown_cause = _analyze_drawdown_cause(dd_info, max_dd_fund, beta_val)
+    
     text = f"""### 三、风险控制与修复弹性
 
 [INSERT_CHART: DRAWDOWN]
@@ -359,7 +369,13 @@ def _section3_risk_defense(
 
 {"更关键的是修复速度：" if recovery_days and recovery_days < 90 else ""}{"相对快速的回血节奏，结合持仓分析，暗示经理在下跌过程中进行了前瞻性的防御性换仓，将头寸切换至更具弹性的品种，从而实现了跌得少、回血快的非对称优势。" if recovery_days and recovery_days < 60 else f"经理在回撤应对中展现了{('较强的仓位管理能力' if defense_ratio < 1.0 else '与市场基本同步的操作节奏')}，建议持续关注后续回撤修复进展。"}
 
-{"Beta 值为 " + str(round(beta_val, 2)) + ("，高于1的弹性特征意味着市场上涨时跑赢，但下跌时回撤也更大，这与上述数据吻合。" if beta_val > 1.1 else "，略低于1的防守特征与其较强的回撤控制能力高度吻合。" if beta_val < 0.9 else "，与市场波动基本同步，属于标准主动权益产品的Beta水平。")}"""
+{"Beta 值为 " + str(round(beta_val, 2)) + ("，高于1的弹性特征意味着市场上涨时跑赢，但下跌时回撤也更大，这与上述数据吻合。" if beta_val > 1.1 else "，略低于1的防守特征与其较强的回撤控制能力高度吻合。" if beta_val < 0.9 else "，与市场波动基本同步，属于标准主动权益产品的Beta水平。")}
+
+**回撤原因分析**
+
+{drawdown_cause}"""
+
+    return text
 
     return text
 
@@ -425,7 +441,7 @@ def _section4_stability_style(
 def _section5_conclusion(
     fund_name, grade, score, tags,
     net_alpha, max_dd_fund, monthly_win_rate,
-    ir_value, m
+    ir_value, m, basic
 ) -> str:
     """六、综合结论与投资建议"""
 
@@ -448,6 +464,12 @@ def _section5_conclusion(
 
     tag_str = "、".join([f"「{t}」" for t in tags[:3]]) if tags else "综合型"
 
+    # 成本项披露
+    mgmt_fee = basic.fee_manage * 100 if hasattr(basic, 'fee_manage') and basic.fee_manage else 0.0
+    custody_fee = basic.fee_custody * 100 if hasattr(basic, 'fee_custody') and basic.fee_custody else 0.0
+    purchase_fee = basic.fee_sale * 100 if hasattr(basic, 'fee_sale') and basic.fee_sale else 0.0
+    redeem_fee = basic.fee_redeem * 100 if hasattr(basic, 'fee_redeem') and basic.fee_redeem else 0.0
+
     text = f"""### 六、综合结论与投资建议
 
 **一、经理画像**
@@ -462,7 +484,16 @@ def _section5_conclusion(
 
 {advice}。{config_advice}
 
-*适合投资者类型：{risk_pref}*"""
+*适合投资者类型：{risk_pref}*
+
+---
+
+**成本项披露：**
+
+- 管理费率：{mgmt_fee:.2f}%
+- 托管费率：{custody_fee:.2f}%
+- 最大申购费率：{purchase_fee:.2f}%
+- 最大赎回费率：{redeem_fee:.2f}%"""
 
     return text
 
@@ -693,6 +724,179 @@ def _identify_risk_point(m, max_dd_fund) -> str:
         risks.append("ℹ️ 当前未发现明显的结构性风险，主要需关注市场系统性风险带来的净值波动")
 
     return "\n\n".join(risks[:2])  # 最多展示2个核心风险点
+
+
+def _section5_top_contributors(
+    report: Any,
+    fund_name: str,
+    start_date: str,
+    end_date: str
+) -> str:
+    """
+    P2-新增：Top 3贡献股/拖累股分析
+    
+    计算逻辑：
+    1. 从持仓数据中获取top10_stocks（包含持仓比例）
+    2. 获取每只股票在分析区间内的涨跌幅
+    3. 计算贡献度 = 持仓比例 × 个股涨跌幅
+    4. 排序找出Top 3贡献和Top 3拖累
+    
+    Args:
+        report: 基金报告数据
+        fund_name: 基金名称
+        start_date: 分析开始日期
+        end_date: 分析结束日期
+        
+    Returns:
+        贡献度分析文字描述
+    """
+    # 检查是否有持仓数据
+    if not report.holdings or not report.holdings.top10_stocks:
+        return """**持仓数据暂不可用**
+
+当前暂无法获取该基金的持仓数据，贡献度分析将在数据接入后自动显示。
+"""
+    
+    top10_stocks = report.holdings.top10_stocks
+    
+    # 如果持仓数据为空或数据格式不正确
+    if not top10_stocks or len(top10_stocks) == 0:
+        return """**持仓数据暂不可用**
+
+当前暂无法获取该基金的持仓数据，贡献度分析将在数据接入后自动显示。
+"""
+    
+    # 简化版贡献度分析（不接入实时股票数据，基于持仓比例推断）
+    # 实际应用中，应该接入股票历史数据计算真实涨跌幅
+    
+    # 按持仓比例排序（假设比例高的股票对收益影响更大）
+    sorted_stocks = sorted(top10_stocks, key=lambda x: x.get('占净值比例', 0), reverse=True)
+    
+    # 取Top 5持仓（用于分析）
+    top5_holdings = sorted_stocks[:5]
+    
+    # 生成分析文本
+    analysis_parts = []
+    
+    # 整体持仓集中度分析
+    total_ratio = sum(stock.get('占净值比例', 0) for stock in top5_holdings)
+    analysis_parts.append(f"**持仓集中度分析：**")
+    analysis_parts.append(f"前五大重仓股合计占比 **{total_ratio:.1f}%**，{'持仓较为集中' if total_ratio > 30 else '持仓相对分散'}")
+    
+    # Top 3贡献股（基于持仓比例推断）
+    analysis_parts.append(f"\n**Top 3 潜在贡献股（按持仓比例推断）：**")
+    for i, stock in enumerate(top5_holdings[:3], 1):
+        name = stock.get('股票名称', '未知')
+        ratio = stock.get('占净值比例', 0)
+        code = stock.get('股票代码', '')
+        analysis_parts.append(f"{i}. **{name}** ({code}) — 持仓占比 **{ratio:.1f}%**")
+    
+    # 风险提示：集中度风险
+    if total_ratio > 40:
+        analysis_parts.append(f"\n**⚠️ 集中度风险提醒：**")
+        analysis_parts.append(f"前五大重仓股占比超过40%，基金表现与这些个股的涨跌高度相关。建议投资者关注这些核心持仓的基本面变化。")
+    
+    analysis_parts.append(f"\n**注：** 以上为基于持仓比例的简化分析。实际贡献度需结合个股在分析区间内的真实涨跌幅计算，将在后续版本中接入实时股票数据。")
+    
+    return "\n".join(analysis_parts)
+
+
+def _analyze_drawdown_cause(
+    dd_info: dict,
+    max_dd_fund: float,
+    beta_val: float
+) -> str:
+    """
+    P2-新增：分析回撤原因（系统性风险 vs 主动性失误）
+    
+    Args:
+        dd_info: 回撤信息字典（包含max_dd_date等）
+        max_dd_fund: 基金最大回撤（%）
+        beta_val: Beta值
+        
+    Returns:
+        回撤原因分析文字
+    """
+    # 获取最大回撤发生时间
+    max_dd_date = dd_info.get('max_dd_date') if dd_info else None
+    
+    if not max_dd_date:
+        return """**回撤原因分析：**
+
+由于数据限制，暂无法精确分析回撤发生的市场背景。建议结合同期市场指数表现进行判断。"""
+    
+    # 将日期转换为可比较的格式
+    try:
+        from datetime import datetime
+        if hasattr(max_dd_date, 'strftime'):
+            dd_date = max_dd_date
+        else:
+            dd_date = datetime.strptime(str(max_dd_date)[:10], '%Y-%m-%d')
+        
+        year = dd_date.year
+        month = dd_date.month
+    except:
+        return """**回撤原因分析：**
+
+由于数据限制，暂无法精确分析回撤发生的市场背景。建议结合同期市场指数表现进行判断。"""
+    
+    # 系统性风险时间段识别
+    systemic_risk_periods = []
+    
+    # 2022年：全球加息潮、俄乌冲突、疫情反复
+    if year == 2022:
+        systemic_risk_periods.append("2022年全球央行加息潮、地缘政治冲突与疫情反复导致的全球资产价格重估")
+    
+    # 2021年：教培行业整顿、互联网反垄断
+    elif year == 2021 and month >= 7:
+        systemic_risk_periods.append("2021年教培行业整顿与互联网反垄断政策引发的核心资产估值重构")
+    
+    # 2020年：疫情冲击
+    elif year == 2020 and month <= 6:
+        systemic_risk_periods.append("2020年新冠疫情爆发导致的全球流动性危机与资产价格暴跌")
+    
+    # 2018年：中美贸易摩擦
+    elif year == 2018:
+        systemic_risk_periods.append("2018年中美贸易摩擦升级引发的出口链与科技板块估值下修")
+    
+    # 2015年：A股异常波动
+    elif year == 2015 and 6 <= month <= 9:
+        systemic_risk_periods.append("2015年A股异常波动期间的流动性枯竭与千股跌停")
+    
+    # 根据Beta值和回撤幅度判断原因
+    analysis_parts = []
+    analysis_parts.append(f"**回撤原因分析（基于时间序列推断）：**")
+    analysis_parts.append(f"最大回撤发生于 **{dd_date.strftime('%Y年%m月')}**，回撤幅度 **{abs(max_dd_fund):.1f}%**")
+    
+    if systemic_risk_periods:
+        analysis_parts.append(f"\n**系统性风险识别：**")
+        analysis_parts.append(f"该时间段处于{'、'.join(systemic_risk_periods)}。")
+        
+        # 根据Beta判断基金相对于市场的表现
+        if beta_val > 1.2:
+            analysis_parts.append(f"该基金Beta值为 **{beta_val:.2f}**（高于1.2），在市场下跌期间跌幅超过市场平均水平，主要受系统性风险影响，但也可能包含一定的主动性失误（如仓位控制不当）。")
+        elif beta_val < 0.8:
+            analysis_parts.append(f"该基金Beta值为 **{beta_val:.2f}**（低于0.8），在市场下跌期间展现了较强的防御能力，回撤主要受系统性风险影响，但基金经理通过选股或仓位管理有效控制了下跌幅度。")
+        else:
+            analysis_parts.append(f"该基金Beta值为 **{beta_val:.2f}**（接近1），回撤主要由系统性风险驱动，与整体市场走势基本一致。")
+        
+        analysis_parts.append(f"\n**结论：** 本次回撤**主要是系统性风险**所致，{'基金经理在风险控制方面表现' + ('优秀' if beta_val < 0.8 else '良好' if beta_val < 1.0 else '一般') + '，' + ('有效降低了回撤幅度' if beta_val < 1.0 else '回撤幅度与市场相当')}" )
+    else:
+        # 非典型系统性风险时期，更可能是主动性失误或个股风险
+        analysis_parts.append(f"\n**主动性失误识别：**")
+        analysis_parts.append(f"该时间段不属于典型的系统性风险集中爆发期（如2020年疫情、2022年全球加息等）。")
+        
+        if abs(max_dd_fund) > 30:
+            analysis_parts.append(f"回撤幅度达到 **{abs(max_dd_fund):.1f}%**，显著超过市场 typical 波动范围，**可能存在主动性失误**，如：")
+            analysis_parts.append(f"- **重仓股暴雷**：核心持仓个股出现业绩大幅下滑或负面事件")
+            analysis_parts.append(f"- **行业配置错误**：重仓行业遭遇政策利空或景气度逆转")
+            analysis_parts.append(f"- **择时失误**：在市场高位加仓、低位减仓的错误操作")
+        else:
+            analysis_parts.append(f"回撤幅度 **{abs(max_dd_fund):.1f}%**，处于正常波动范围内，可能是正常的市场波动或个股短期调整所致。")
+        
+        analysis_parts.append(f"\n**建议：** 建议结合持仓分析，重点观察同期重仓股表现，判断是否存在个股或行业层面的配置失误。")
+    
+    return "\n".join(analysis_parts)
 
 
 def _fallback_report(basic) -> dict:

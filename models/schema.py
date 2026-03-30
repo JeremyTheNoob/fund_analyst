@@ -74,6 +74,7 @@ class HoldingsData(BaseSchema):
     top10_stocks: List[Dict] = []   # [{code, name, ratio, ...}]
     bond_details: List[Dict] = []   # [{name, type, rating, ratio}]
     asset_allocation: Dict[str, float] = {}
+    bond_classification: Dict[str, Any] = {}  # 债券分类：{gov_bond, credit_bond, urban_construction, real_estate}
 
 
 class FactorData(BaseSchema):
@@ -171,6 +172,10 @@ class BondMetrics(BaseSchema):
     # WACS 信用评分
     wacs_score: float = 0.0
     credit_breakdown: Dict[str, float] = {}
+    # 债券持仓分类
+    bond_classification: Dict[str, Any] = {}  # {gov_bond, credit_bond, urban_construction, real_estate}
+    # 信用评级分布（待接入评级数据）
+    credit_rating_distribution: Dict[str, float] = {}
     # HHI 集中度
     hhi: float = 0.0
     # 压力测试
