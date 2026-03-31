@@ -130,9 +130,9 @@ def load_etf_holdings_ratios(symbol: str) -> HoldingsData:
     )
 
     df_asset = _ak_fund_asset_allocation(symbol, date="2024")
-    if df_asset is not None and not df_asset.empty and "资产类别" in df_asset.columns:
+    if df_asset is not None and not df_asset.empty and "资产类型" in df_asset.columns:
         for _, row in df_asset.iterrows():
-            asset = str(row.get("资产类别", ""))
+            asset = str(row.get("资产类型", ""))
             try:
                 ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
             except Exception:

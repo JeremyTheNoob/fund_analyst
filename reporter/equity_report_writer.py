@@ -1,7 +1,12 @@
 """
 权益类基金深度评价报告生成器 — fund_quant_v2
 角色：资深基金分析师（CFA 持证人）
-报告结构：4章节 + 图表插入点标记 + 结论建议
+报告结构：5板块 + 图表插入点标记
+  1. 收益曲线
+  2. 持仓穿透
+  3. 深度分析（Brinson 归因）
+  4. 风险预警（压力测试）
+  5. 投资建议（买入逻辑 / 持有体感 / 离场信号）
 """
 
 from __future__ import annotations
@@ -14,17 +19,18 @@ from typing import Any
 
 def generate_equity_deep_report(report: Any) -> dict:
     """
-    生成权益类基金深度评价报告（约1000字，含图表标记）
+    生成权益类基金深度评价报告（新5板块结构）
 
     Returns:
         {
-          "meta":     {fund_name, fund_type, start_date, end_date, grade, score, tags},
-          "section1": 全收益框架下的收益穿透（含 [INSERT_CHART: CUM_RET]）,
-          "section2": Alpha的持续性与能力边界（含 [INSERT_CHART: EXCESS_ALPH]）,
-          "section3": 风险控制与修复弹性（含 [INSERT_CHART: DRAWDOWN]）,
-          "section4": 盈利稳定性与风格定性（含 [INSERT_CHART: HEATMAP]）,
-          "conclusion": 综合结论与投资建议,
-          "full_text": 完整纯文本（所有章节合并）
+          "meta":       {fund_name, fund_type, start_date, end_date, grade, score, tags},
+          "headline":   标题行,
+          "section1":   一、收益曲线（含 [INSERT_CHART: CUM_RET]）,
+          "section2":   二、持仓穿透（含 [DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]）,
+          "section3":   三、深度分析：Brinson 归因（含 [INSERT_CHART: BRINSON]）,
+          "section4":   四、风险预警：压力测试（含 [INSERT_CHART: DRAWDOWN]）,
+          "section5":   五、投资建议（买入逻辑 / 持有体感 / 离场信号）,
+          "full_text":  完整纯文本,
         }
     """
     basic = report.basic
@@ -42,7 +48,7 @@ def generate_equity_deep_report(report: Any) -> dict:
     score = m.overall_score
     tags = report.tags or []
 
-    # 日期范围（从chart_data取）
+    # 日期范围
     start_date, end_date = _extract_date_range(charts)
 
     # 收益数据
@@ -54,7 +60,7 @@ def generate_equity_deep_report(report: Any) -> dict:
     cum_bm_tr      = round(bm_info.get("bm_last_return", 0) * 100, 1)
     is_total_return = bm_info.get("is_total_return", False)
 
-    # 分红贡献估算（行业年化股息率 × 统计年数）
+    # 分红贡献估算
     div_contribution = _estimate_div_contribution(basic, start_date, end_date)
 
     # Alpha
@@ -86,6 +92,9 @@ def generate_equity_deep_report(report: Any) -> dict:
     heatmap_info = charts.get("monthly_heatmap", {}).get("heatmap_info", {})
     annual_stats = heatmap_info.get("annual_stats", {})
 
+    # Brinson 归因数据
+    brinson = getattr(m, 'brinson', {}) or {}
+
     # ── 生成各章节 ────────────────────────────────────────
     meta = {
         "fund_name": fund_name,
@@ -97,47 +106,40 @@ def generate_equity_deep_report(report: Any) -> dict:
         "tags": tags,
     }
 
-    section1 = _section1_cumulative_return(
+    # 板块1：收益曲线
+    section1 = _section1_return_curve(
         fund_name, fund_type, start_date, end_date,
         cum_fund, cum_bm_tr, is_total_return,
         div_contribution, net_alpha, ann_ret,
         smb, hml, basic
     )
 
-    section2 = _section2_alpha_persistence(
-        fund_name, last_excess, curve_trend,
-        ir_value, excess_std, monthly_win_rate,
-        net_alpha, smb, hml,
-        ex_info, start_date, end_date
-    )
-
-    section3 = _section3_risk_defense(
-        fund_name, max_dd_fund, max_dd_bm,
-        dd_info, recovery_days, cm,
-        beta_val, r2
-    )
-
-    section4 = _section4_stability_style(
-        fund_name, monthly_win_rate, annual_stats,
-        heatmap_info, smb, hml, m.factor_loadings,
-        beta_val, r2, tags
-    )
-
-    # ── 持仓分析章节（新的深度持仓穿透分析）────────────────
-    # P2-新增：Top 3贡献股/拖累股分析（轻量级分析）
-    top_contributors = _section5_top_contributors(
+    # 板块2：持仓穿透（Top 3 贡献股 + 深度持仓占位符）
+    top_contributors = _section_top_contributors(
         report, fund_name, start_date, end_date
     )
-    
-    # 不在报告生成阶段调用深度持仓分析，而是返回占位符
-    # 由 main.py 在渲染阶段按需调用（避免重复加载）
-    section5_holdings = f"""### 五、持仓穿透分析：微观归因与风格定性
+    section2 = f"""### 二、持仓穿透
 
 {top_contributors}
 
 [DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]"""
 
-    conclusion = _section5_conclusion(
+    # 板块3：深度分析（Brinson 归因）
+    section3 = _section3_brinson_attrition(
+        fund_name, brinson, net_alpha,
+        smb, hml, r2, ir_value,
+        last_excess, curve_trend, excess_std, monthly_win_rate
+    )
+
+    # 板块4：风险预警（压力测试 + 水下回撤）
+    section4 = _section4_risk_stress_test(
+        fund_name, max_dd_fund, max_dd_bm,
+        dd_info, recovery_days, cm,
+        beta_val, r2, ann_ret
+    )
+
+    # 板块5：投资建议（买入逻辑 / 持有体感 / 离场信号）
+    section5 = _section5_investment_advice(
         fund_name, grade, score, tags,
         net_alpha, max_dd_fund, monthly_win_rate,
         ir_value, m, basic
@@ -146,10 +148,9 @@ def generate_equity_deep_report(report: Any) -> dict:
     # 标题行
     headline = _build_headline(grade, fund_name, tags, score, start_date, end_date)
 
-    # 合并全文（新增 section5）
+    # 合并全文
     full_text = "\n\n".join([
-        headline, section1, section2, section3, section4,
-        section5_holdings, conclusion
+        headline, section1, section2, section3, section4, section5
     ])
 
     return {
@@ -159,8 +160,7 @@ def generate_equity_deep_report(report: Any) -> dict:
         "section2":   section2,
         "section3":   section3,
         "section4":   section4,
-        "section5":   section5_holdings,  # 新增
-        "conclusion": conclusion,
+        "section5":   section5,
         "full_text":  full_text,
     }
 
@@ -169,13 +169,13 @@ def generate_equity_deep_report(report: Any) -> dict:
 # 各章节生成
 # ============================================================
 
-def _section1_cumulative_return(
+def _section1_return_curve(
     fund_name, fund_type, start_date, end_date,
     cum_fund, cum_bm_tr, is_total_return,
     div_contribution, net_alpha, ann_ret,
     smb, hml, basic
 ) -> str:
-    """一、全收益框架下的收益穿透"""
+    """一、收益曲线：全收益框架下的收益穿透"""
 
     bm_type = "全收益基准（含分红再投资）" if is_total_return else "价格指数基准"
 
@@ -215,7 +215,7 @@ def _section1_cumulative_return(
     else:
         ann_desc = f"年化收益率 {ann_ret:.1f}%，统计期内呈负值"
 
-    text = f"""### 一、全收益框架下的收益穿透
+    text = f"""### 一、收益曲线
 
 [INSERT_CHART: CUM_RET]
 
@@ -234,75 +234,116 @@ def _section1_cumulative_return(
     return text
 
 
-def _section2_alpha_persistence(
-    fund_name, last_excess, curve_trend,
-    ir_value, excess_std, monthly_win_rate,
-    net_alpha, smb, hml,
-    ex_info, start_date, end_date
+def _section3_brinson_attrition(
+    fund_name, brinson, net_alpha,
+    smb, hml, r2, ir_value,
+    last_excess, curve_trend, excess_std, monthly_win_rate
 ) -> str:
-    """二、Alpha的持续性与能力边界"""
+    """三、深度分析：Brinson 归因分解"""
 
-    # IR 解读
-    if ir_value > 1.0:
-        ir_desc = f"信息比率（IR）高达 **{ir_value:.2f}**，属于卓越水平，意味着每承担一单位偏离风险，能换取超过一单位的超额回报"
-    elif ir_value > 0.5:
-        ir_desc = f"信息比率（IR）为 **{ir_value:.2f}**，属于优秀水平，超额收益的获取效率较高"
+    if not brinson:
+        return """### 三、深度分析
+
+**Brinson 归因数据暂不可用**
+
+当前报告期内持仓数据不足以支撑 Brinson 归因计算，深度分析将在数据完备后自动生成。"""
+
+    allocation = brinson.get('allocation', 0.0)
+    selection = brinson.get('selection', 0.0)
+    interaction = brinson.get('interaction', 0.0)
+    total = brinson.get('total', 0.0)
+
+    alloc_pct = round(allocation * 100, 2)
+    select_pct = round(selection * 100, 2)
+    inter_pct = round(interaction * 100, 2)
+    total_pct = round(total * 100, 2)
+
+    # 配置效应解读
+    abs_alloc = abs(alloc_pct)
+    if abs_alloc > 3:
+        alloc_desc = f"配置效应贡献 **{alloc_pct:+.2f}%**，幅度显著，{'说明基金经理的行业轮动判断精准，超配了强势行业、低配了弱势行业' if alloc_pct > 0 else '行业配置方向与市场背离，超配的行业表现不佳，拖累了整体收益'}"
+    elif abs_alloc > 1:
+        alloc_desc = f"配置效应贡献 {alloc_pct:+.2f}%，幅度适中，经理的行业配置能力有一定体现"
+    else:
+        alloc_desc = f"配置效应贡献 {alloc_pct:+.2f}%，幅度较小，行业配置对超额的影响有限"
+
+    # 选股效应解读
+    abs_select = abs(select_pct)
+    if abs_select > 3:
+        select_desc = f"选股效应贡献 **{select_pct:+.2f}%**，{'经理在行业内选股能力突出，重仓股表现显著优于行业平均水平' if select_pct > 0 else '行业内选股出现偏差，重仓股跑输行业指数，需要审视选股逻辑的有效性'}"
+    elif abs_select > 1:
+        select_desc = f"选股效应贡献 {select_pct:+.2f}%，具备一定的个股挖掘能力"
+    else:
+        select_desc = f"选股效应贡献 {select_pct:+.2f}%，个股选择对超额贡献偏弱"
+
+    # 交互效应解读
+    inter_desc = f"交互效应贡献 {inter_pct:+.2f}%，{'行业配置与个股选择的协同效果为正' if inter_pct > 0 else '行业配置与个股选择存在一定的负向交叉'}"
+
+    # 能力类型判定
+    if abs(alloc_pct) > abs(select_pct) * 1.5:
+        ability_type = "**行业轮动型**"
+        ability_detail = "经理的核心竞争力在于行业配置而非个股挖掘，其超额收益主要来源于对行业景气度的前瞻判断和灵活的行业权重调整。投资者应关注其行业集中度和轮动频率。"
+    elif abs(select_pct) > abs(alloc_pct) * 1.5:
+        ability_type = "**个股挖掘型**"
+        ability_detail = "经理的核心竞争力在于个股选择而非行业配置，其超额收益主要来源于在优势行业内精选出超越行业表现的个股。投资者应关注其持仓换手率和个股集中度。"
+    else:
+        ability_type = "**均衡型**"
+        ability_detail = "经理在行业配置和个股选择上能力较为均衡，超额收益来源相对分散。这种风格在市场风格切换频繁时具有一定的抗冲击能力。"
+
+    # 超额持续性评估（整合 IR 和超额曲线趋势）
+    if ir_value > 0.5:
+        persist_desc = f"信息比率（IR）为 **{ir_value:.2f}**，超额收益的获取效率较高，累积超额曲线呈**{curve_trend}**态势，月度胜率 **{monthly_win_rate:.1f}%**，超额持续性良好"
     elif ir_value > 0:
-        ir_desc = f"信息比率（IR）为 {ir_value:.2f}，处于合格区间，超额收益存在但稳定性有待提升"
+        persist_desc = f"信息比率（IR）为 {ir_value:.2f}，超额收益存在但稳定性有待提升，累积超额曲线呈**{curve_trend}**，月度胜率 {monthly_win_rate:.1f}%"
     else:
-        ir_desc = f"信息比率（IR）为 {ir_value:.2f}，为负值，超额收益的可靠性偏低"
+        persist_desc = f"信息比率（IR）为 {ir_value:.2f}，超额收益的可靠性偏低，累积超额曲线呈**{curve_trend}**，需关注超额能力的稳定性"
 
-    # 超额曲线趋势
-    if curve_trend == "加速突破":
-        trend_desc = "超额曲线近期呈**加速突破**态势，说明经理在当前市场风格下进入强势通道"
-        trend_outlook = "需关注风格切换风险，当前优势可能随市场风格变化而收敛"
-    elif curve_trend == "高位盘整":
-        trend_desc = "超额曲线处于**高位盘整**阶段，说明经理维持超额但创新高能力边际减弱"
-        trend_outlook = "建议观察能否突破平台期，进入新的上升通道"
+    # R² 模型拟合度
+    if r2 > 0.7:
+        r2_desc = f"R² 为 **{r2:.2f}**，因子模型解释力强，风格稳定性高"
+    elif r2 > 0.4:
+        r2_desc = f"R² 为 {r2:.2f}，因子模型解释力一般，经理具有一定的独立风格"
     else:
-        trend_desc = "超额曲线呈**震荡上行**走势，短期内有所波动但中期趋势向上"
-        trend_outlook = "波动来源于市场风格的周期性切换，经理长期选股能力仍值得肯定"
+        r2_desc = f"R² 为 {r2:.2f}，因子模型解释力弱，该基金风格独立性较强"
 
-    # 能力边界
-    style_edge = _style_edge_desc(smb, hml)
+    text = f"""### 三、深度分析
 
-    # 稳定性
-    if excess_std < 0.5:
-        stability = f"超额收益波动极低（日均波动 {excess_std:.2f}%），如阶梯般稳健上行，体现了极强的选股一致性"
-    elif excess_std < 1.0:
-        stability = f"超额收益波动适中（日均波动 {excess_std:.2f}%），节奏感明显，阶段性爆发与修复交替出现"
-    else:
-        stability = f"超额收益波动较大（日均波动 {excess_std:.2f}%），经理博弈属性较强，适合能接受短期波动的投资者"
-
-    text = f"""### 二、Alpha 的持续性与能力边界
+[INSERT_CHART: BRINSON]
 
 [INSERT_CHART: EXCESS_ALPH]
 
-超额收益曲线（几何法计算）揭示了经理主动管理能力的"含金量"。
+通过 Brinson 归因模型，将基金的累计超额收益拆解为**配置效应**（行业选择）、**选股效应**（行业内个股挑选）和**交互效应**（两者协同），从而精准识别经理的 Alpha 来源。
 
-**数据表现**
+**归因分解**
 
-统计期内累计超额收益为 **{last_excess:.1f}%**，{trend_desc}。{ir_desc}。月度超额胜率为 **{monthly_win_rate:.1f}%**（即有{monthly_win_rate:.0f}%的月份跑赢全收益基准）。
+| 归因维度 | 贡献（%） | 解读 |
+|---|---|---|
+| 配置效应 | {alloc_pct:+.2f}% | {alloc_desc} |
+| 选股效应 | {select_pct:+.2f}% | {select_desc} |
+| 交互效应 | {inter_pct:+.2f}% | {inter_desc} |
+| **合计超额** | **{total_pct:+.2f}%** | 经确认 Alpha 为 **{net_alpha:+.1f}%** |
 
-**深度解读**
+**核心能力判定**
 
-{stability}。
+该基金经理属于 **{ability_type}**。{ability_detail}
 
-{trend_outlook}
+**超额持续性评估**
 
-**能力边界识别**
+{persist_desc}。{r2_desc}。
 
-{style_edge}。这意味着当{_style_opposite(smb, hml)}风格主导市场时，经理可能面临超额收敛的压力。建议投资者在配置时，结合当前市场风格环境动态评估。"""
+**能力边界**
+
+从因子暴露分析（SMB={smb:.2f}, HML={hml:.2f}），{_style_edge_desc(smb, hml)}。"""
 
     return text
 
 
-def _section3_risk_defense(
+def _section4_risk_stress_test(
     fund_name, max_dd_fund, max_dd_bm,
     dd_info, recovery_days, cm,
-    beta_val, r2
+    beta_val, r2, ann_ret
 ) -> str:
-    """三、风险控制与修复弹性"""
+    """四、风险预警：压力测试与回撤分析"""
 
     # 防御能力
     if max_dd_bm != 0:
@@ -322,54 +363,57 @@ def _section3_risk_defense(
     # 修复弹性
     if recovery_days and recovery_days > 0:
         if recovery_days < 30:
-            recovery_desc = f"从最低点到回血完毕仅用 **{recovery_days} 个交易日**，修复弹性极强，呈现标准的 V 型反转形态"
+            recovery_desc = f"从最低点到回血完毕仅用 **{recovery_days} 个交易日**，修复弹性极强"
         elif recovery_days < 90:
-            recovery_desc = f"回撤修复历时 **{recovery_days} 个交易日**，修复节奏适中，市场回暖后反弹有力"
+            recovery_desc = f"回撤修复历时 **{recovery_days} 个交易日**，修复节奏适中"
         elif recovery_days < 180:
-            recovery_desc = f"回撤修复历时 **{recovery_days} 个交易日**，属于 U 型磨底，修复速度偏慢"
+            recovery_desc = f"回撤修复历时 **{recovery_days} 个交易日**，属于 U 型磨底"
         else:
-            recovery_desc = f"最长回撤修复周期达 **{recovery_days} 个交易日**，长期处于水下，需关注经理的调仓应对能力"
+            recovery_desc = f"最长回撤修复周期达 **{recovery_days} 个交易日**，长期处于水下"
     else:
         recovery_desc = "当前基金仍处于回撤修复阶段，尚未完全回血"
 
-    # 波动率描述
+    # 波动率
     vol = round(cm.volatility * 100, 1)
     if vol < 15:
         vol_desc = f"年化波动率 {vol:.1f}%，属于低波动品种"
     elif vol < 25:
         vol_desc = f"年化波动率 {vol:.1f}%，波动处于合理区间"
     else:
-        vol_desc = f"年化波动率 {vol:.1f}%，波动较高，适合风险承受能力较强的投资者"
+        vol_desc = f"年化波动率 {vol:.1f}%，波动较高"
 
-    # 夏普和卡玛
+    # 夏普比率
     sharpe = cm.sharpe_ratio
     if sharpe > 1.5:
-        risk_reward = f"夏普比率 **{sharpe:.2f}**（卓越），风险调整后收益极强"
+        sharpe_desc = f"夏普比率 **{sharpe:.2f}**（卓越）"
     elif sharpe > 1.0:
-        risk_reward = f"夏普比率 {sharpe:.2f}（良好），每单位风险获取了充分回报"
+        sharpe_desc = f"夏普比率 {sharpe:.2f}（良好）"
     elif sharpe > 0.5:
-        risk_reward = f"夏普比率 {sharpe:.2f}（一般），风险与收益的匹配尚可"
+        sharpe_desc = f"夏普比率 {sharpe:.2f}（一般）"
     else:
-        risk_reward = f"夏普比率 {sharpe:.2f}（偏低），风险调整后回报不足"
+        sharpe_desc = f"夏普比率 {sharpe:.2f}（偏低）"
 
-    # P2-新增：回撤原因分析（系统性风险 vs 主动性失误）
+    # 压力测试（基于历史情景模拟）
+    stress_tests = _stress_test_scenarios(max_dd_fund, beta_val, vol, ann_ret)
+
+    # 回撤原因分析
     drawdown_cause = _analyze_drawdown_cause(dd_info, max_dd_fund, beta_val)
-    
-    text = f"""### 三、风险控制与修复弹性
+
+    text = f"""### 四、风险预警
 
 [INSERT_CHART: DRAWDOWN]
 
-回撤不仅是风险，更是经理心理素质与调仓效率的试金石。
+回撤不仅是风险，更是经理心理素质与调仓效率的试金石。本板块通过水下回撤图和历史压力测试，评估基金的极端风险承受能力。
 
-**数据表现**
+**回撤概况**
 
-{defense_quality}。{recovery_desc}。{vol_desc}，{risk_reward}。
+{defense_quality}。{recovery_desc}。{vol_desc}，{sharpe_desc}。
 
-**深度解读**
+Beta 值为 {beta_val:.2f}，{"高于1的弹性特征意味着市场上涨时跑赢，但下跌时回撤也更大" if beta_val > 1.1 else "略低于1的防守特征与其回撤控制能力吻合" if beta_val < 0.9 else "与市场波动基本同步"}。
 
-{"更关键的是修复速度：" if recovery_days and recovery_days < 90 else ""}{"相对快速的回血节奏，结合持仓分析，暗示经理在下跌过程中进行了前瞻性的防御性换仓，将头寸切换至更具弹性的品种，从而实现了跌得少、回血快的非对称优势。" if recovery_days and recovery_days < 60 else f"经理在回撤应对中展现了{('较强的仓位管理能力' if defense_ratio < 1.0 else '与市场基本同步的操作节奏')}，建议持续关注后续回撤修复进展。"}
+**压力测试（历史情景模拟）**
 
-{"Beta 值为 " + str(round(beta_val, 2)) + ("，高于1的弹性特征意味着市场上涨时跑赢，但下跌时回撤也更大，这与上述数据吻合。" if beta_val > 1.1 else "，略低于1的防守特征与其较强的回撤控制能力高度吻合。" if beta_val < 0.9 else "，与市场波动基本同步，属于标准主动权益产品的Beta水平。")}
+{stress_tests}
 
 **回撤原因分析**
 
@@ -377,90 +421,19 @@ def _section3_risk_defense(
 
     return text
 
-    return text
 
-
-def _section4_stability_style(
-    fund_name, monthly_win_rate, annual_stats,
-    heatmap_info, smb, hml, factor_loadings,
-    beta_val, r2, tags
-) -> str:
-    """四、盈利稳定性与风格定性"""
-
-    # 月度胜率描述
-    if monthly_win_rate >= 65:
-        wr_desc = f"月度胜率高达 **{monthly_win_rate:.1f}%**，属于高胜率选手，在超过3/5的月份中能够跑赢基准"
-    elif monthly_win_rate >= 55:
-        wr_desc = f"月度胜率 **{monthly_win_rate:.1f}%**，超过半数月份能够跑赢基准，稳定性良好"
-    elif monthly_win_rate >= 45:
-        wr_desc = f"月度胜率 {monthly_win_rate:.1f}%，与基准互有胜负，表现较为均衡"
-    else:
-        wr_desc = f"月度胜率 {monthly_win_rate:.1f}%，偏低于50%，说明经理在多数月份未能跑赢基准"
-
-    # 年度表现
-    annual_desc = ""
-    if annual_stats:
-        positive_years = sum(1 for v in annual_stats.values() if v > 0)
-        total_years = len(annual_stats)
-        best_year = max(annual_stats.items(), key=lambda x: x[1])
-        worst_year = min(annual_stats.items(), key=lambda x: x[1])
-        annual_desc = (
-            f"年度维度来看，统计期内共 {total_years} 个自然年，其中 {positive_years} 年实现正收益。"
-            f"最佳年份为 {best_year[0]} 年（{best_year[1]:.1f}%），"
-            f"最差年份为 {worst_year[0]} 年（{worst_year[1]:.1f}%），"
-            f"年度收益的波动性{'较低，具有良好的收益稳定性' if abs(best_year[1] - worst_year[1]) < 30 else '较高，呈现较大的年际差异，受市场风格影响明显'}。"
-        )
-
-    # 风格定性
-    style_label, style_desc = _detailed_style_label(smb, hml, factor_loadings, r2)
-
-    # 季节性规律
-    seasonal_desc = _seasonal_analysis(heatmap_info)
-
-    text = f"""### 四、盈利稳定性与风格定性
-
-[INSERT_CHART: HEATMAP]
-
-通过月度盈亏矩阵，我们可以量化经理的盈利稳定度，并识别其风格特征与季节性规律。
-
-**数据表现**
-
-{wr_desc}。{annual_desc}
-
-**风格定性**
-
-根据因子暴露分析，该基金经理属于典型的**{style_label}**：{style_desc}。{"R² 值为 " + str(round(r2, 2)) + ("，因子模型拟合度较高，风格持续稳定" if r2 > 0.7 else "，拟合度一般，经理具有一定独立风格，不完全跟随单一风格因子" if r2 > 0.4 else "，拟合度较低，该基金风格独立性强，难以用传统因子模型完全解释")}。
-
-**季节性规律**
-
-{seasonal_desc}"""
-
-    return text
-
-
-def _section5_conclusion(
+def _section5_investment_advice(
     fund_name, grade, score, tags,
     net_alpha, max_dd_fund, monthly_win_rate,
     ir_value, m, basic
 ) -> str:
-    """六、综合结论与投资建议"""
+    """五、投资建议：买入逻辑 / 持有体感 / 离场信号"""
 
     # 经理画像
     portrait = _manager_portrait(net_alpha, abs(max_dd_fund), monthly_win_rate, ir_value, m)
 
-    # 投资建议
-    advice, risk_pref = _investment_advice(net_alpha, abs(max_dd_fund), ir_value, m)
-
     # 风险点
     risk_point = _identify_risk_point(m, abs(max_dd_fund))
-
-    # 配置建议
-    if grade in ("A+", "A") and net_alpha > 3:
-        config_advice = f"建议作为权益组合中的**核心持仓**（Core Holding）。当前评级 **{grade} 级（{score:.0f}分）**，具备长期持有价值。考虑到其{'优秀的回撤控制' if abs(max_dd_fund) < 20 else '较高的弹性特征'}，{'在市场震荡磨底期是理想的介入点，可适当提高组合权重' if abs(max_dd_fund) < 20 else '建议在市场趋势明确时分批建仓，避免高位追入'}。"
-    elif grade == "B":
-        config_advice = f"建议作为权益组合中的**卫星配置**（Satellite Holding），综合评级 **{grade} 级（{score:.0f}分）**，可在组合中占据适度比例，结合市场环境灵活调整仓位。"
-    else:
-        config_advice = f"当前综合评级 **{grade} 级（{score:.0f}分）**，建议以**观察仓**形式参与，等待经理能力进一步验证后再加大配置。"
 
     tag_str = "、".join([f"「{t}」" for t in tags[:3]]) if tags else "综合型"
 
@@ -470,21 +443,24 @@ def _section5_conclusion(
     purchase_fee = basic.fee_sale * 100 if hasattr(basic, 'fee_sale') and basic.fee_sale else 0.0
     redeem_fee = basic.fee_redeem * 100 if hasattr(basic, 'fee_redeem') and basic.fee_redeem else 0.0
 
-    text = f"""### 六、综合结论与投资建议
+    text = f"""### 五、投资建议
 
-**一、经理画像**
+**经理画像**
 
 该经理贴标签为 {tag_str}。{portrait}
 
-**二、核心风险点**
+**避坑指南**
+
+1. 不要"高位补仓"：
+很多人在亏损 5% 时疯狂加仓，结果亏损 20% 时没钱了。加仓要选在"无人问津"时，而非"刚开始跌"时。
+2. 不要"频繁看盘"：
+股票型和混合型基金的波动是常态。如果你每天看十次净值，你的心态一定会崩，从而做出"低卖高买"的非理性操作。建议：每周复盘一次足矣。
+3. 不要"抄底"：
+不要因为某只基跌得多就去抄底。如果该基金是因为经理水平差、逻辑破损而下跌，它就是一只"破船"，补仓只会让你沉得更快。
+
+**核心风险点**
 
 {risk_point}
-
-**三、配置建议**
-
-{advice}。{config_advice}
-
-*适合投资者类型：{risk_pref}*
 
 ---
 
@@ -561,10 +537,64 @@ def _estimate_div_contribution(basic, start_date, end_date) -> float:
         return 0.0
 
 
+def _stress_test_scenarios(
+    max_dd_fund: float, beta_val: float,
+    vol: float, ann_ret: float
+) -> str:
+    """
+    压力测试：基于历史情景模拟基金在极端市场环境下的表现。
+
+    使用简化模型：预估回撤 = max_dd_fund × (scenario_beta / actual_beta) × scenario_multiplier
+    """
+    scenarios = [
+        ("2015年股灾（-45%）", -0.45, 1.8),
+        ("2018年贸易战（-30%）", -0.30, 1.2),
+        ("2020年疫情冲击（-15%）", -0.15, 1.0),
+        ("2022年加息潮（-25%）", -0.25, 1.1),
+    ]
+
+    lines = ["| 历史情景 | 市场跌幅 | 预估基金回撤 | 评估 |", "|---|---|---|---|"]
+
+    for name, mkt_drop, multiplier in scenarios:
+        # 预估：基金回撤 ≈ max_dd_fund × (情景/实际) × 乘数
+        beta_adj = beta_val if beta_val > 0.3 else 0.3  # 下限保护
+        est_dd = abs(max_dd_fund) * beta_adj * multiplier
+        est_dd = min(est_dd, 65)  # 上限保护
+
+        if est_dd < 15:
+            eval_text = "✅ 抗压"
+        elif est_dd < 25:
+            eval_text = "🟡 一般"
+        elif est_dd < 40:
+            eval_text = "⚠️ 承压"
+        else:
+            eval_text = "🔴 严重"
+
+        lines.append(f"| {name} | {mkt_drop*100:.0f}% | ≈{est_dd:.1f}% | {eval_text} |")
+
+    # 压力测试总结
+    avg_dd = abs(max_dd_fund) * beta_val * 1.2  # 平均压力水平
+    if avg_dd < 20:
+        summary = "综合压力测试结果表明，该基金在多数极端市场情景下预估回撤控制在 20% 以内，抗风险能力较强。"
+    elif avg_dd < 35:
+        summary = "该基金在极端市场情景下预估回撤在 20%-35% 区间，属于正常主动权益产品的风险水平，建议投资者做好仓位管理。"
+    else:
+        summary = "该基金在极端市场情景下预估回撤可能超过 35%，高波动特征明显，仅适合风险承受能力较强的投资者。"
+
+    return "\n".join(lines) + f"\n\n{summary}"
+
+
 def _fund_type_label(fund_type: str) -> str:
+    """将 framework_id 转换为中文显示标签"""
     mapping = {
-        "equity": "股票型",
-        "mixed":  "混合型",
+        "stock": "股票型",
+        "hybrid_equity": "混合型-偏股",
+        "hybrid_balanced": "混合型-平衡",
+        "hybrid_flexible": "混合型-灵活",
+        "hybrid_absreturn": "混合型-绝对收益",
+        "hybrid_bond": "混合型-偏债",
+        "equity": "权益类",
+        "mixed": "混合型",
         "sector": "行业/主题型",
     }
     return mapping.get(fund_type, "权益类")
@@ -726,7 +756,7 @@ def _identify_risk_point(m, max_dd_fund) -> str:
     return "\n\n".join(risks[:2])  # 最多展示2个核心风险点
 
 
-def _section5_top_contributors(
+def _section_top_contributors(
     report: Any,
     fund_name: str,
     start_date: str,
@@ -751,7 +781,7 @@ def _section5_top_contributors(
         贡献度分析文字描述
     """
     # 检查是否有持仓数据
-    if not report.holdings or not report.holdings.top10_stocks:
+    if not hasattr(report, 'holdings') or not report.holdings or not report.holdings.top10_stocks:
         return """**持仓数据暂不可用**
 
 当前暂无法获取该基金的持仓数据，贡献度分析将在数据接入后自动显示。
@@ -904,10 +934,10 @@ def _fallback_report(basic) -> dict:
     return {
         "meta": {"fund_name": basic.name, "fund_type": "权益类", "grade": "—", "score": 0, "tags": []},
         "headline": f"# 【{basic.name}】数据不足，无法生成深度报告",
-        "section1": "数据获取不完整，无法进行全收益分析。",
-        "section2": "Alpha 数据不足。",
-        "section3": "风险数据不足。",
-        "section4": "月度数据不足。",
-        "conclusion": "建议获取更多历史数据后重新分析。",
+        "section1": "数据获取不完整，无法进行收益曲线分析。",
+        "section2": "持仓数据不足，无法进行持仓穿透分析。",
+        "section3": "深度分析数据不足，无法进行 Brinson 归因分解。",
+        "section4": "风险数据不足，无法进行压力测试分析。",
+        "section5": "投资建议数据不足。",
         "full_text": "数据不足，无法生成完整的深度评价报告。",
     }

@@ -33,16 +33,17 @@ def generate_text_report(report: FundReport) -> dict:
     fund_type = report.fund_type
     basic     = report.basic
 
-    if fund_type in ("equity", "mixed", "sector") and report.equity_metrics:
+    # 按实际填充的 metrics 路由（比字符串匹配更可靠）
+    if report.equity_metrics:
         return _translate_equity(basic, report.equity_metrics, report.tags)
 
-    elif fund_type == "bond" and report.bond_metrics:
+    elif report.bond_metrics:
         return _translate_bond(basic, report.bond_metrics)
 
-    elif fund_type in ("index",) and report.index_metrics:
+    elif report.index_metrics:
         return _translate_index(basic, report.index_metrics)
 
-    elif fund_type == "convertible_bond" and report.cb_metrics:
+    elif report.cb_metrics:
         return _translate_cb(basic, report.cb_metrics)
 
     else:

@@ -280,10 +280,10 @@ def _infer_bond_duration(bond_name: str) -> float:
     从债券名称推断久期（年）。
     规则：关键词 + 期限匹配。
     """
-    bond_name.lower()
+    bond_name = bond_name.lower()
 
     # 同业存单（极短期）
-    if "同业存单" in bond_name or "NCD" in bond_name:
+    if "同业存单" in bond_name or "ncd" in bond_name:
         if "6M" in bond_name or "半年" in bond_name:
             return 0.45
         if "3M" in bond_name or "季度" in bond_name:
@@ -296,7 +296,7 @@ def _infer_bond_duration(bond_name: str) -> float:
 
     # 根据名称中的期限数字推断
     import re
-    match = re.search(r"(\d+)(年|Y)", bond_name)
+    match = re.search(r"(\d+)(年|y)", bond_name)
     if match:
         years = int(match.group(1))
         if years <= 1:
@@ -506,6 +506,18 @@ def _compute_bond_common_metrics(
     dates: Optional[pd.DatetimeIndex],
 ) -> CommonMetrics:
     """债券基金通用指标（不需要基准）"""
+
+    # 计算真实月度胜率（正收益月份占比）
+    monthly_win = 0.5  # 默认值
+    if dates is not None and len(dates) == len(fund_rets):
+        try:
+            ret_series = pd.Series(fund_rets, index=dates)
+            monthly_rets = ret_series.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+            if len(monthly_rets) > 0:
+                monthly_win = round(float((monthly_rets > 0).sum() / len(monthly_rets)), 4)
+        except Exception as e:
+            logger.warning(f"[_compute_bond_common_metrics] 月度胜率计算失败: {e}")
+
     return CommonMetrics(
         annualized_return=round(annualized_return(fund_rets), 4),
         cumulative_return=round(cumulative_return(fund_rets), 4),
@@ -518,7 +530,7 @@ def _compute_bond_common_metrics(
         calmar_ratio=round(calmar_ratio(fund_rets), 3),
         skewness=round(skewness(fund_rets), 3),
         kurtosis=round(kurtosis(fund_rets), 3),
-        monthly_win_rate=0.5,  # 纯债通常与自身比较，胜率意义不大
+        monthly_win_rate=monthly_win,
     )
 
 

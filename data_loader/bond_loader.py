@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -38,21 +38,26 @@ def load_bond_holdings(symbol: str) -> HoldingsData:
         top10_stocks=[], bond_details=[], asset_allocation={},
     )
 
-    # --- 资产配置（最准）---
-    df_asset = _ak_fund_asset_allocation(symbol, date="2024")
-    if df_asset is not None and not df_asset.empty and "资产类别" in df_asset.columns:
-        for _, row in df_asset.iterrows():
-            asset = str(row.get("资产类别", ""))
-            try:
-                ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
-            except Exception:
-                ratio = 0.0
-            if "股票" in asset:
-                r["stock_ratio"] = ratio
-            elif "债券" in asset:
-                r["bond_ratio"] = ratio
-            elif "现金" in asset or "银行存款" in asset:
-                r["cash_ratio"] = ratio
+    # --- 资产配置（雪球数据源，最准）---
+    from data_loader.equity_loader import _generate_quarter_dates
+    for qdate in _generate_quarter_dates(max_quarters=4):
+        df_asset = _ak_fund_asset_allocation(symbol, date=qdate)
+        if df_asset is not None and not df_asset.empty and "资产类型" in df_asset.columns:
+            for _, row in df_asset.iterrows():
+                asset = str(row.get("资产类型", ""))
+                try:
+                    ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
+                except Exception:
+                    ratio = 0.0
+                if "股票" in asset:
+                    r["stock_ratio"] = ratio
+                elif "债券" in asset:
+                    r["bond_ratio"] = ratio
+                elif "现金" in asset:
+                    r["cash_ratio"] = ratio
+            if r["stock_ratio"] > 0 or r["bond_ratio"] > 0:
+                logger.info(f"[load_bond_holdings] {symbol} 资产配置来自 {qdate}")
+                break
 
     # --- 债券持仓明细 ---
     for year in ["2024", "2023", "2022"]:
@@ -255,14 +260,16 @@ def _load_real_credit_spread(start: str, end: str, y10y: pd.Series) -> Optional[
             return spread
         return None
 
-    # 统一日期列
+    # 统一日期索引：支持 date 作为列或 index
     if "日期" in raw.columns:
         raw = raw.rename(columns={"日期": "date"})
-    elif "date" not in raw.columns:
-        raw = raw.rename(columns={raw.columns[0]: "date"})
-
-    raw["date"] = pd.to_datetime(raw["date"])
-    raw = raw.sort_values("date").set_index("date")
+    if "date" in raw.columns:
+        raw["date"] = pd.to_datetime(raw["date"])
+        raw = raw.sort_values("date").set_index("date")
+    else:
+        # date 已经是 index（新 bond_china_yield 宽格式）
+        raw.index = pd.to_datetime(raw.index)
+        raw = raw.sort_index()
 
     # 查找 AAA 评级列（中短期票据 / 企业债）
     aaa_cols = [c for c in raw.columns if "AAA" in c]
@@ -452,7 +459,7 @@ def load_cb_holdings_with_details(symbol: str) -> pd.DataFrame:
     """
     import time
 
-    df_bond = _ak_fund_holdings_bond(symbol, "2024")
+    df_bond = _ak_fund_holdings_bond(symbol, str(datetime.now().year))
     if df_bond is None or df_bond.empty:
         return pd.DataFrame()
 

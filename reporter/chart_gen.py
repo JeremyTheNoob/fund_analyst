@@ -152,20 +152,41 @@ def generate_chart_data(report: Any) -> Dict[str, Any]:
         charts['excess_return'] = _excess_return_chart(nav_df, charts.get('benchmark_df'))
     
     # 6.2 晨星风格箱（权益类基金）
-    if report.fund_type == 'equity':
+    if report.equity_metrics:
         charts['style_box'] = _style_box_chart(report)
-    
+        # 6.5 Brinson 归因柱状图（权益类基金）
+        charts['brinson_attrition'] = _brinson_attrition_chart(report)
+        # 6.6 资产配置面积图（混合型基金）
+        charts['asset_allocation_area'] = _asset_allocation_area_chart(report)
+        # 6.7 RBSA 风格漂移图（混合型基金）
+        charts['rbsa_drift_chart'] = _rbsa_drift_chart(report)
+        # 6.8 持仓留存图（混合型基金）
+        charts['holdings_retention_chart'] = _holdings_retention_chart(report)
+        # 6.9 仓位/市场对照图（灵活配置型）
+        charts['timing_comparison'] = _timing_comparison_chart(report)
+        # 6.10 滚动Beta曲线（灵活配置型）
+        charts['rolling_beta'] = _rolling_beta_chart(report)
+
     # 6.3 信用利差趋势图（固收类基金）
-    if report.fund_type == 'bond':
+    if report.bond_metrics:
         charts['credit_spread'] = _credit_spread_chart(report)
         # P1-新增：债券持仓分类饼图
-        if hasattr(report, 'bond_metrics') and report.bond_metrics:
-            bond_class = getattr(report.bond_metrics, 'bond_classification', {})
-            if bond_class:
-                charts['bond_holdings_pie'] = _bond_holdings_pie_chart(bond_class)
-    
-    # 6.4 跟踪误差直方图（指数类基金）
-    if report.fund_type == 'index':
+        bond_class = getattr(report.bond_metrics, 'bond_classification', {})
+        if bond_class:
+            charts['bond_holdings_pie'] = _bond_holdings_pie_chart(bond_class)
+
+    # 6.9 资产配置饼图（偏债混合型基金专用）
+    if report.bond_metrics and report.fund_type == "hybrid_bond":
+        asset_pie = _asset_allocation_pie_chart(report)
+        if asset_pie:
+            charts['asset_allocation_pie'] = asset_pie
+
+    # 6.5 波动率区间监控图（绝对收益型专用）
+    if report.fund_type == "hybrid_absreturn":
+        charts['volatility_band'] = _volatility_band_chart(report)
+
+    # 6.6 跟踪误差直方图（指数类基金）
+    if report.index_metrics:
         charts['tracking_diff'] = _tracking_diff_histogram(report)
         charts['tracking_error_scatter'] = _tracking_error_scatter_chart(report)
         charts['premium_discount'] = _premium_discount_chart(report)
@@ -1150,4 +1171,388 @@ def _bond_holdings_pie_chart(bond_classification: dict) -> Dict:
         'values': values,
         'colors': colors[:len(labels)],
         'title': '债券持仓分类占比'
+    }
+
+
+def _asset_allocation_pie_chart(report: Any) -> Dict:
+    """
+    资产配置饼图（股/债/转债/现金/其他），偏债混合型专用。
+
+    数据来源：report.chart_data["holdings"]
+    返回格式：适合 Plotly 甜甜圈图。
+
+    图表标记：ASSET_ALLOCATION_PIE
+    """
+    if not hasattr(report, 'chart_data'):
+        return {}
+
+    holdings = report.chart_data.get("holdings", {})
+    if not holdings:
+        return {}
+
+    stock_ratio = holdings.get("stock_ratio", 0.0)
+    bond_ratio  = holdings.get("bond_ratio", 0.0)
+    cash_ratio  = holdings.get("cash_ratio", 0.0)
+    cb_ratio    = holdings.get("cb_ratio", 0.0)
+    other_ratio = max(0, 1.0 - stock_ratio - bond_ratio - cash_ratio - cb_ratio)
+
+    # 过滤掉占比极小的类别
+    items = [
+        ("股票", stock_ratio, "#e74c3c"),
+        ("债券", bond_ratio, "#3498db"),
+        ("可转债", cb_ratio, "#e67e22"),
+        ("现金", cash_ratio, "#95a5a6"),
+        ("其他", other_ratio, "#9b59b6"),
+    ]
+
+    labels = []
+    values = []
+    colors = []
+    for name, ratio, color in items:
+        if ratio > 0.005:  # >0.5% 才显示
+            labels.append(name)
+            values.append(round(ratio * 100, 1))
+            colors.append(color)
+
+    if not values:
+        return {}
+
+    return {
+        'type': 'pie',
+        'labels': labels,
+        'values': values,
+        'colors': colors,
+        'title': '资产配置占比（股/债/转债/现金）'
+    }
+
+
+def _brinson_attrition_chart(report: Any) -> Dict:
+    """
+    Brinson 归因柱状图：拆解行业配置 vs 个股选择。
+
+    数据来源：report.equity_metrics.brinson
+    返回格式：适合 main.py 中 BRINSON 标记的 Plotly figure 数据。
+
+    柱状图结构：
+    - 3 根柱子：配置效应（allocation）、选股效应（selection）、交互效应（interaction）
+    - 第 4 根柱子：合计超额（total）
+    - 红涨绿跌配色（中国股市惯例）
+    """
+    if not hasattr(report, 'equity_metrics') or not report.equity_metrics:
+        return {}
+
+    metrics = report.equity_metrics
+    brinson = getattr(metrics, 'brinson', None)
+
+    if not brinson or not isinstance(brinson, dict):
+        return {}
+
+    # 提取四项归因（已是小数，如 0.035 = 3.5%）
+    allocation = brinson.get('allocation', 0.0)
+    selection = brinson.get('selection', 0.0)
+    interaction = brinson.get('interaction', 0.0)
+    total = brinson.get('total', 0.0)
+
+    # 转为百分比
+    alloc_pct = round(allocation * 100, 2)
+    select_pct = round(selection * 100, 2)
+    inter_pct = round(interaction * 100, 2)
+    total_pct = round(total * 100, 2)
+
+    # 颜色：红涨绿跌
+    def _bar_color(val):
+        return '#e74c3c' if val >= 0 else '#27ae60'
+
+    return {
+        'type': 'bar',
+        'categories': ['配置效应', '选股效应', '交互效应', '合计超额'],
+        'values': [alloc_pct, select_pct, inter_pct, total_pct],
+        'colors': [
+            _bar_color(alloc_pct),
+            _bar_color(select_pct),
+            _bar_color(inter_pct),
+            _bar_color(total_pct),
+        ],
+        'brinson_raw': {
+            'allocation': allocation,
+            'selection': selection,
+            'interaction': interaction,
+            'total': total,
+        },
+        'title': 'Brinson 归因分解（%）',
+        'y_label': '贡献 (%)',
+    }
+
+
+# ============================================================
+# 混合型基金专用图表
+# ============================================================
+
+def _asset_allocation_area_chart(report: Any) -> Dict:
+    """
+    资产配置动态面积图（股/债/转债/现金占比演变）。
+
+    数据来源：report.chart_data["holdings"]["historical_allocation"]
+    返回格式：适合 Plotly stacked area chart。
+    """
+    if not hasattr(report, 'chart_data'):
+        return {}
+
+    holdings = report.chart_data.get("holdings", {})
+    historical = holdings.get("historical_allocation", [])
+
+    if not historical or len(historical) < 1:
+        return {}
+
+    # 提取数据
+    dates = [q.get("date", "") for q in historical]
+    stock_ratios = [q.get("stock_ratio", 0) * 100 for q in historical]
+    bond_ratios = [q.get("bond_ratio", 0) * 100 for q in historical]
+    cb_ratios = [q.get("cb_ratio", 0) * 100 for q in historical]
+    cash_ratios = [q.get("cash_ratio", 0) * 100 for q in historical]
+
+    return {
+        'type': 'stacked_area',
+        'x': dates,
+        'series': [
+            {'name': '股票', 'data': stock_ratios, 'color': '#e74c3c'},
+            {'name': '债券', 'data': bond_ratios, 'color': '#3498db'},
+            {'name': '可转债', 'data': cb_ratios, 'color': '#e67e22'},
+            {'name': '现金', 'data': cash_ratios, 'color': '#95a5a6'},
+        ],
+        'title': '资产配置动态演变（%）',
+        'y_label': '占比 (%)',
+        'y_range': [0, 100],
+    }
+
+
+def _rbsa_drift_chart(report: Any) -> Dict:
+    """
+    RBSA 风格漂移散点图：基于滚动 Beta 的风格稳定性分析。
+
+    使用 report.equity_metrics.rolling_beta_20d 和 rolling_beta_60d 数据。
+    如果滚动 Beta 数据不足，使用静态因子暴露生成占位图。
+    """
+    if not hasattr(report, 'equity_metrics') or not report.equity_metrics:
+        return {}
+
+    metrics = report.equity_metrics
+
+    # 尝试使用滚动 Beta
+    rolling_20d = metrics.rolling_beta_20d or []
+    rolling_60d = metrics.rolling_beta_60d or []
+
+    if rolling_20d and len(rolling_20d) > 20:
+        # 有滚动 Beta 数据
+        x_dates = list(range(len(rolling_20d)))
+        return {
+            'type': 'line',
+            'x': x_dates,
+            'series': [
+                {
+                    'name': '20日滚动Beta',
+                    'data': [round(b, 3) for b in rolling_20d],
+                    'color': '#e74c3c',
+                },
+                {
+                    'name': '60日滚动Beta',
+                    'data': [round(b, 3) for b in rolling_60d] if rolling_60d else [],
+                    'color': '#3498db',
+                },
+            ],
+            'title': 'RBSA 风格漂移追踪（滚动Beta）',
+            'y_label': 'Beta',
+            'reference_line': 1.0,
+        }
+    else:
+        # 无滚动 Beta：使用静态因子暴露生成雷达式图
+        smb = metrics.factor_loadings.get("SMB", 0)
+        hml = metrics.factor_loadings.get("HML", 0)
+        beta = metrics.beta
+        r2 = metrics.r_squared
+
+        return {
+            'type': 'factor_radar',
+            'categories': ['Market Beta', 'SMB（规模）', 'HML（价值）', 'R²（稳定性）'],
+            'values': [round(beta, 3), round(smb, 3), round(hml, 3), round(r2, 3)],
+            'title': 'Fama-French 因子暴露',
+            'factor_info': {
+                'beta': beta,
+                'smb': smb,
+                'hml': hml,
+                'r2': r2,
+            },
+        }
+
+
+def _holdings_retention_chart(report: Any) -> Dict:
+    """
+    重仓股留存图：展示各季度 Top10 持仓的重叠度。
+
+    数据来源：需要多季度持仓数据。
+    如果数据不足，返回空字典。
+    """
+    if not hasattr(report, 'chart_data'):
+        return {}
+
+    # 当前版本暂不支持多季度持仓对比，返回提示
+    return {
+        'type': 'message',
+        'message': '重仓股留存分析需要多季度持仓数据，当前版本暂以持仓集中度分析替代。',
+    }
+
+
+def _timing_comparison_chart(report: Any) -> Dict:
+    """
+    仓位/市场对照图（灵活配置型专用）。
+
+    上轴：基金股票仓位（季度柱状图）
+    下轴：基准累计收益曲线
+
+    核心目的：直观展示经理的仓位调整与市场走势之间的关系，
+    帮助判断经理是否在市场上涨时加仓、下跌前减仓。
+    """
+    if not hasattr(report, 'chart_data'):
+        return {}
+
+    holdings = report.chart_data.get("holdings", {})
+    historical = holdings.get("historical_allocation", [])
+
+    if not historical or len(historical) < 2:
+        return {}
+
+    benchmark_df = report.chart_data.get("benchmark_df")
+    if benchmark_df is None or benchmark_df.empty:
+        return {}
+
+    # 仓位数据（季度柱状）
+    dates = [q.get("date", "")[:10] for q in historical]
+    stock_ratios = [q.get("stock_ratio", 0) * 100 for q in historical]
+    bond_ratios = [q.get("bond_ratio", 0) * 100 for q in historical]
+    cash_ratios = [q.get("cash_ratio", 0) * 100 for q in historical]
+
+    # 基准累计收益（按季度采样）
+    bm = benchmark_df.copy()
+    if "bm_ret" not in bm.columns:
+        return {}
+    bm["date"] = pd.to_datetime(bm["date"])
+    bm = bm.sort_values("date")
+    bm["cum_ret"] = (1 + bm["bm_ret"]).cumprod() * 100 - 100
+
+    # 按季度端点采样
+    bm_dates = [pd.to_datetime(d) for d in dates]
+    bm_values = []
+    for bd in bm_dates:
+        # 找到最接近的基准日期
+        mask = bm["date"] <= bd
+        if mask.any():
+            bm_values.append(round(bm.loc[mask, "cum_ret"].iloc[-1], 2))
+        else:
+            bm_values.append(0)
+
+    return {
+        'type': 'timing_comparison',
+        'dates': dates,
+        'stock_ratios': stock_ratios,
+        'bond_ratios': bond_ratios,
+        'cash_ratios': cash_ratios,
+        'bm_cum_returns': bm_values,
+        'title': '仓位/市场对照图：择时能力一览',
+        'description': '柱状图为股票仓位（%），折线为基准累计收益（%），观察经理是否在市场上涨前加仓、下跌前减仓',
+    }
+
+
+def _volatility_band_chart(report: Any) -> Dict:
+    """
+    波动率区间监控图（绝对收益型专用）。
+
+    展示滚动20日年化波动率曲线 + 目标区间带（2%-5% 安全区）。
+    数据来源：report.chart_data["absreturn_vol_stability"].rolling_vols
+    """
+    vol_stability = report.chart_data.get("absreturn_vol_stability", {})
+    rolling_vols = vol_stability.get("rolling_vols", [])
+
+    if not rolling_vols or len(rolling_vols) < 20:
+        return {}
+
+    # 从 nav_df 获取日期对齐
+    nav_df = report.chart_data.get("nav_df")
+    if nav_df is not None and not nav_df.empty and "date" in nav_df.columns:
+        all_dates = nav_df["date"].tolist()
+        offset = 20  # 20日波动率从第 21 天开始
+        x_dates = [str(d)[:10] for d in all_dates[offset:offset + len(rolling_vols)]]
+    else:
+        x_dates = list(range(len(rolling_vols)))
+
+    vol_mean = vol_stability.get("vol_mean", 0)
+    in_target = vol_stability.get("in_target_range", False)
+    trend = vol_stability.get("trend", "未知")
+
+    return {
+        'type': 'line',
+        'x': x_dates,
+        'series': [
+            {
+                'name': '20日年化波动率',
+                'data': rolling_vols,
+                'color': '#8e44ad',
+            },
+        ],
+        'title': '波动率区间监控（%）',
+        'y_label': '年化波动率 (%)',
+        'vol_mean': vol_mean,
+        'in_target_range': in_target,
+        'trend': trend,
+        'zones': {
+            'target': {'min': 2.0, 'max': 5.0, 'label': '🟢 目标区间（2%-5%）'},
+            'warning': {'min': 5.0, 'max': 8.0, 'label': '🟡 关注区间（5%-8%）'},
+            'danger': {'min': 8.0, 'max': 15.0, 'label': '🔴 危险区间（>8%）'},
+        },
+    }
+
+
+def _rolling_beta_chart(report: Any) -> Dict:
+    """
+    滚动 Beta 曲线（灵活配置型专用）。
+
+    展示 20日和 60日滚动 Beta，直观显示经理仓位的实时变化。
+    加入安全区域（0-0.3）和危险区域（>1.0）的标注。
+    """
+    if not hasattr(report, 'equity_metrics') or not report.equity_metrics:
+        return {}
+
+    metrics = report.equity_metrics
+    rolling_20d = metrics.rolling_beta_20d or []
+    rolling_60d = metrics.rolling_beta_60d or []
+
+    if not rolling_20d or len(rolling_20d) < 10:
+        return {}
+
+    # 从 nav_df 获取日期对齐
+    nav_df = report.chart_data.get("nav_df")
+    if nav_df is not None and not nav_df.empty and "date" in nav_df.columns:
+        all_dates = nav_df["date"].tolist()
+        # 滚动 Beta 从第 window+1 天开始，对齐日期
+        offset_20 = 20  # 20日 Beta 从第 21 天开始
+        offset_60 = 60
+        x_20 = [str(d)[:10] for d in all_dates[offset_20:offset_20 + len(rolling_20d)]]
+        x_60 = [str(d)[:10] for d in all_dates[offset_60:offset_60 + len(rolling_60d)]] if rolling_60d else []
+    else:
+        x_20 = list(range(len(rolling_20d)))
+        x_60 = list(range(len(rolling_60d))) if rolling_60d else []
+
+    return {
+        'type': 'line',
+        'x_20d': x_20,
+        'x_60d': x_60,
+        'series_20d': [round(b, 3) for b in rolling_20d],
+        'series_60d': [round(b, 3) for b in rolling_60d] if rolling_60d else [],
+        'current_beta': rolling_20d[-1] if rolling_20d else 0.5,
+        'title': '实时仓位「黑盒」探测：滚动 Beta 曲线',
+        'y_label': 'Beta',
+        'zones': {
+            'safe': {'max': 0.3, 'label': '🟢 安全区（Beta<0.3）'},
+            'normal': {'max': 1.0, 'label': '🟡 正常区（0.3~1.0）'},
+            'danger': {'min': 1.0, 'label': '🔴 危险区（Beta>1.0）'},
+        },
     }

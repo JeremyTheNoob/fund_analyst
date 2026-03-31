@@ -438,7 +438,8 @@ def load_nav(
 def load_stock_holdings(symbol: str) -> HoldingsData:
     """
     加载股票/资产配置持仓数据。
-    按年份依次尝试 2024/2023，优先使用 asset_allocation 接口。
+    资产配置优先使用雪球数据源（fund_individual_detail_hold_xq），
+    按日期从近到远回退尝试，获取最新的季报资产配置。
     """
     r = dict(
         symbol=symbol,
@@ -446,12 +447,14 @@ def load_stock_holdings(symbol: str) -> HoldingsData:
         top10_stocks=[], bond_details=[], asset_allocation={},
     )
 
-    # --- 资产配置接口（最准确）---
-    df_asset = _ak_fund_asset_allocation(symbol, date="2024")
-    if df_asset is not None and not df_asset.empty:
-        if "资产类别" in df_asset.columns:
+    # --- 资产配置接口（雪球数据源，最准确）---
+    # 生成候选日期列表：从最近的季度末开始尝试
+    candidate_dates = _generate_quarter_dates()
+    for qdate in candidate_dates:
+        df_asset = _ak_fund_asset_allocation(symbol, date=qdate)
+        if df_asset is not None and not df_asset.empty and "资产类型" in df_asset.columns:
             for _, row in df_asset.iterrows():
-                asset = str(row.get("资产类别", ""))
+                asset = str(row.get("资产类型", ""))
                 try:
                     ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
                 except Exception:
@@ -460,18 +463,33 @@ def load_stock_holdings(symbol: str) -> HoldingsData:
                     r["stock_ratio"] = ratio
                 elif "债券" in asset:
                     r["bond_ratio"] = ratio
-                elif "现金" in asset or "银行存款" in asset:
+                elif "现金" in asset:
                     r["cash_ratio"] = ratio
+            # 成功获取就停止回退
+            if r["stock_ratio"] > 0 or r["bond_ratio"] > 0:
+                logger.info(f"[load_stock_holdings] {symbol} 资产配置来自 {qdate}")
+                break
 
-    # --- 股票前十大持仓 ---
-    for year in ["2024", "2023", "2022"]:
+    # --- 股票前十大持仓（最近 3 年，自动适配当前年份） ---
+    current_year = str(datetime.now().year)
+    for year in [current_year, str(int(current_year) - 1), str(int(current_year) - 2)]:
         df_top10 = _ak_fund_holdings_stock(symbol, year)
         if df_top10 is not None and not df_top10.empty and "占净值比例" in df_top10.columns:
-            r["top10_stocks"] = df_top10.head(10).to_dict("records")
-            # 若资产配置接口未返回股票仓位，用 top10 之和估算
-            if r["stock_ratio"] == 0.0:
-                total = df_top10["占净值比例"].sum()
-                r["stock_ratio"] = min(total / 100, 1.0)
+            # API 可能返回多个季度的数据，取最新季度的 Top10
+            if "季度" in df_top10.columns:
+                quarters = sorted(df_top10["季度"].unique(), reverse=True)
+                latest_quarter = quarters[0]
+                df_latest = df_top10[df_top10["季度"] == latest_quarter]
+                r["top10_stocks"] = df_latest.head(10).to_dict("records")
+                # 用最新季度所有持仓估算股票仓位（仅当资产配置接口未返回时）
+                if r["stock_ratio"] == 0.0:
+                    total = df_latest["占净值比例"].sum()
+                    r["stock_ratio"] = min(total / 100, 1.0)
+            else:
+                r["top10_stocks"] = df_top10.head(10).to_dict("records")
+                if r["stock_ratio"] == 0.0:
+                    total = df_top10["占净值比例"].sum()
+                    r["stock_ratio"] = min(total / 100, 1.0)
             break
 
     # --- 默认值（所有接口均失败时）---
@@ -485,8 +503,92 @@ def load_stock_holdings(symbol: str) -> HoldingsData:
 
 
 # ============================================================
-# FF 因子
+# 辅助函数
 # ============================================================
+
+def _generate_quarter_dates(max_quarters: int = 8) -> list[str]:
+    """
+    生成最近的季度末日期列表（从近到远）。
+    用于按日期回退尝试获取资产配置数据。
+    
+    Example (today=2026-03-31): ['20260331', '20251231', '20250930', '20250630', ...]
+    """
+    from datetime import date as d
+    today = d.today()
+    
+    # 确定本季度末月份
+    current_q_month = ((today.month - 1) // 3 + 1) * 3  # 3,6,9,12
+    # 季度末天数：3月31日、6月30日、9月30日、12月31日
+    day_map = {3: 31, 6: 30, 9: 30, 12: 31}
+    
+    results = []
+    for i in range(max_quarters):
+        # 从当前季度向前回退 i 个季度
+        total_months_back = i * 3
+        m = current_q_month - total_months_back
+        y = today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        day = day_map[m]
+        results.append(f"{y}{m:02d}{day:02d}")
+    
+    return results
+
+
+# ============================================================
+# 历史资产配置（混合型基金专用）
+# ============================================================
+
+@cached(ttl=CACHE_TTL["medium"])
+def load_historical_asset_allocation(symbol: str) -> list:
+    """
+    加载基金历史资产配置数据（多季度）。
+    用于混合型偏股基金的资产结构演变分析和现金择时信号。
+
+    数据来源：雪球资产配置接口（fund_individual_detail_hold_xq）
+    尝试加载最近 8 个季度的数据。
+
+    Returns:
+        [{date: "2024-06-30", stock_ratio: 0.85, bond_ratio: 0.10,
+          cash_ratio: 0.03, cb_ratio: 0.02}, ...]
+    """
+    result = []
+    quarter_dates = _generate_quarter_dates(max_quarters=8)
+
+    for qdate in quarter_dates:
+        df_asset = _ak_fund_asset_allocation(symbol, date=qdate)
+        if df_asset is not None and not df_asset.empty and "资产类型" in df_asset.columns:
+            quarter_data = {
+                "date": f"{qdate[:4]}-{qdate[4:6]}-{qdate[6:8]}",
+                "stock_ratio": 0.0, "bond_ratio": 0.0,
+                "cash_ratio": 0.0, "cb_ratio": 0.0,
+            }
+
+            for _, row in df_asset.iterrows():
+                asset = str(row.get("资产类型", ""))
+                try:
+                    ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
+                except Exception:
+                    ratio = 0.0
+                if "股票" in asset:
+                    quarter_data["stock_ratio"] = ratio
+                elif "债券" in asset:
+                    quarter_data["bond_ratio"] = ratio
+                elif "现金" in asset:
+                    quarter_data["cash_ratio"] = ratio
+
+            # 只添加有效数据（至少有股票或债券数据）
+            if quarter_data["stock_ratio"] > 0 or quarter_data["bond_ratio"] > 0:
+                result.append(quarter_data)
+
+    # 按日期排序
+    result.sort(key=lambda x: x["date"])
+
+    if not result:
+        logger.info(f"[load_historical_asset_allocation] {symbol} 未获取到历史资产配置数据")
+
+    return result
 
 @cached(ttl=CACHE_TTL["long"])
 def load_index_daily(symbol_code: str, start: str, end: str) -> pd.DataFrame:

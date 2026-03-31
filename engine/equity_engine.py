@@ -474,8 +474,8 @@ def _compute_style_box(ff_result: dict) -> dict:
             "hml_coef": HML系数,
         }
     """
-    smb_coef = ff_result.get("beta_smb", 0.0)
-    hml_coef = ff_result.get("beta_hml", 0.0)
+    smb_coef = ff_result.get("SMB", 0.0)
+    hml_coef = ff_result.get("HML", 0.0)
     
     # 市值分类（基于 SMB 系数）
     # SMB > 0.5 → 小盘(3), SMB < -0.5 → 大盘(1), 其他 → 中盘(2)

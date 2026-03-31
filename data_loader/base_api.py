@@ -233,6 +233,33 @@ def _ak_fund_list_em() -> Optional[pd.DataFrame]:
     return None
 
 
+def get_fund_type_em(symbol: str) -> Optional[str]:
+    """
+    从 fund_name_em 获取基金的权威类型（如 "混合型-偏股"、"债券型-长债"）
+
+    使用内存缓存避免重复调用 fund_name_em（全量接口较重）。
+
+    Args:
+        symbol: 基金代码（6位）
+
+    Returns:
+        基金类型字符串，获取失败返回 None
+    """
+    # 模块级缓存：首次调用时加载全量列表，后续直接查表
+    if not hasattr(get_fund_type_em, "_cache"):
+        try:
+            df = safe_api_call(lambda: ak.fund_name_em())
+            if df is not None and not df.empty and "基金代码" in df.columns and "基金类型" in df.columns:
+                get_fund_type_em._cache = dict(zip(df["基金代码"], df["基金类型"]))
+            else:
+                get_fund_type_em._cache = {}
+        except Exception as e:
+            logger.warning(f"[get_fund_type_em] fund_name_em 加载失败: {e}")
+            get_fund_type_em._cache = {}
+
+    return get_fund_type_em._cache.get(symbol)
+
+
 def _ak_fund_scale_sina(symbol: str, *args, **kwargs) -> Optional[float]:
     """
     基金规模（新浪）
@@ -328,18 +355,31 @@ def _ak_fund_holdings_stock(symbol: str, date: str, *args, **kwargs) -> Optional
 
 def _ak_fund_asset_allocation(symbol: str, date: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
-    基金资产配置（东方财富）
+    基金资产配置（雪球数据源）
+    
+    通过 akshare fund_individual_detail_hold_xq 接口获取基金大类资产配置比例。
+    返回 DataFrame 列：['资产类型', '仓位占比']，行包含：股票、债券、现金、其他等。
     
     Args:
         symbol: 基金代码
-        date: 日期
+        date: 日期（格式 YYYYMMDD，如 "20240930"）
     
     Returns:
-        资产配置 DataFrame
+        资产配置 DataFrame，失败返回空 DataFrame
     """
-    # 基金资产配置接口可能不稳定，返回空 DataFrame
-    logger.warning("_ak_fund_asset_allocation 未实现，返回空 DataFrame")
-    return pd.DataFrame()
+    def _fetch():
+        import akshare as ak
+        return ak.fund_individual_detail_hold_xq(symbol=symbol, date=date)
+    
+    try:
+        df = safe_api_call(_fetch, timeout_seconds=10.0, max_retries=2)
+        if df is not None and not df.empty:
+            # 标准化列名
+            df.columns = ["资产类型", "占净值比例(%)"]
+        return df
+    except Exception as e:
+        logger.warning(f"[_ak_fund_asset_allocation] {symbol} {date} 获取失败: {e}")
+        return pd.DataFrame()
 
 
 def _ak_index_daily_main(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
@@ -429,6 +469,76 @@ def _ak_fund_holdings_bond(symbol: str, date: str = "2024", *args, **kwargs) -> 
     )
 
 
+def load_cb_index_hist(symbol: str = "000832", start_date: str = "20200101", end_date: str = None) -> pd.DataFrame:
+    """
+    加载中证转债指数历史日线数据（AkShare index_zh_a_hist）。
+    
+    Returns:
+        DataFrame with columns: date, open, high, low, close, volume
+        日期从近到远排列。如果加载失败返回空 DataFrame。
+    """
+    import time as _time
+    if end_date is None:
+        end_date = pd.Timestamp.now().strftime("%Y%m%d")
+    for attempt in range(3):
+        try:
+            df = ak.index_zh_a_hist(
+                symbol=symbol, period="daily",
+                start_date=start_date, end_date=end_date,
+            )
+            if df is not None and not df.empty:
+                # 标准化列名
+                col_map = {}
+                for c in df.columns:
+                    cl = c.lower()
+                    if "日期" in c or "date" in c.lower():
+                        col_map[c] = "date"
+                    elif "开盘" in c or cl == "open":
+                        col_map[c] = "open"
+                    elif "收盘" in c or cl == "close":
+                        col_map[c] = "close"
+                    elif "最高" in c or cl == "high":
+                        col_map[c] = "high"
+                    elif "最低" in c or cl == "low":
+                        col_map[c] = "low"
+                    elif "成交" in c or cl == "volume":
+                        col_map[c] = "volume"
+                if col_map:
+                    df = df.rename(columns=col_map)
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.sort_values("date").reset_index(drop=True)
+                return df
+        except Exception as e:
+            logger.debug(f"load_cb_index_hist 尝试 {attempt+1} 失败: {e}")
+            _time.sleep(3)
+    logger.warning(f"load_cb_index_hist({symbol}) 加载失败（3次重试）")
+    return pd.DataFrame()
+
+
+def load_cb_value_analysis() -> pd.DataFrame:
+    """
+    加载全市场可转债价值分析数据（AkShare bond_zh_cov_value_analysis）。
+    
+    Returns:
+        DataFrame with columns: 日期, 收盘价, 纯债价值, 转股价值, 纯债溢价率, 转股溢价率
+        包含全市场所有转债的平均估值水位。
+        如果加载失败返回空 DataFrame。
+    """
+    import time as _time
+    for attempt in range(3):
+        try:
+            df = ak.bond_zh_cov_value_analysis()
+            if df is not None and not df.empty:
+                df["日期"] = pd.to_datetime(df["日期"])
+                df = df.sort_values("日期").reset_index(drop=True)
+                return df
+        except Exception as e:
+            logger.debug(f"load_cb_value_analysis 尝试 {attempt+1} 失败: {e}")
+            _time.sleep(3)
+    logger.warning("load_cb_value_analysis 加载失败（3次重试）")
+    return pd.DataFrame()
+
+
 def _ak_bond_us_rate(start_date: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     美国国债收益率
@@ -446,18 +556,62 @@ def _ak_bond_us_rate(start_date: str, *args, **kwargs) -> Optional[pd.DataFrame]
 
 def _ak_bond_china_yield(start: str, end: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
-    中国债券收益率（国债、国开债、企业债）
-    
+    中国债券信息网-国债及其他债券收益率曲线
+
+    包含 3 条曲线：中债中短期票据收益率曲线(AAA)、中债商业银行普通债收益率曲线(AAA)、中债国债收益率曲线
+    期限：3月/6月/1年/3年/5年/7年/10年/30年
+
+    AkShare 限制：单次请求 start_date 到 end_date 需小于一年，超期返回空 DataFrame。
+    本函数自动按年分段请求后拼接。
+
     Args:
-        start: 开始日期
-        end: 结束日期
-    
+        start: 开始日期 (YYYYMMDD)
+        end: 结束日期 (YYYYMMDD)
+
     Returns:
-        债券收益率 DataFrame
+        宽格式 DataFrame，index=date，columns 包含曲线名称（如"中债中短期票据收益率曲线(AAA)"）
     """
-    # AkShare 可能没有直接的债券收益率历史接口，返回空 DataFrame
-    logger.warning("_ak_bond_china_yield 未实现，返回空 DataFrame")
-    return pd.DataFrame()
+    from datetime import datetime, timedelta
+
+    # 将 YYYYMMDD 转为 datetime
+    start_dt = datetime.strptime(start, "%Y%m%d")
+    end_dt = datetime.strptime(end, "%Y%m%d")
+
+    # 接口限制一年内，按年分段请求
+    chunks = []
+    current = start_dt
+    while current <= end_dt:
+        # 每段最多一年（留1天余量避免边界问题）
+        segment_end = min(current + timedelta(days=364), end_dt)
+        raw = safe_api_call(
+            lambda s=current.strftime("%Y%m%d"), e=segment_end.strftime("%Y%m%d"): ak.bond_china_yield(start_date=s, end_date=e)
+        )
+        if raw is not None and not raw.empty:
+            chunks.append(raw)
+        current = segment_end + timedelta(days=1)
+
+    if not chunks:
+        logger.warning(f"_ak_bond_china_yield 无数据返回 (start={start}, end={end})")
+        return pd.DataFrame()
+
+    df = pd.concat(chunks, ignore_index=True)
+
+    # Pivot 长格式 → 宽格式：index=日期, columns=曲线名称
+    # 需要对所有期限列（3月/6月/1年/3年/5年/7年/10年/30年）分别 pivot
+    tenor_cols = [c for c in df.columns if c not in ("曲线名称", "日期")]
+    if not tenor_cols:
+        return pd.DataFrame()
+
+    # 合并所有期限，列名格式："3年_中债中短期票据收益率曲线(AAA)"
+    pivoted_parts = []
+    for tenor in tenor_cols:
+        sub = df.pivot(index="日期", columns="曲线名称", values=tenor)
+        sub.columns = [f"{tenor}_{col}" for col in sub.columns]
+        pivoted_parts.append(sub)
+
+    result = pd.concat(pivoted_parts, axis=1, join="outer")
+    result.index.name = "date"
+    return result
 
 
 def _ak_bond_composite_index(indicator: str = "财富", *args, **kwargs) -> Optional[pd.DataFrame]:

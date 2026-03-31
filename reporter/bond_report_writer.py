@@ -1,7 +1,7 @@
 """
 债券型基金深度评价报告生成器 — fund_quant_v2
 角色：资深固收研究员（FICCC 分析师）
-报告结构：4章节 + 图表插入点标记 + 投资建议
+报告结构：5章节 + 图表插入点标记 + 利率专题（仅 bond_long）
 """
 
 from __future__ import annotations
@@ -29,10 +29,12 @@ def generate_bond_deep_report(report: Any, risk_preference: str = "稳健型") -
         {
           "meta":       {fund_name, fund_type, start_date, end_date, grade, score},
           "headline":   报告标题行,
+          "section0":   债券持仓分析（含 [INSERT_CHART: BOND_HOLDINGS_PIE]）,
           "section1":   收益获取逻辑（含 [INSERT_CHART: CUM_RET]）,
           "section2":   回撤深度与修复效率（含 [INSERT_CHART: DRAWDOWN]）,
           "section3":   月度胜率与持有体验（含 [INSERT_CHART: HEATMAP]）,
           "conclusion": 综合结论与投资建议（含 [INSERT_CHART: RATE_PREDICTION]）,
+          "section_rate": 10年国债收益率专题（仅 bond_long，含 [INSERT_CHART: Y10Y_TREND]）,
           "full_text":  完整纯文本（所有章节合并）
         }
     """
@@ -114,6 +116,9 @@ def generate_bond_deep_report(report: Any, risk_preference: str = "稳健型") -
         "D":  "弱势，不建议持有",
     }.get(grade, "稳健固收品种")
 
+    # 债券持仓分类数据
+    bond_classification = getattr(m, 'bond_classification', {}) or {}
+
     # ── 利率预测分析 ─────────────────────────────────────
     rate_prediction = _get_rate_prediction()
 
@@ -122,7 +127,8 @@ def generate_bond_deep_report(report: Any, risk_preference: str = "稳健型") -
     
     # P1-新增：债券持仓分析章节
     section0_bond_holdings = _section0_bond_holdings_analysis(
-        fund_name, bond_classification
+        fund_name, bond_classification,
+        engine_duration=duration, wacs_score=wacs_score,
     )
     
     section1 = _section1_return_logic(
@@ -144,7 +150,25 @@ def generate_bond_deep_report(report: Any, risk_preference: str = "稳健型") -
         ann_ret, excess_bps, rate_prediction, basic, risk_preference
     )
 
-    full_text = "\n\n".join([headline, section0_bond_holdings, section1, section2, section3, conclusion])
+    # ── 利率专题（仅 bond_long / bond 类利率敏感型基金）────────
+    section_rate = ""
+    fund_type = getattr(report, 'fund_type', '')
+    if fund_type == "bond_long":
+        try:
+            from data_loader.idx_bond_loader import (
+                load_y10y_technical_analysis,
+                generate_y10y_rate_topic,
+            )
+            rate_analysis = load_y10y_technical_analysis()
+            section_rate = generate_y10y_rate_topic(rate_analysis)
+            logger.info(f"[bond_report_writer] {fund_name} 利率专题生成成功")
+        except Exception as e:
+            logger.warning(f"[bond_report_writer] 利率专题生成失败: {e}")
+
+    full_text = "\n\n".join(filter(None, [
+        headline, section0_bond_holdings, section1, section2,
+        section3, conclusion, section_rate,
+    ]))
 
     return {
         "meta": {
@@ -155,13 +179,14 @@ def generate_bond_deep_report(report: Any, risk_preference: str = "稳健型") -
             "grade":      grade,
             "score":      score,
         },
-        "headline":   headline,
-        "section0":   section0_bond_holdings,  # P1-新增
-        "section1":   section1,
-        "section2":   section2,
-        "section3":   section3,
-        "conclusion": conclusion,
-        "full_text":  full_text,
+        "headline":     headline,
+        "section0":     section0_bond_holdings,
+        "section1":     section1,
+        "section2":     section2,
+        "section3":     section3,
+        "conclusion":   conclusion,
+        "section_rate": section_rate,  # 仅 bond_long 有内容
+        "full_text":    full_text,
     }
 
 
@@ -189,7 +214,9 @@ def _build_headline(
 
 def _section0_bond_holdings_analysis(
     fund_name: str,
-    bond_classification: dict
+    bond_classification: dict,
+    engine_duration: float = 0.0,
+    wacs_score: float = 0.0,
 ) -> str:
     """零、债券持仓分析：券种配置与信用结构"""
     
@@ -207,14 +234,8 @@ def _section0_bond_holdings_analysis(
     urban_ratio = bond_classification.get('urban_construction', {}).get('ratio', 0) * 100
     estate_ratio = bond_classification.get('real_estate', {}).get('ratio', 0) * 100
     
-    # 计算加权平均久期（简化估算）
-    # 利率债久期：3年  信用债久期：2.5年  城投债久期：2.4年  地产债久期：2.8年
-    avg_duration = (
-        gov_ratio * 3.0 +
-        credit_ratio * 2.5 +
-        urban_ratio * 2.4 +
-        estate_ratio * 2.8
-    ) / 100
+    # 使用 engine 从持仓加权计算的真实久期（修复旧版内部估算不一致问题）
+    avg_duration = engine_duration if engine_duration > 0 else 3.5
     
     # 久期分类
     if avg_duration <= 2.0:
@@ -246,6 +267,16 @@ def _section0_bond_holdings_analysis(
     if estate_ratio > 5:
         credit_analysis.append(f"**地产债占比{estate_ratio:.1f}%**，需密切关注房地产政策调控和销售数据")
     
+    # WACS 信用评分解读
+    if wacs_score > 0:
+        if wacs_score >= 80:
+            wacs_desc = f"WACS信用评分 **{int(wacs_score)}分**，持仓整体信用资质优良，以高等级债券为主"
+        elif wacs_score >= 60:
+            wacs_desc = f"WACS信用评分 **{int(wacs_score)}分**，持仓信用资质中等，AA级信用债占比较高"
+        else:
+            wacs_desc = f"WACS信用评分 **{int(wacs_score)}分**，持仓信用资质偏低，需警惕信用下沉风险"
+        credit_analysis.append(wacs_desc)
+    
     # 信用评级分布（待接入评级数据）
     rating_placeholder = """
 **信用评级分布：**
@@ -273,9 +304,9 @@ def _section0_bond_holdings_analysis(
 - **城投债**：{urban_ratio:.1f}% —— 区域性债务，受地方政府财政状况影响
 - **地产债**：{estate_ratio:.1f}% —— 周期性较强，与房地产景气度高度相关
 
-**久期分析：**
+**久期分析（从持仓加权计算）：**
 
-- **久期类型**：{duration_type}（估算久期 {avg_duration:.1f} 年）
+- **久期类型**：{duration_type}（加权久期 {avg_duration:.1f} 年）
 - **利率敏感度**：{duration_desc}
 - **风险等级**：{duration_risk}
 
@@ -289,7 +320,7 @@ def _section0_bond_holdings_analysis(
 
 - **利率债占比高**：净值波动较小，收益相对稳定，适合保守型投资者
 - **信用债占比高**：潜在收益更高，但需承担信用利差扩大风险
-- **城投/地产占比高**：对宏观政策和行业景气度敏感，需动态跟踪"}""
+- **城投/地产占比高**：对宏观政策和行业景气度敏感，需动态跟踪"}}"""
 
 
 def _section1_return_logic(

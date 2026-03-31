@@ -75,6 +75,8 @@ class HoldingsData(BaseSchema):
     bond_details: List[Dict] = []   # [{name, type, rating, ratio}]
     asset_allocation: Dict[str, float] = {}
     bond_classification: Dict[str, Any] = {}  # 债券分类：{gov_bond, credit_bond, urban_construction, real_estate}
+    # 历史资产配置（混合型基金需要：多季度资产配置比例）
+    historical_allocation: List[Dict[str, Any]] = []  # [{date, stock_ratio, bond_ratio, cash_ratio, cb_ratio}]
 
 
 class FactorData(BaseSchema):
