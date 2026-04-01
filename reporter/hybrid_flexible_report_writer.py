@@ -1,10 +1,9 @@
 """
 混合型-灵活配置基金深度评价报告生成器 — fund_quant_v2
-角色：资深基金分析师（CFA 持证人）
 报告结构：5板块 + 图表插入点标记
   1. 收益情况展示（累计收益 + 收益归因 + 月度胜率）
   2. 择时风格（历史仓位区间 + 仓位/市场对照图 + 暴跌减仓复盘）
-  3. 深度分析（股债持仓穿透 + 关键决策复盘 + 宏观事件时间线）
+  3. 深度分析（股债持仓穿透 + 关键决策复盘）
   4. 风险预警（水下回撤 + 实时Beta黑盒探测 + 择时失败预警 + 风格极端切换）
   5. 投资建议（拟买入/持有中/离场信号 + 仓位黑盒/择时/风格三重监控）
 """
@@ -62,9 +61,6 @@ def generate_hybrid_flexible_report(report: Any) -> dict:
     historical_allocation = holdings.get("historical_allocation", [])
     top10_stocks = holdings.get("top10_stocks", [])
 
-    # 评级描述
-    grade_desc = _grade_description(grade, score)
-
     # 仓位统计
     pos_stats = _compute_position_stats(historical_allocation)
 
@@ -91,7 +87,7 @@ def generate_hybrid_flexible_report(report: Any) -> dict:
         "tags": tags,
     }
 
-    headline = _build_headline(fund_name, grade_desc, start_date, end_date, grade)
+    headline = _build_headline(fund_name, start_date, end_date)
 
     section1 = _section1_performance(
         fund_name, cm, m, start_date, end_date,
@@ -160,31 +156,31 @@ def _section1_performance(
 
     # 收益评价
     if ann_ret > 15:
-        ret_eval = "🌟 表现优异"
+        ret_eval = "表现优异"
     elif ann_ret > 8:
-        ret_eval = "✅ 表现良好"
+        ret_eval = "表现良好"
     elif ann_ret > 0:
-        ret_eval = "⚠️ 收益平平"
+        ret_eval = "收益平平"
     else:
-        ret_eval = "❌ 收益为负"
+        ret_eval = "收益为负"
 
     # 夏普评价
     if sharpe > 1.5:
         sharpe_eval = "风险调整后收益优秀"
     elif sharpe > 1.0:
-        sharpe_eval = "风险调整后收益良好"
+        sharpe_eval = "风险收益性价比良好"
     elif sharpe > 0.5:
-        sharpe_eval = "承担的波动与收益基本匹配"
+        sharpe_eval = "波动和收益基本匹配"
     else:
-        sharpe_eval = "风险调整后收益不理想"
+        sharpe_eval = "承担了波动但没赚到钱"
 
     # 月度胜率评价
     if monthly_wr > 60:
-        wr_eval = "月度胜率较高，大部分月份都能跑赢基准"
+        wr_eval = "大部分月份跑赢基准"
     elif monthly_wr > 50:
-        wr_eval = "月度胜率略高于50%，具有一定的稳定性"
+        wr_eval = "略高于一半，有一定稳定性"
     else:
-        wr_eval = "月度胜率偏低，胜负各半甚至更多月份跑输"
+        wr_eval = "胜负各半，不太稳定"
 
     # 资产配置归因
     asset_desc_parts = []
@@ -206,9 +202,9 @@ def _section1_performance(
     else:
         vol_eval = "高波动，注意回撤风险"
 
-    text = f"""### 一、收益情况展示
+    text = f"""### 一、收益情况
 
-**{fund_name}** 分析区间：{start_date} ~ {end_date}
+{fund_name} 是一只灵活配置型基金，经理可以在股票和债券之间自由调仓。我们先看收益。
 
 | 指标 | 数值 | 评价 |
 |------|------|------|
@@ -223,10 +219,7 @@ def _section1_performance(
 | 年化 Alpha | {net_alpha:+.2f}% | {'显著' if net_alpha > 2 else '微弱' if net_alpha > 0 else '无'} |
 | 信息比率 | {ir:.2f} | {'优秀' if ir > 0.5 else '良好' if ir > 0 else '不足'} |
 
-**收益归因简析：**
-- 最新资产配置为 {asset_desc}
-- R² = {r2:.2%}（{'模型拟合良好' if r2 > 0.7 else '市场解释力较弱，选股贡献占主导'}）
-- {'有效控制波动的同时获取了超额收益' if sharpe > 1 and volatility < 12 else '收益与波动基本匹配' if sharpe > 0.5 else '承担了较高波动但收益不理想'}
+最新资产配置为 {asset_desc}。R² = {r2:.2%}（{'基金走势主要跟市场走' if r2 > 0.7 else '经理有不少独立操作，选股贡献大'}）。
 
 [INSERT_CHART: CUM_RET]
 
@@ -256,26 +249,24 @@ def _section2_timing_style(
 
         # 仓位风格判断
         if swing > 40:
-            timing_style = "🔴 **激进择时型** — 仓位波动极大（振幅{:.0f}%），经理频繁大幅调仓，择时意图明显".format(swing * 100)
+            timing_style = f"**激进择时型** — 仓位振幅高达 {swing:.0%}，经理在频繁大幅调仓，择时意图明显"
         elif swing > 20:
-            timing_style = "🟡 **灵活调整型** — 仓位波动适中（振幅{:.0f}%），经理会根据市场环境适度调整仓位".format(swing * 100)
+            timing_style = f"**灵活调整型** — 仓位振幅 {swing:.0%}，经理会根据市场环境适度调整仓位"
         else:
-            timing_style = "🟢 **仓位稳定型** — 仓位波动较小（振幅{:.0f}%），经理倾向于通过选股而非择时获取收益".format(swing * 100)
+            timing_style = f"**仓位稳定型** — 仓位振幅只有 {swing:.0%}，经理靠选股赚钱，不太做择时"
 
         pos_table_rows = "\n".join([
             f"| {q.get('date', '—')} | {q.get('stock_ratio', 0)*100:.1f}% | {q.get('bond_ratio', 0)*100:.1f}% | {q.get('cash_ratio', 0)*100:.1f}% |"
             for q in historical_allocation
         ])
 
-        text = f"""### 二、择时风格分析
+        text = f"""### 二、择时风格
+
+灵活配置型基金最核心的能力就是**择时**——市场不好的时候能减仓避险，行情来了能加仓吃肉。
 
 **{timing_style}**
 
-**历史仓位统计（近 {n_q} 个季度）：**
-- 股票仓位范围：**{lo:.1%} ~ {hi:.1%}**，平均 **{avg:.1%}**
-- 最高仓位：{hi:.1%}（{hi_q}）
-- 最低仓位：{lo:.1%}（{lo_q}）
-- 仓位振幅：{swing:.1%}
+近 {n_q} 个季度，股票仓位在 **{lo:.1%} ~ {hi:.1%}** 之间浮动，平均 **{avg:.1%}**。最高仓位 {hi:.1%}（{hi_q}），最低 {lo:.1%}（{lo_q}）。
 
 **逐季度资产配置变化：**
 
@@ -289,7 +280,7 @@ def _section2_timing_style(
         # 暴跌减仓复盘
         if crash_review and crash_review.get("events"):
             events = crash_review["events"]
-            text += f"""**🔥 暴跌减仓复盘：经理在几次大跌前成功避险了吗？**
+            text += f"""**暴跌复盘：经理在大跌前减仓了吗？**
 
 """
             for ev in events:
@@ -300,19 +291,18 @@ def _section2_timing_style(
                 judgement = ev.get("judgement", "")
 
                 if judgement == "提前减仓":
-                    icon = "🟢"
+                    icon = "✅"
                 elif judgement == "维持低位":
-                    icon = "🟢"
+                    icon = "✅"
                 elif judgement == "未能预判":
-                    icon = "🟡"
+                    icon = "⚠️"
                 elif judgement == "逆势加仓":
-                    icon = "🔴"
+                    icon = "❌"
                 else:
                     icon = "⚪"
 
-                text += f"""{icon} **{ev.get('period', '—')}**：市场跌幅 {market_drop:.1f}%，基金跌幅 {fund_drop:.1f}%
-  - 暴跌前仓位：{pos_before:.1f}% → 暴跌后仓位：{pos_after:.1f}%
-  - 评价：{judgement}
+                text += f"""{icon} **{ev.get('period', '—')}**：市场跌 {market_drop:.1f}%，基金跌 {fund_drop:.1f}%
+  - 暴跌前仓位 {pos_before:.1f}% → 暴跌后 {pos_after:.1f}% — {judgement}
 
 """
 
@@ -323,9 +313,9 @@ def _section2_timing_style(
 
         return text
     else:
-        return f"""### 二、择时风格分析
+        return f"""### 二、择时风格
 
-⚠️ 历史资产配置数据不足，无法进行择时风格分析。"""
+历史资产配置数据不足，暂时无法分析择时风格。"""
 
 
 # ============================================================
@@ -366,27 +356,27 @@ def _section3_deep_analysis(
         prev = historical_allocation[-2]
         delta_stock = recent.get("stock_ratio", 0) - prev.get("stock_ratio", 0)
         if delta_stock > 0.05:
-            trend_desc = f"最新季度较上季度**加仓** {delta_stock:.1%}，经理看好后市"
+            trend_desc = f"最新季度比上一季度**加仓**了 {delta_stock:.1%}，经理看好后市"
         elif delta_stock < -0.05:
-            trend_desc = f"最新季度较上季度**减仓** {abs(delta_stock):.1%}，经理趋于保守"
+            trend_desc = f"最新季度比上一季度**减仓**了 {abs(delta_stock):.1%}，经理趋于保守"
         else:
-            trend_desc = f"最新季度仓位基本持平（变化 {delta_stock:+.1%}），维持现有策略"
+            trend_desc = f"最新季度仓位基本没变（{delta_stock:+.1%}），维持现有策略"
 
     # 持仓集中度评价
     if top10_total > 0.6:
-        conc_eval = "⚠️ 前10大重仓股集中度偏高，组合分散性不足"
+        conc_eval = "前10大重仓股太集中了，分散性不够"
     elif top10_total > 0.4:
-        conc_eval = "✅ 前10大重仓股集中度适中"
+        conc_eval = "前10大重仓股集中度适中"
     else:
-        conc_eval = "🟢 前10大重仓股分散度较高，组合分散性良好"
+        conc_eval = "持仓比较分散，风险分散性不错"
 
     # 仓位弹性
     if historical_allocation and len(historical_allocation) >= 2:
         pos_range = max(q.get("stock_ratio", 0) for q in historical_allocation) - min(q.get("stock_ratio", 0) for q in historical_allocation)
         if pos_range > 0.3:
-            pos_eval = f"仓位弹性极大（波动 {pos_range:.1%}），灵活配置能力突出但需关注择时胜率"
+            pos_eval = f"仓位弹性很大（波动 {pos_range:.1%}），灵活配置能力突出，但要关注择时胜率"
         elif pos_range > 0.15:
-            pos_eval = f"仓位弹性适中（波动 {pos_range:.1%}），具备一定灵活配置能力"
+            pos_eval = f"仓位弹性适中（波动 {pos_range:.1%}），有一定灵活配置能力"
         else:
             pos_eval = f"仓位弹性较小（波动 {pos_range:.1%}），更偏向稳定配置"
     else:
@@ -394,14 +384,14 @@ def _section3_deep_analysis(
 
     text = f"""### 三、深度分析
 
-**持仓结构（最新季报）：**
-- 股票占比：**{stock_ratio:.1%}** | 债券占比：**{bond_ratio:.1%}** | 现金占比：**{cash_ratio:.1%}**
-- 前10大重仓股占比：**{top10_total:.1%}**（{conc_eval}）
+**最新持仓结构（季报数据）：**
+- 股票 **{stock_ratio:.1%}** | 债券 **{bond_ratio:.1%}** | 现金 **{cash_ratio:.1%}**
+- 前10大重仓股合计 **{top10_total:.1%}**（{conc_eval}）
 - 第一大重仓：{top10_stocks[0].get("name", "—") if top10_stocks else "—"}（{top1_ratio:.2f}%）
 - {pos_eval}
 - {trend_desc}
 
-**前10大重仓股明细：**
+**前10大重仓股：**
 {stock_table}
 
 [DEEP_HOLDINGS_ANALYSIS_PLACEHOLDER]"""
@@ -430,37 +420,37 @@ def _section4_risk_warning(
     beta_60d_avg = beta_data.get("beta_60d_avg", 0.5) if beta_data else 0.5
 
     if current_beta < 0.3:
-        beta_alert = f"🟢 **低风险** — 当前 Beta = {current_beta:.2f}（{trend_beta}），经理正在「猫着」，即便股市崩盘，用户也无需过度惊慌"
+        beta_alert = f"当前 Beta = {current_beta:.2f}（{trend_beta}），经理正在「猫着」，即便股市大跌也不用太慌"
     elif current_beta > 1.0:
-        beta_alert = f"🔴 **高风险预警** — 当前 Beta = {current_beta:.2f}（{trend_beta}），经理在加杠杆或重仓高弹性股，一旦行情转头回撤将不可控"
+        beta_alert = f"当前 Beta = {current_beta:.2f}（{trend_beta}），经理在加杠杆或重仓高弹性股，行情一旦转头，回撤可能刹不住"
     elif current_beta > 0.8:
-        beta_alert = f"🟡 **中高风险** — 当前 Beta = {current_beta:.2f}（{trend_beta}），仓位偏进攻，注意市场风险"
+        beta_alert = f"当前 Beta = {current_beta:.2f}（{trend_beta}），仓位偏进攻，注意市场风险"
     else:
-        beta_alert = f"🟢 **中低风险** — 当前 Beta = {current_beta:.2f}（{trend_beta}），仓位较为谨慎"
+        beta_alert = f"当前 Beta = {current_beta:.2f}（{trend_beta}），仓位偏谨慎，风险可控"
 
     # --- 择时贡献度 ---
     timer_corr = timing_data.get("timer_correlation", 0.5) if timing_data else 0.5
     timer_alert = ""
     if timing_data:
         if timer_corr < 0.2:
-            timer_alert = "🔴 **择时失败预警** — 滚动相关性极低，基金净值与市场走势严重脱钩，可能存在择时失败"
+            timer_alert = "择时贡献度极低，基金净值跟市场脱钩了，经理的择时操作可能失效"
         elif timer_corr < 0.4:
-            timer_alert = "🟡 **择时能力存疑** — 滚动相关性偏低，经理的择时操作效果有限"
+            timer_alert = f"择时贡献度偏低（{timer_corr:.2f}），经理的择时操作效果有限"
         else:
-            timer_alert = f"🟢 择时贡献度正常（滚动相关性 {timer_corr:.2f}）"
+            timer_alert = f"择时贡献度正常（{timer_corr:.2f}）"
     else:
-        timer_alert = "⚪ 择时数据暂缺"
+        timer_alert = "择时数据暂缺"
 
     # --- 风格极端切换 ---
     drift_alert = ""
     if drift_data:
         drift_score = drift_data.get("drift_score", 0)
         if drift_score > 70:
-            drift_alert = f"🔴 **风格极端切换预警** — 行业偏离度得分 {drift_score:.0f}/100，连续两季重仓股出现剧烈断层，经理可能在进行风格漂移"
+            drift_alert = f"行业偏离度 {drift_score:.0f}/100，连续两季重仓股剧烈变动，经理可能在风格漂移"
         elif drift_score > 40:
-            drift_alert = f"🟡 **风格调整提醒** — 行业偏离度得分 {drift_score:.0f}/100，持仓有一定调整，需持续关注"
+            drift_alert = f"行业偏离度 {drift_score:.0f}/100，持仓有一定调整，需要持续关注"
         else:
-            drift_alert = f"🟢 风格稳定（偏离度 {drift_score:.0f}/100），持仓连续性好"
+            drift_alert = f"风格稳定（偏离度 {drift_score:.0f}/100），持仓连续性好"
 
         # 显示具体变动
         added = drift_data.get("added_stocks", [])
@@ -469,32 +459,32 @@ def _section4_risk_warning(
             drift_alert += "\n  - 新进入前十大：" + "、".join(added[:5]) if added else "\n  - 前十大无新增"
             drift_alert += "\n  - 退出前十大：" + "、".join(removed[:5]) if removed else "\n  - 前十大无退出"
     else:
-        drift_alert = "⚪ 持仓断层数据暂缺"
+        drift_alert = "持仓断层数据暂缺"
 
     # 风格漂移标记
     style_drift_flag = m.style_drift_flag if hasattr(m, "style_drift_flag") else False
     drift_warning = ""
     if style_drift_flag:
-        drift_warning = "\n\n⚠️ **RBSA 模型检测到风格漂移信号**：近期 Beta 与全期 Beta 偏差超过阈值，经理可能改变了投资风格"
+        drift_warning = "\n\n**RBSA 模型检测到风格漂移信号**：近期 Beta 跟全期均值偏差较大，经理可能悄悄换了打法"
 
     text = f"""### 四、风险预警
 
 [INSERT_CHART: DRAWDOWN]
 
-**📊 实时仓位「黑盒」探测：**
+**仓位「黑盒」探测：**
 - 当前 Beta：{current_beta:.3f}（20日均 {beta_20d_avg:.3f}，60日均 {beta_60d_avg:.3f}）
 - {beta_alert}
 
-**⏱ 择时贡献度监控（Timer Beta）：**
+**择时贡献度监控：**
 - {timer_alert}
 
-**🔄 风格极端切换监控：**
+**风格切换监控：**
 - {drift_alert}{drift_warning}
 
 [INSERT_CHART: ROLLING_BETA]
 
 **综合风险指标：**
-- 最大回撤：{max_dd:.2f}%（{'可控' if abs(max_dd) < 15 else '⚠️ 偏高' if abs(max_dd) < 25 else '🔴 高风险'}）
+- 最大回撤：{max_dd:.2f}%（{'可控' if abs(max_dd) < 15 else '偏高' if abs(max_dd) < 25 else '高风险'}）
 - 年化波动：{volatility:.2f}%
 - 月度胜率：{monthly_wr:.0f}%"""
 
@@ -521,25 +511,25 @@ def _section5_investment_advice(
     buy_signals = []
     buy_warnings = []
     if ann_ret > 10 and sharpe > 1.0:
-        buy_signals.append(f"年化收益 {ann_ret:+.1f}%、夏普 {sharpe:.2f}，历史表现优异")
+        buy_signals.append(f"年化收益 {ann_ret:+.1f}%、夏普 {sharpe:.2f}，历史表现很不错")
     if net_alpha > 2:
-        buy_signals.append(f"年化 Alpha {net_alpha:+.1f}%，具备真实超额收益能力")
+        buy_signals.append(f"年化 Alpha {net_alpha:+.1f}%，有真本事创造超额收益")
     if abs(max_dd) < 15:
-        buy_signals.append(f"最大回撤仅 {max_dd:.1f}%，风控优秀")
+        buy_signals.append(f"最大回撤只有 {max_dd:.1f}%，风控做得好")
     if monthly_wr > 55:
         buy_signals.append(f"月度胜率 {monthly_wr:.0f}%，大部分时间跑赢基准")
 
     if ann_ret < 0:
-        buy_warnings.append(f"年化收益为负（{ann_ret:.1f}%），历史表现不佳")
+        buy_warnings.append(f"年化收益为负（{ann_ret:.1f}%），历史表现不好")
     if abs(max_dd) > 25:
-        buy_warnings.append(f"最大回撤达 {max_dd:.1f}%，回撤风险极大")
+        buy_warnings.append(f"最大回撤达 {max_dd:.1f}%，回撤风险很大")
     if sharpe < 0.5:
-        buy_warnings.append(f"夏普比率仅 {sharpe:.2f}，风险调整后收益不理想")
+        buy_warnings.append(f"夏普比率只有 {sharpe:.2f}，风险调整后收益不理想")
 
     if buy_signals:
         buy_text = "✅ " + "；".join(buy_signals)
     else:
-        buy_text = "⚠️ 核心指标无突出亮点"
+        buy_text = "核心指标没有突出亮点"
     if buy_warnings:
         buy_text += "\n  ⚠️ 注意：" + "；".join(buy_warnings)
 
@@ -550,27 +540,27 @@ def _section5_investment_advice(
     # Beta 黑盒
     current_beta = beta_data.get("current_beta", 0.5) if beta_data else 0.5
     if current_beta > 1.0:
-        hold_warnings.append(f"当前 Beta = {current_beta:.2f} > 1.0，经理处于进攻模式，建议密切关注市场走势")
+        hold_warnings.append(f"当前 Beta = {current_beta:.2f} > 1.0，经理在全力进攻，密切关注市场走势")
     elif current_beta < 0.3:
-        hold_signals.append(f"当前 Beta = {current_beta:.2f} < 0.3，经理已防守，短期风险可控")
+        hold_signals.append(f"当前 Beta = {current_beta:.2f} < 0.3，经理已经转入防守，短期风险可控")
 
     # 择时监控
     if timing_data:
         timer_corr = timing_data.get("timer_correlation", 0.5)
         if timer_corr < 0.3:
-            hold_warnings.append("择时贡献度偏低，基金与市场脱钩，建议审视经理策略是否失效")
+            hold_warnings.append("择时贡献度偏低，基金跟市场脱钩了，审视一下经理的策略是否还行")
 
     # 风格切换
     if drift_data:
         drift_score = drift_data.get("drift_score", 0)
         if drift_score > 50:
-            hold_warnings.append(f"行业偏离度 {drift_score:.0f}，持仓剧烈调整中，建议观察下一季报确认方向")
+            hold_warnings.append(f"行业偏离度 {drift_score:.0f}，持仓在剧烈调整中，等下一季报确认方向")
 
     hold_text = "✅ " + "；".join(hold_signals) if hold_signals else ""
     if hold_warnings:
         hold_text += ("\n  " if hold_text else "⚠️ ") + "；".join(hold_warnings)
     if not hold_text:
-        hold_text = "ℹ️ 当前无特别信号，建议定期检视"
+        hold_text = "当前没有特别信号，定期检视即可"
 
     # ── C. 离场信号 ──
     exit_signals = []
@@ -579,33 +569,21 @@ def _section5_investment_advice(
     if net_alpha < -3:
         exit_signals.append(f"年化 Alpha {net_alpha:.1f}%，持续跑输市场")
     if timing_data and timing_data.get("timer_correlation", 0.5) < 0.2:
-        exit_signals.append("择时贡献度极低，净值与市场完全脱钩")
+        exit_signals.append("择时贡献度极低，净值跟市场完全脱钩")
     if drift_data and drift_data.get("drift_score", 0) > 80:
-        exit_signals.append("风格极端切换，偏离度得分过高，投资逻辑可能已改变")
+        exit_signals.append("风格极端切换，投资逻辑可能已经变了")
 
     if exit_signals:
         exit_text = "🔴 " + "；\n🔴 ".join(exit_signals)
     else:
-        exit_text = "🟢 当前无强烈离场信号"
+        exit_text = "当前无强烈离场信号"
 
     # 费用信息
     mgmt_fee = basic.fee_manage * 100 if hasattr(basic, "fee_manage") and basic.fee_manage else 0.0
     custody_fee = basic.fee_custody * 100 if hasattr(basic, "fee_custody") and basic.fee_custody else 0.0
     purchase_fee = basic.fee_sale * 100 if hasattr(basic, "fee_sale") and basic.fee_sale else 0.0
 
-    # 评级文字
-    grade_map = {
-        "S": "稀缺优质基金，适合长期重仓持有",
-        "A": "优质基金，值得配置",
-        "B": "中等水平基金，建议与其他基金搭配使用",
-        "C": "表现一般，需仔细审视是否适合",
-        "D": "建议回避或尽快赎回",
-    }
-    grade_advice = grade_map.get(grade, "数据不足以评估")
-
     text = f"""### 五、投资建议
-
-**综合评级：{grade}（{score:.0f}/100）— {grade_advice}**
 
 **A. 拟买入评估：**
 {buy_text}
@@ -613,10 +591,10 @@ def _section5_investment_advice(
 **B. 持有中监控（三重预警体系）：**
 {hold_text}
 
-> 💡 灵活配置型基金的核心看点是**择时能力**。建议重点关注：
+> 灵活配置型基金的核心看点是**择时能力**。重点关注三点：
 > - **仓位黑盒**：通过 Beta 实时感知经理仓位状态（低Beta=猫着，高Beta=进攻中）
-> - **择时贡献度**：市场涨基金不涨=择时失败，需警惕
-> - **风格切换**：连续两季重仓股剧烈变动=风格漂移，可能改变投资逻辑
+> - **择时贡献度**：市场涨基金不涨=择时失败，要警惕
+> - **风格切换**：连续两季重仓股剧烈变动=风格漂移，投资逻辑可能变了
 
 **C. 离场信号：**
 {exit_text}
@@ -937,35 +915,23 @@ def _extract_date_range(charts: dict) -> tuple[str, str]:
     return "—", "—"
 
 
-def _grade_description(grade: str, score: float) -> str:
-    """评级描述"""
-    grade_map = {
-        "S": "稀缺优质 ⭐⭐⭐⭐⭐",
-        "A": "优秀 ⭐⭐⭐⭐",
-        "B": "良好 ⭐⭐⭐",
-        "C": "一般 ⭐⭐",
-        "D": "较差 ⭐",
-    }
-    return f"{grade} 级（{score:.0f} 分）" + grade_map.get(grade, "")
-
-
-def _build_headline(fund_name, grade_desc, start_date, end_date, grade) -> str:
-    """报告标题行"""
+def _build_headline(fund_name, start_date, end_date) -> str:
+    """报告标题行（无评分/评级）"""
     return (
-        f"## 📊 {fund_name} — 混合型·灵活配置深度评价\n\n"
-        f"**综合评级：{grade_desc}** | 分析区间：{start_date} ~ {end_date}\n\n"
-        f"> 💡 灵活配置型基金的核心价值在于**择时能力**——经理能否在牛熊切换时精准调仓。"
-        f"本报告将从收益、择时、持仓、风险四个维度进行穿透式分析。"
+        f"## {fund_name} — 混合型·灵活配置 深度分析\n"
+        f"分析区间：{start_date} 至 {end_date}\n\n"
+        f"灵活配置型基金的核心看点是**择时能力**——经理能不能在牛熊切换时精准调仓。"
+        f"下面从收益、择时、持仓、风险、建议五个方面来拆解。"
     )
 
 
 def _fallback_report(basic) -> dict:
     """数据不足时的兜底报告"""
     fund_name = basic.name if hasattr(basic, "name") else "未知基金"
-    text = f"### {fund_name}\n\n⚠️ 数据不足，无法生成完整分析报告。请确认基金代码正确且数据源可用。"
+    text = f"### {fund_name}\n\n数据不足，无法生成完整分析报告。请确认基金代码正确且数据源可用。"
     return {
         "meta": {"fund_name": fund_name, "fund_type": "混合型-灵活配置"},
-        "headline": f"## 📊 {fund_name}",
+        "headline": f"## {fund_name}",
         "section1": text,
         "section2": "",
         "section3": "",

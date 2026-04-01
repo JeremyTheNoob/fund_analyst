@@ -1,14 +1,13 @@
 """
 债券型-混合一级基金专属深度报告生成器 — fund_quant_v2
-角色：资深转债研究员
 
 混合一级债基特点：债底 + 可转债增强，不能直接二级市场买股票
 分析框架 5 板块：
-  ① 基本信息：资产结构分布，信用/转债配比
-  ② 收益表现：收益展示 + 转债弹性模型（转债 Beta）
-  ③ 深度分析：转债归因分析 + 溢价率审计
-  ④ 风险预警：转债违约/赎回风险 + 强赎预警
-  ⑤ 投资建议：拟购入 / 已持有
+  ① 资产结构分布，信用/转债配比
+  ② 收益表现 + 转债弹性模型（转债 Beta）
+  ③ 转债归因分析 + 溢价率审计
+  ④ 转债违约/赎回风险 + 全市场估值预警
+  ⑤ 拟购入 / 已持有 投资建议
 """
 
 from __future__ import annotations
@@ -176,7 +175,7 @@ def generate_bond_mixed1_report(report: Any) -> dict:
 
 
 # ============================================================
-# 板块 1：基本信息 — 资产结构与信用/转债配比
+# 板块 1：资产结构
 # ============================================================
 
 def _section1_basic_info(
@@ -261,11 +260,11 @@ def _section1_basic_info(
                 else:
                     history_text += "经理可能在降低转债风险暴露。"
 
-    return f"""### 一、资产结构与信用/转债配比
+    return f"""### 资产结构与信用/转债配比
 
-混合一级债基的核心特征是「**债底保护 + 转债增强**」：
-不能直接在二级市场买入股票，权益增强完全依赖**可转债**和**打新获取的股票**。
-因此，转债配置策略决定了这只基金的收益弹性和风险水平。
+混合一级债基的特点是「**债底保护 + 转债增强**」：
+不能直接在二级市场买股票，权益收益完全靠**可转债**和**打新**。
+所以转债配置策略直接决定了这只基金的弹性和风险。
 
 **当前资产配置：**
 
@@ -321,11 +320,11 @@ def _analyze_bond_structure(bond_classification: dict, bond_details: list, cb_ra
     )
 
     if gov_ratio > 60:
-        text += f"\n\n**结构评价：** 利率债占比超六成（{gov_ratio:.1f}%），组合防守性极强，信用风险暴露有限。"
+        text += f"\n\n**结构评价：** 利率债占比超六成（{gov_ratio:.1f}%），防守极强，信用风险暴露有限。"
     elif gov_ratio > 30:
         text += f"\n\n**结构评价：** 利率债约三成（{gov_ratio:.1f}%），信用债（{credit_ratio:.1f}%）提供票息增强，整体攻守均衡。"
     else:
-        text += f"\n\n**结构评价：** 利率债占比较低（{gov_ratio:.1f}%），主要通过信用下沉获取超额收益，信用风险暴露相对较高。"
+        text += f"\n\n**结构评价：** 利率债占比较低（{gov_ratio:.1f}%），主要通过信用下沉获取超额收益，信用风险暴露较高。"
 
     return text
 
@@ -385,8 +384,7 @@ def _section2_return_analysis(
         if extra_vol > 0.5:
             vol_text = (
                 f"\n\n**波动率分解：** 基金波动率 **{volatility:.2f}%** 明显高于纯债基准（~0.5%），"
-                f"超额波动率约 **{extra_vol:.2f}%**，主要来自转债仓位的权益属性贡献。"
-                f"这说明转债配置确实为组合带来了额外弹性。"
+                f"超额波动约 **{extra_vol:.2f}%**，主要来自转债仓位的权益弹性贡献。"
             )
         elif extra_vol > 0.1:
             vol_text = (
@@ -396,7 +394,7 @@ def _section2_return_analysis(
         else:
             vol_text = f"\n\n**波动率分解：** 波动率 **{volatility:.2f}%** 接近纯债水平，转债配置偏保守。"
 
-    return f"""### 二、收益表现与转债弹性分析
+    return f"""### 收益表现与转债弹性分析
 
 **收益数据总览：**
 
@@ -466,7 +464,7 @@ def _analyze_cb_beta(
 
     return f"""**转债弹性模型：**
 
-通过将基金净值与**中证转债指数（000832.CSI）**进行回归分析，衡量转债配置对净值的弹性贡献：
+把基金净值和**中证转债指数（000832.CSI）**做回归，看看转债配置对净值有多大弹性：
 
 | 弹性指标 | 数值 | 说明 |
 | --- | --- | --- |
@@ -477,19 +475,7 @@ def _analyze_cb_beta(
 **弹性解读：** {beta_desc}
 {corr_desc}
 
-这意味着混合一级债基的弹性主要来源于转债部分。当转债市场整体上涨时，
-基金净值会获得**乘数效应**的增强；而当转债市场回调时，回撤也会被放大。
-""" if cb_beta_r2 is not None else f"""**转债弹性模型：**
-
-通过将基金净值与**中证转债指数（000832.CSI）**进行回归分析：
-
-| 弹性指标 | 数值 | 说明 |
-| --- | --- | --- |
-| 转债 Beta | **{cb_beta_value:.3f}** | 中证转债指数涨 1%，净值约涨 {cb_beta_value:.3f}% |
-| R² | {cb_beta_r2:.3f} | {r2_desc} |
-| 相关系数 | {cb_corr:.3f} | |
-
-**弹性解读：** {beta_desc}
+简单说：混合一级债基的弹性主要来自转债。转债涨时净值有乘数效应，转债跌时回撤也会被放大。
 """
 
 
@@ -555,12 +541,12 @@ def _section3_cb_attribution(
 
     # 无转债
     if cb_pct < 1 and cb_count == 0:
-        return f"""### 三、转债归因与溢价率审计
+        return f"""### 转债归因与溢价率审计
 
 **转债仓位：{cb_pct:.1f}%** —— 当前未配置可转债。
 
-该基金以纯债为核心策略，不参与转债市场。收益来源完全依赖票息收入和久期管理。
-优点是不受转债估值波动影响，缺点是放弃了转债「**下跌有底、上涨不封顶**」的非对称收益特征。
+该基金以纯债为核心策略，不参与转债市场。收益完全依赖票息和久期管理。
+好处是不受转债估值波动影响，代价是放弃了转债"**下跌有底、上涨不封顶**"的非对称收益特征。
 """
 
     # 转债持仓明细
@@ -581,13 +567,13 @@ def _section3_cb_attribution(
             # 评价
             if premium is not None:
                 if premium <= 10:
-                    eval_str = "🟢 低估"
+                    eval_str = "低估"
                 elif premium <= 20:
-                    eval_str = "🟡 合理"
+                    eval_str = "合理"
                 elif premium <= 35:
-                    eval_str = "🟠 偏高"
+                    eval_str = "偏高"
                 else:
-                    eval_str = "🔴 高估"
+                    eval_str = "高估"
             else:
                 eval_str = "—"
 
@@ -597,20 +583,20 @@ def _section3_cb_attribution(
     premium_audit = ""
     if avg_premium is not None:
         if avg_premium <= 15:
-            prem_level = "🟢 **低估区间**（平均溢价率 ≤ 15%）"
+            prem_level = "**低估区间**（平均溢价率 ≤ 15%）"
             prem_detail = "转债定价便宜，下行空间有限，性价比高。建议维持或适度加仓。"
         elif avg_premium <= 25:
-            prem_level = "🟢 **合理区间**（平均溢价率 15%-25%）"
+            prem_level = "**合理区间**（平均溢价率 15%-25%）"
             prem_detail = "转债定价适中，攻守较为均衡。"
         elif avg_premium <= 35:
-            prem_level = "🟡 **偏高区间**（平均溢价率 25%-35%）"
-            prem_detail = "需警惕正股回调时的估值压缩风险。若正股下跌，转债期权价值会快速萎缩。"
+            prem_level = "**偏高区间**（平均溢价率 25%-35%）"
+            prem_detail = "需警惕正股回调时的估值压缩风险。正股下跌，转债期权价值会快速萎缩。"
         elif avg_premium <= 50:
-            prem_level = "🟠 **高估区间**（平均溢价率 35%-50%）"
+            prem_level = "**高估区间**（平均溢价率 35%-50%）"
             prem_detail = "转债定价较贵，安全边际较低。建议关注减仓时机。"
         else:
-            prem_level = "🔴 **极高区间**（平均溢价率 > 50%）"
-            prem_detail = "转债严重高估，期权价值极贵。一旦正股回调，回撤风险极大。"
+            prem_level = "**极高区间**（平均溢价率 > 50%）"
+            prem_detail = "转债严重高估，期权价值极贵。正股回调时回撤风险极大。"
 
         premium_audit = f"""
 **溢价率审计：{prem_level}**
@@ -664,14 +650,16 @@ def _section3_cb_attribution(
             f"叠加转债估值压缩（假设 -5%），总回撤可能达到 **{abs(worst['price_impact']) + cb_pct * 0.05:.2f}%**。"
         )
 
-    return f"""### 三、转债归因分析与溢价率审计
+    return f"""### 转债归因分析与溢价率审计
 
-混合一级债基的收益弹性完全来自转债。本板块分析：
-1. 转债仓位对基金整体净值弹性的贡献度
-2. 转债估值水位（溢价率审计）
-3. 转债持仓策略画像
+混合一级债基的收益弹性完全来自转债，下面看看持仓的性价比如何。
 
 **转债仓位：{cb_pct:.1f}%，共持有 {cb_count} 只转债**
+
+[INSERT_CHART: CB_PRICE_PREMIUM]
+
+上图横轴是转债对应正股的价格，纵轴是转股溢价率，气泡越大说明该转债在组合中占比越高。
+**绿色=低估、浅绿=合理、橙色=偏高、红色=高估。** 理想状态是集中分布在左下角（正股便宜+溢价率低）。
 
 {cb_detail_text}{premium_audit}{delta_text}{strategy_summary}{stress_text}"""
 
@@ -771,7 +759,7 @@ def _estimate_delta(premium_ratio) -> float:
 
 
 # ============================================================
-# 板块 4：风险预警 — 违约/赎回风险 + 强赎预警
+# 板块 4：风险预警
 # ============================================================
 
 def _section4_risk_warning(
@@ -804,13 +792,13 @@ def _section4_risk_warning(
     # 修复评价
     if recovery_days > 0:
         if recovery_days <= 30:
-            recovery_text = f"**{recovery_days} 个交易日**完成修复，修复速度**极快**"
+            recovery_text = f"**{recovery_days} 个交易日**完成修复，回血速度**极快**"
         elif recovery_days <= 60:
-            recovery_text = f"**{recovery_days} 个交易日**完成修复，修复速度**较快**"
+            recovery_text = f"**{recovery_days} 个交易日**完成修复，回血速度**较快**"
         elif recovery_days <= 120:
-            recovery_text = f"约 **{recovery_days // 22} 个月**完成修复，修复速度**一般**"
+            recovery_text = f"约 **{recovery_days // 22} 个月**完成修复，回血速度**一般**"
         else:
-            recovery_text = f"超过 **{recovery_days // 22} 个月**，修复速度**偏慢**"
+            recovery_text = f"超过 **{recovery_days // 22} 个月**，回血速度**偏慢**"
     else:
         recovery_text = "统计区间内尚未完全修复至前高"
 
@@ -830,24 +818,23 @@ def _section4_risk_warning(
     if avg_premium is not None:
         if avg_premium > 35:
             premium_risk_text = (
-                f"\n\n**⚠️ 转债估值压缩风险（高）：**\n\n"
+                f"\n\n**转债估值压缩风险（高）：**\n\n"
                 f"当前平均溢价率 **{avg_premium:.1f}%**，处于历史偏高水位。\n"
-                f"高溢价转债意味着期权价值（时间价值 + 波动率价值）占比较大，\n"
-                f"一旦正股下跌或市场情绪转弱，溢价率会快速压缩，\n"
-                f"导致转债价格跌幅远超纯债部分。\n\n"
-                f"**历史教训：** 2022 年转债市场整体回调，平均溢价率从 40%+ 压缩至 20% 左右，\n"
-                f"高溢价转债跌幅普遍超过 15%。"
+                f"高溢价转债期权价值占比较大，正股下跌或情绪转弱时，"
+                f"溢价率会快速压缩，转债跌幅可能远超纯债部分。\n\n"
+                f"**历史教训：** 2022年转债市场整体回调，平均溢价率从40%+压缩至20%左右，"
+                f"高溢价转债跌幅普遍超过15%。"
             )
         elif avg_premium > 25:
             premium_risk_text = (
-                f"\n\n**⚡ 转债估值压缩风险（中）：**\n\n"
+                f"\n\n**转债估值压缩风险（中）：**\n\n"
                 f"平均溢价率 **{avg_premium:.1f}%**，处于中等偏高水位。\n"
-                f"若市场情绪转弱，溢价率有 10-15 个百分点的压缩空间，\n"
-                f"对应转债价格约 5-8% 的下跌风险。"
+                f"若市场情绪转弱，溢价率有10-15个百分点的压缩空间，"
+                f"对应转债价格约5-8%的下跌风险。"
             )
         else:
             premium_risk_text = (
-                f"\n\n**🟢 转债估值压缩风险（低）：**\n\n"
+                f"\n\n**转债估值压缩风险（低）：**\n\n"
                 f"平均溢价率 **{avg_premium:.1f}%**，处于合理或偏低区间。\n"
                 f"转债定价较便宜，下行空间有限，估值压缩风险不大。"
             )
@@ -863,10 +850,9 @@ def _section4_risk_warning(
         stress_text += "| --- | --- | --- | --- |\n"
         for s in stress_results:
             impact = s.get("price_impact", 0)
-            color = "🔴" if impact < -3 else ("🟡" if impact < -1 else "🟢")
             stress_text += (
                 f"| {s['scenario']} | {s.get('long_bp', 0):+.0f} | "
-                f"{s.get('credit_bp', 0):+.0f} | {color} {impact:.2f}% |\n"
+                f"{s.get('credit_bp', 0):+.0f} | {impact:.2f}% |\n"
             )
 
         # 叠加转债冲击
@@ -895,7 +881,7 @@ def _section4_risk_warning(
         if direction == "down":
             rate_text += " 利率下行有利于债券和转债，是利好信号。"
         elif direction == "up" and duration >= 3:
-            rate_text += f" ⚠️ 利率上行对久期 {duration:.1f} 年的债券端不利。"
+            rate_text += f" 利率上行对久期 {duration:.1f} 年的债券端不利。"
     else:
         rate_text = "\n\n**利率环境研判：** 当前预测置信度不足，建议结合政策面判断。"
 
@@ -911,16 +897,16 @@ def _section4_risk_warning(
             risk_factors += 1
 
     if risk_factors >= 2:
-        overall_risk = "🔴 **中高风险**"
+        overall_risk = "**中高风险**"
     elif risk_factors == 1:
-        overall_risk = "🟡 **中等风险**"
+        overall_risk = "**中等风险**"
     else:
-        overall_risk = "🟢 **低风险**"
+        overall_risk = "**低风险**"
 
-    return f"""### 四、转债违约/赎回风险预警
+    return f"""### 转债违约/赎回风险预警
 
 混合一级债基同时面临纯债端的利率/信用风险和转债端的估值/违约/赎回风险。
-本板块系统梳理三大风险维度。
+下面系统梳理三大风险维度。
 
 **历史回撤表现：**
 
@@ -995,25 +981,25 @@ def _build_market_valuation_warning(cb_value_df: Any) -> str:
 
     # 判断预警级别
     if current > 40:
-        level = "🔴 **高预警**"
+        level = "**高预警**"
         advice = (
             "当前可转债市场估值**偏高**，一级债基的增强策略性价比正在下降。\n"
             "建议暂时回避转债仓位过高的混合一级债基，或等溢价率回落至 25% 以下再考虑入场。"
         )
     elif current > 30:
-        level = "🟡 **中等预警**"
+        level = "**中等预警**"
         advice = (
             "当前可转债市场估值处于**中等偏高**区间，转债增强的性价比有所下降。\n"
             "关注溢价率变化趋势，若继续上升建议降低对转债增强收益的预期。"
         )
     elif current > 20:
-        level = "🟢 **正常偏低**"
+        level = "**正常偏低**"
         advice = (
             "当前可转债市场估值处于**合理区间**，转债增强策略具备较好的性价比。\n"
             "混合一级债基可通过精选个券获取超额收益。"
         )
     else:
-        level = "🟢🟢 **低估区间**"
+        level = "**低估区间**"
         advice = (
             "当前可转债市场估值处于**历史偏低区间**，转债具备较高的安全边际。\n"
             "这是配置混合一级债基的有利窗口期。"
@@ -1044,19 +1030,6 @@ def _analyze_cb_credit_risk(cb_analysis: dict) -> str:
     if not top_holdings:
         return "转债持仓信用评级数据正在加载中。"
 
-    # 从转债名称推断评级
-    aaa_count = 0
-    aa_plus_count = 0
-    aa_count = 0
-    aa_minus_count = 0
-    other_count = 0
-
-    for h in top_holdings:
-        name = h.get("name", "")
-        # AAA 转债通常名称中包含 "转债" 但不带明显信用标识
-        # 实际评级需要 API 数据，这里做保守估算
-        other_count += 1
-
     total = len(top_holdings)
     if total == 0:
         return "当前无转债持仓明细。"
@@ -1080,11 +1053,11 @@ def _analyze_redemption_risk(cb_analysis: dict) -> str:
     # 混合一级债基的转债赎回风险分析
     text = (
         f"**强赎预警分析：**\n\n"
-        f"当转债触发强制赎回条款（正股价格连续 N 天 ≥ 转股价 × 130%）时，"
-        f"发行人有权以面值+利息赎回转债。此时投资者面临：\n"
-        f"- **立即转股**：享受转股收益，但需要承担正股后续下跌风险\n"
+        f"当正股价格连续 N 天 ≥ 转股价 × 130% 时，发行人有权强制赎回转债。"
+        f"此时投资者面临：\n"
+        f"- **立即转股**：享受转股收益，但要承担正股后续下跌风险\n"
         f"- **被赎回**：获得面值+利息，但放弃了转股溢价\n\n"
-        f"对于混合一级债基而言，强赎意味着持仓转债需要被动处置，\n"
+        f"对混合一级债基来说，强赎意味着持仓转债需要被动处置，"
         f"可能被迫在高位转股或接受低收益赎回。"
     )
 
@@ -1092,16 +1065,14 @@ def _analyze_redemption_risk(cb_analysis: dict) -> str:
     high_prem = cb_analysis.get("high_prem_count", 0)
     if high_prem > 0:
         text += (
-            f"\n\n**⚠️ 当前有 {high_prem} 只高溢价转债（溢价率 > 30%），"
+            f"\n\n当前有 **{high_prem} 只**高溢价转债（溢价率 > 30%），"
             f"若正股持续上涨触发强赎，这些转债将面临估值归零的风险。"
             f"需关注基金经理是否及时处置了强赎转债。"
         )
 
     # 到期提醒
     text += (
-        f"\n\n**到期提醒：** 转债到期时，投资者可以选择：\n"
-        f"- **转股**：若正股价 > 转股价，转股获利\n"
-        f"- **兑付**：获得面值 100 元 + 应计利息\n"
+        f"\n\n**到期提醒：** 转债到期时可以选择转股或兑付。"
         f"即将到期的转债需要经理提前规划处置方案。"
     )
 
@@ -1124,8 +1095,7 @@ def _analyze_liquidity_risk(cb_analysis: dict, cb_ratio: float) -> str:
         if top5_share > 50:
             text = (
                 f"\n\n**流动性集中度：** Top 5 转债占转债仓位的 **{top5_share:.0f}%**，"
-                f"持仓较为集中。若个别转债遭遇流动性问题（如停牌、异常下跌），"
-                f"可能对组合产生较大冲击。"
+                f"持仓较为集中。个别转债流动性问题可能对组合产生较大冲击。"
             )
         else:
             text = (
@@ -1167,55 +1137,55 @@ def _section5_advice(
 
     # 收益维度
     if ann_ret >= 5:
-        buy_checks.append(("✅", f"年化收益 {ann_ret:.2f}%，收益水平优良"))
+        buy_checks.append(("OK", f"年化收益 {ann_ret:.2f}%，收益水平优良"))
     elif ann_ret >= 3:
-        buy_checks.append(("✅", f"年化收益 {ann_ret:.2f}%，收益水平适中"))
+        buy_checks.append(("OK", f"年化收益 {ann_ret:.2f}%，收益水平适中"))
     elif ann_ret >= 1:
-        buy_checks.append(("🟡", f"年化收益 {ann_ret:.2f}%，收益水平偏低"))
+        buy_checks.append(("WARN", f"年化收益 {ann_ret:.2f}%，收益水平偏低"))
     else:
-        buy_checks.append(("🔴", f"年化收益 {ann_ret:.2f}%，收益不达预期"))
+        buy_checks.append(("BAD", f"年化收益 {ann_ret:.2f}%，收益不达预期"))
 
     # 回撤维度
     if fund_dd_abs < 1:
-        buy_checks.append(("✅", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制极优"))
+        buy_checks.append(("OK", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制极优"))
     elif fund_dd_abs < 2.5:
-        buy_checks.append(("✅", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制良好"))
+        buy_checks.append(("OK", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制良好"))
     elif fund_dd_abs < 5:
-        buy_checks.append(("🟡", f"最大回撤 {fund_dd_abs:.2f}%，回撤中等"))
+        buy_checks.append(("WARN", f"最大回撤 {fund_dd_abs:.2f}%，回撤中等"))
     else:
-        buy_checks.append(("🔴", f"最大回撤 {fund_dd_abs:.2f}%，回撤较大"))
+        buy_checks.append(("BAD", f"最大回撤 {fund_dd_abs:.2f}%，回撤较大"))
 
     # 夏普维度
     if sharpe >= 1.5:
-        buy_checks.append(("✅", f"夏普比率 {sharpe:.2f}，风险收益效率极佳"))
+        buy_checks.append(("OK", f"夏普比率 {sharpe:.2f}，风险收益效率极佳"))
     elif sharpe >= 0.8:
-        buy_checks.append(("✅", f"夏普比率 {sharpe:.2f}，风险收益效率良好"))
+        buy_checks.append(("OK", f"夏普比率 {sharpe:.2f}，风险收益效率良好"))
     elif sharpe >= 0.3:
-        buy_checks.append(("🟡", f"夏普比率 {sharpe:.2f}，风险收益效率一般"))
+        buy_checks.append(("WARN", f"夏普比率 {sharpe:.2f}，风险收益效率一般"))
     else:
-        buy_checks.append(("🔴", f"夏普比率 {sharpe:.2f}，风险收益效率偏低"))
+        buy_checks.append(("BAD", f"夏普比率 {sharpe:.2f}，风险收益效率偏低"))
 
     # 信用质量
     if wacs >= 75:
-        buy_checks.append(("✅", f"WACS信用评分 {int(wacs)}，持仓信用资质优良"))
+        buy_checks.append(("OK", f"WACS信用评分 {int(wacs)}，持仓信用资质优良"))
     elif wacs >= 55:
-        buy_checks.append(("🟅", f"WACS信用评分 {int(wacs)}，信用资质中等"))
+        buy_checks.append(("WARN", f"WACS信用评分 {int(wacs)}，信用资质中等"))
     else:
-        buy_checks.append(("🟡", f"WACS信用评分 {int(wacs)}，信用资质偏低需关注"))
+        buy_checks.append(("WARN", f"WACS信用评分 {int(wacs)}，信用资质偏低需关注"))
 
     # 转债估值
     if avg_premium is not None:
         if avg_premium <= 20:
-            buy_checks.append(("✅", f"平均溢价率 {avg_premium:.1f}%，转债估值合理"))
+            buy_checks.append(("OK", f"平均溢价率 {avg_premium:.1f}%，转债估值合理"))
         elif avg_premium <= 35:
-            buy_checks.append(("🟡", f"平均溢价率 {avg_premium:.1f}%，转债估值偏高"))
+            buy_checks.append(("WARN", f"平均溢价率 {avg_premium:.1f}%，转债估值偏高"))
         else:
-            buy_checks.append(("🔴", f"平均溢价率 {avg_premium:.1f}%，转债估值过高"))
+            buy_checks.append(("BAD", f"平均溢价率 {avg_premium:.1f}%，转债估值过高"))
     else:
-        buy_checks.append(("—", "转债溢价率数据暂不可用"))
+        buy_checks.append(("-", "转债溢价率数据暂不可用"))
 
-    green_count = sum(1 for s, _ in buy_checks if s == "✅")
-    yellow_count = sum(1 for s, _ in buy_checks if s == "🟡")
+    green_count = sum(1 for s, _ in buy_checks if s == "OK")
+    yellow_count = sum(1 for s, _ in buy_checks if s == "WARN")
 
     if green_count >= 4 and yellow_count == 0:
         buy_verdict = "**强烈推荐购入** — 各项指标优秀，转债增强效果显著"
@@ -1278,20 +1248,20 @@ def _section5_advice(
         exit_text = "当前未检测到明显离场信号，可安心持有。"
     else:
         exit_text = "检测到以下风险信号，需密切关注：\n\n" + "\n".join(
-            f"- ⚠️ **{s}**" for s in exit_signals
+            f"- **{s}**" for s in exit_signals
         )
         exit_text += "\n\n> 出现 **2 个及以上** 信号时，建议考虑减仓或离场。"
 
     # 组装
-    buy_section = " | ".join(f"{s}{t}" for s, t in buy_checks)
+    buy_section = " | ".join(f"{t}" for s, t in buy_checks)
     hold_section = "\n".join(f"- {t}" for t in hold_checks)
 
     mgmt_fee = basic.fee_manage * 100 if hasattr(basic, 'fee_manage') and basic.fee_manage else 0.0
     custody_fee = basic.fee_custody * 100 if hasattr(basic, 'fee_custody') and basic.fee_custody else 0.0
 
-    return f"""### 五、投资建议
+    return f"""### 投资建议
 
-#### 📋 拟购入评估
+#### 拟购入评估
 
 {buy_verdict}
 
@@ -1304,11 +1274,11 @@ def _section5_advice(
 - **择时建议：** 优先在转债估值低位（中证转债溢价率中位数 < 25%）时建仓
 - 若当前转债溢价率偏高，可等待估值回归后再入场
 
-#### 📋 已持有诊断
+#### 已持有诊断
 
 {hold_section}
 
-#### 📋 离场信号监测
+#### 离场信号监测
 
 {exit_text}
 
@@ -1339,9 +1309,8 @@ def _build_headline(
     """报告标题行"""
     cb_pct = cb_ratio * 100
     return (
-        f"## [混合一级债基深度分析] {fund_name}\n\n"
-        f"**分析日期：** {end_date}　｜　**统计区间：** {start_date} ~ {end_date}　｜　"
-        f"**综合评级：** {grade}\n\n"
+        f"## {fund_name} — 混合一级债基分析\n\n"
+        f"**统计区间：** {start_date} ~ {end_date}\n\n"
         f"**核心标签：** 债底保护 | 转债增强({cb_pct:.1f}%) | 信用打底 | 攻守兼备\n\n"
     )
 

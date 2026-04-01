@@ -1,6 +1,5 @@
 """
 指数型-固收基金 深度评价报告生成器 — fund_quant_v2
-角色：固收指数分析师（债券指数策略师）
 报告结构：5板块 + 10年国债技术分析专题
   1. 基本信息（跟踪精度模型 · 日偏离度分布 · 抽样复制偏离）
   2. 收益表现（收益对比 · 费用侵蚀模型 · 票息覆盖率）
@@ -27,17 +26,7 @@ def generate_idx_bond_report(
 
     Args:
         report: FundReport 对象
-        extra_data: pipeline 预加载的额外数据，包含：
-            - tracking_deviation: 日偏离度分析
-            - duration_analysis: 久期分析
-            - credit_analysis: 信用等级对齐
-            - rebalance_monitor: 调仓损耗监测
-            - fee_detail: 费率详情
-            - coupon_coverage: 票息覆盖率
-            - fee_erosion: 费率侵蚀模型
-            - ytm_estimate: YTM 估算
-            - rate_analysis: 10年国债技术分析
-            - index_name: 标的指数名称
+        extra_data: pipeline 预加载的额外数据
 
     Returns:
         {
@@ -112,7 +101,7 @@ def generate_idx_bond_report(
     sec1_lines = [
         f"**{fund_name}**（{symbol}）是跟踪 **{index_name}** 的指数型固收基金。",
         "",
-        "### 📈 收益表现概览",
+        "### 收益表现",
         f"| 指标 | 数值 |",
         f"|------|------|",
         f"| 累计收益 | {cum_fund:+.2f}% |",
@@ -128,7 +117,7 @@ def generate_idx_bond_report(
     # 跟踪精度分析
     sec1_lines.extend([
         "",
-        "### 🎯 跟踪精度模型",
+        "### 跟踪精度",
         "",
     ])
 
@@ -140,7 +129,7 @@ def generate_idx_bond_report(
     p95 = tracking_dev.get("p95", 0)
 
     sec1_lines.extend([
-        f"**日偏离度分布**：每日基金收益与指数收益的差值。",
+        f"**日偏离度**：每天基金收益和指数收益的差值，越小越好。",
         "",
         f"| 统计量 | 数值 |",
         f"|--------|------|",
@@ -161,7 +150,7 @@ def generate_idx_bond_report(
     if recent_30.get("mean_abs"):
         sec1_lines.extend([
             "",
-            f"**近30天偏离**：日均 {recent_30['mean_abs']*100:.4f}%，"
+            f"**近30天**：日均偏离 {recent_30['mean_abs']*100:.4f}%，"
             f"超阈值天数 {recent_30.get('over_threshold_pct', 0):.1f}%。",
         ])
 
@@ -172,14 +161,14 @@ def generate_idx_bond_report(
     # ================================================================
 
     sec2_lines = [
-        "### 📊 净值增长 vs 业绩比较基准",
+        "### 净值 vs 业绩比较基准",
         "",
         f"基金累计收益 **{cum_fund:+.2f}%** vs 基准 **{cum_bm:+.2f}%**，"
         f"超额 {cum_fund - cum_bm:+.2f}%。",
         "",
         "[INSERT_CHART: CUM_RET]",
         "",
-        "### 💰 费用侵蚀模型",
+        "### 费用侵蚀",
         "",
         f"| 费率项目 | 费率 |",
         f"|----------|------|",
@@ -203,9 +192,9 @@ def generate_idx_bond_report(
 
     if fee_eat:
         sec2_lines.extend([
-            f"**票息覆盖率分析**：债券收益本身就薄（年化约 {coupon_est:.1f}%），",
+            f"**票息覆盖率**：债券收益本来就薄（年化约 {coupon_est:.1f}%），",
             f"{fee_eat}。",
-            f"扣除费率后，净收益约 **{net_yield:.2f}%**。",
+            f"扣除费率后，到手净收益约 **{net_yield:.2f}%**。",
             "",
             f"评估：{assessment}",
         ])
@@ -215,7 +204,7 @@ def generate_idx_bond_report(
         hold_y = fee_erosion.get("hold_years", 5)
         sec2_lines.extend([
             "",
-            f"**持有{hold_y}年费率侵蚀**：",
+            f"**持有{hold_y}年的费率侵蚀**：",
             f"| 期限 | 总收益(含费) | 总收益(扣费) | 费率吞噬 |",
             f"|------|-------------|-------------|---------|",
             f"| 年化 | {fee_erosion['annual_return_gross']:+.2f}% | {fee_erosion['annual_return_net']:+.2f}% | {ter*100:.2f}% |",
@@ -234,7 +223,7 @@ def generate_idx_bond_report(
     # ================================================================
 
     sec3_lines = [
-        "### 📐 久期对照模型",
+        "### 久期对照",
         "",
     ]
 
@@ -244,7 +233,7 @@ def generate_idx_bond_report(
 
     if est_dur > 0:
         sec3_lines.extend([
-            f"根据持仓估算，组合**久期约 {est_dur:.2f} 年**（{dur_range}）。",
+            f"组合**久期约 {est_dur:.2f} 年**（{dur_range}）。",
             "",
         ])
 
@@ -266,7 +255,7 @@ def generate_idx_bond_report(
     # 信用等级对齐
     sec3_lines.extend([
         "",
-        "### 🔒 信用等级对齐分析",
+        "### 信用等级对齐",
         "",
     ])
 
@@ -299,7 +288,7 @@ def generate_idx_bond_report(
         if rate_total > 80:
             sec3_lines.append(
                 f"利率债（国债+政金债）合计 {rate_total:.1f}%，"
-                f"与目标指数定位高度一致，信用结构**干净**。"
+                f"和指数定位高度一致，信用结构**干净**。"
             )
         elif rate_total > 60:
             sec3_lines.append(
@@ -307,7 +296,7 @@ def generate_idx_bond_report(
             )
         else:
             sec3_lines.append(
-                f"利率债合计仅 {rate_total:.1f}%，信用结构偏离指数定位，需关注。"
+                f"利率债合计仅 {rate_total:.1f}%，信用结构偏离指数定位，需要留意。"
             )
 
     section3 = "\n".join(sec3_lines)
@@ -317,7 +306,7 @@ def generate_idx_bond_report(
     # ================================================================
 
     sec4_lines = [
-        "### 🔄 调仓损耗监测",
+        "### 调仓损耗",
         "",
     ]
 
@@ -339,7 +328,7 @@ def generate_idx_bond_report(
         ])
 
         if rebal_windows:
-            sec4_lines.append("### 调仓窗口偏离明细")
+            sec4_lines.append("### 调仓窗口明细")
             sec4_lines.append("")
             sec4_lines.append("| 调仓期 | 日均偏离 | 交易日数 |")
             sec4_lines.append("|--------|---------|---------|")
@@ -354,7 +343,7 @@ def generate_idx_bond_report(
             _assess_liquidity_risk(liq_risk, penalty, avg_rebal),
         ])
     else:
-        sec4_lines.append("调仓数据不足，无法进行调仓损耗分析。")
+        sec4_lines.append("调仓数据不足，无法进行分析。")
 
     # 回撤图
     sec4_lines.extend([
@@ -369,7 +358,7 @@ def generate_idx_bond_report(
     # ================================================================
 
     sec5_lines = [
-        "### 💰 收益预期：基于YTM水位",
+        "### 收益预期：基于YTM",
         "",
     ]
 
@@ -382,14 +371,14 @@ def generate_idx_bond_report(
     if est_ytm is not None:
         sec5_lines.extend([
             f"根据当前久期（{est_dur:.1f}年）和信用结构估算：",
-            f"",
+            "",
             f"| 收益来源 | 估算值 |",
             f"|----------|--------|",
             f"| 无风险利率 | {ytm_risk_free:.2f}% |",
             f"| 信用利差 | {ytm_credit:.2f}% |",
             f"| 久期溢价 | {ytm_dur_prem:.2f}% |",
             f"| **估算YTM** | **{est_ytm:.2f}%** |",
-            f"",
+            "",
             f"评估：{ytm_assess}",
         ])
     else:
@@ -398,28 +387,28 @@ def generate_idx_bond_report(
     # 适合人群
     sec5_lines.extend([
         "",
-        "### 👥 适合人群",
+        "### 适合人群",
         "",
     ])
 
     if dur_range in ("短久期", "中短久期"):
         sec5_lines.extend([
-            f"该基金跟踪{dur_range}指数，**适合避险型配置**：",
-            "- 追求稳定票息收入、不愿承受大幅波动的保守投资者",
+            f"该基金跟踪{dur_range}指数，**适合避险配置**：",
+            "- 追求稳定票息、不想承受大波动的保守型投资者",
             "- 作为组合的流动性管理和避险工具",
-            "- 有短期资金打理需求（如3-12个月）的资金",
+            "- 有短期资金打理需求（3-12个月）",
         ])
     elif dur_range in ("中久期", "中长久期"):
         sec5_lines.extend([
             f"该基金跟踪{dur_range}指数，**适合利率敏感型配置**：",
-            "- 对利率走势有一定判断能力的中级投资者",
+            "- 对利率走势有一定判断的中级投资者",
             "- 希望在利率下行周期获取资本利得的趋势投资者",
             "- 作为固收组合的核心配置（7-10年久期品种）",
         ])
     else:
         sec5_lines.extend([
             f"该基金跟踪{dur_range}指数，**适合趋势型配置**：",
-            "- 对利率走势有较强判断能力的进阶投资者",
+            "- 对利率走势有较强判断的进阶投资者",
             "- 能承受一定净值波动的投资者",
             "- 作为固收增强配置（长久期品种在利率下行时收益可观）",
         ])
@@ -427,25 +416,25 @@ def generate_idx_bond_report(
     # 买卖时点建议
     sec5_lines.extend([
         "",
-        "### ⏰ 买卖时点建议：与基准利率挂钩",
+        "### 买卖时点：跟着利率走",
         "",
         _build_timing_advice(est_dur, rate_analysis),
     ])
 
-    # 操作建议（保守派 vs 趋势派）
+    # 操作建议
     sec5_lines.extend([
         "",
-        "### 📌 操作建议",
+        "### 操作建议",
         "",
-        "**如果你是保守派**：",
-        f"- 选 1-3 年久期的指数品种，安心拿每年的票息",
+        "**保守派**：",
+        f"- 选 1-3 年久期的品种，安心拿每年的票息",
         f"- 不择时，长期持有，关注费率成本（当前 TER {ter*100:.2f}%）",
-        f"- 在利率上行周期也能控制回撤（短久期品种久期仅 1-3 年）",
+        f"- 利率上行周期也能控制回撤（短久期品种久期仅 1-3 年）",
         "",
-        "**如果你是趋势派**：",
+        "**趋势派**：",
         "- 盯着 10 年期国债收益率看，参考下方技术分析",
-        "- 只要收益率在下行通道，就选 7-10 年久期品种",
-        "- 一旦收益率开始横盘或掉头向上，立刻撤退到短久期品种避险",
+        "- 收益率在下行通道就选 7-10 年久期品种",
+        "- 收益率一旦横盘或掉头向上，赶紧切到短久期避险",
     ])
 
     # 10年国债收益率技术分析专题
@@ -453,7 +442,7 @@ def generate_idx_bond_report(
         "",
         "---",
         "",
-        "### 📈 10年国债收益率分析",
+        "### 10年国债收益率",
         "",
     ])
 
@@ -486,47 +475,47 @@ def generate_idx_bond_report(
         # 均线系统
         if ma20 is not None and ma60 is not None:
             sec5_lines.extend([
-                "**均线系统**：",
+                "**均线信号**：",
                 "",
             ])
             if death_cross:
                 sec5_lines.append(
-                    f"- 20日线（{ma20:.3f}%）**下穿** 60日线（{ma60:.3f}%），形成**死叉**，"
-                    f"通常确认下行趋势加剧。"
+                    f"20日线（{ma20:.3f}%）**下穿** 60日线（{ma60:.3f}%），形成**死叉**，"
+                    f"通常意味着下行趋势加剧。"
                 )
             elif golden_cross:
                 sec5_lines.append(
-                    f"- 20日线（{ma20:.3f}%）**上穿** 60日线（{ma60:.3f}%），形成**金叉**，"
-                    f"通常确认上行趋势启动。"
+                    f"20日线（{ma20:.3f}%）**上穿** 60日线（{ma60:.3f}%），形成**金叉**，"
+                    f"通常意味着上行趋势启动。"
                 )
             else:
                 sec5_lines.append(
-                    f"- 20日线（{ma20:.3f}%）与 60日线（{ma60:.3f}%）暂无交叉信号。"
+                    f"20日线（{ma20:.3f}%）与 60日线（{ma60:.3f}%）暂无交叉信号。"
                 )
 
         # 高低点分析
         if higher_highs or lower_lows:
-            sec5_lines.extend(["", "**高低点转换（Price Action）**：", ""])
+            sec5_lines.extend(["", "**高低点变化**：", ""])
             if lower_lows and not higher_highs:
                 sec5_lines.append(
                     "- 收益率呈现 **Lower Highs & Lower Lows**，"
-                    "每一个新高点比前低、每一个新低点也更低，典型下行通道。"
+                    "典型下行通道。"
                 )
             elif higher_highs and not lower_lows:
                 sec5_lines.append(
                     "- 收益率呈现 **Higher Highs & Higher Lows**，"
-                    "高点不断抬升、低点也不断抬升，典型上行通道。"
+                    "典型上行通道。"
                 )
 
         sec5_lines.extend([
             "",
-            "### 🏛️ 基本面判断：驱动力分析",
+            "### 基本面驱动",
             "",
-            "**货币政策（核心指标）**",
+            "**货币政策（最核心的变量）**",
             "",
-            "观察 MLF（中期借贷便利）和 LPR（贷款市场报价利率）：",
-            "- 若央行处于降息周期或频繁下调存款准备金率（RRR），10年期国债收益率通常处于下行通道",
-            "- 若 MLF/LPR 保持稳定或上调，收益率可能企稳或上行",
+            "盯紧 MLF 和 LPR：",
+            "- 央行降息或降准时，10年期国债收益率通常往下走",
+            "- MLF/LPR 保持稳定或上调，收益率可能企稳或上行",
             "",
             "**通胀与经济数据**",
             "",
@@ -535,15 +524,14 @@ def generate_idx_bond_report(
             "| 下行信号 | CPI/PPI 疲软，PMI < 50 | 收益率下行（债市牛） |",
             "| 上行信号 | 通胀抬头，社融超预期 | 收益率上行（债市熊） |",
             "",
-            "### 💭 情绪面与资金面",
+            "### 资金面与情绪面",
             "",
             "**存单利率（NCD）**",
-            "- 观察 1 年期同业存单利率",
-            "- 存单利率持续下行 = 银行体系资金充裕 = 向下引导 10Y 收益率",
+            "- 1年期同业存单利率持续下行 = 银行钱多 = 引导 10Y 收益率往下",
             "",
             "**股债跷跷板**",
-            "- 股市持续放量上涨时，10Y 收益率往往上行（资金从债市流向股市）",
-            "- 股市阴跌时，债市通常是避风港（资金涌入债市，收益率下行）",
+            "- 股市放量上涨时，资金从债市流出，10Y 收益率往往上行",
+            "- 股市阴跌时，债市成避风港，资金涌入债市，收益率下行",
             "",
             "[INSERT_CHART: Y10Y_TREND]",
         ])
@@ -593,9 +581,8 @@ def generate_idx_bond_report(
     }
 
     headline = (
-        f"## 📊 {fund_name} — 指数型固收深度分析  \n"
-        f"标的指数：{index_name}  |  估算久期：{est_dur:.1f}年（{dur_range}）  |  "
-        f"综合评分：{tool_score}（{tool_grade}）"
+        f"## {fund_name} — 指数型固收深度分析  \n"
+        f"标的指数：{index_name}  |  估算久期：{est_dur:.1f}年（{dur_range}）"
     )
 
     full_text = "\n\n".join([
@@ -637,29 +624,29 @@ def _assess_idx_bond_tracking(mean_abs: float, over_pct: float, corr: float) -> 
 
     if mean_abs <= 0.0003:
         parts.append(
-            f"跟踪质量**极优**。日均偏离仅 {mean_abs*100:.4f}%，"
-            f"抽样复制能力出色，基金经理拿货能力强。"
+            f"跟踪**极优**。日均偏离仅 {mean_abs*100:.4f}%，"
+            f"基金经理拿货能力很强。"
         )
     elif mean_abs <= 0.0005:
         parts.append(
-            f"跟踪质量**优良**。日均偏离 {mean_abs*100:.4f}%，在同类中属于优秀水平。"
+            f"跟踪**优良**。日均偏离 {mean_abs*100:.4f}%，同类中属于优秀水平。"
         )
     elif mean_abs <= 0.001:
         parts.append(
-            f"跟踪质量**一般**。日均偏离 {mean_abs*100:.4f}%，偏高于理想水平，"
+            f"跟踪**一般**。日均偏离 {mean_abs*100:.4f}%，偏高了一点，"
             f"可能受抽样复制偏差或现金拖累影响。"
         )
     else:
         parts.append(
-            f"跟踪质量**较差**。日均偏离 {mean_abs*100:.4f}%，"
-            f"显著偏离指数，说明经理拿货能力或抽样模型有待提高。"
+            f"跟踪**较差**。日均偏离 {mean_abs*100:.4f}%，"
+            f"明显偏离指数，经理拿货能力或抽样模型有待提高。"
         )
 
     # 超阈值分析
     if over_pct > 50:
         parts.append(
             f"注意：超过 0.05% 阈值的天数占比 {over_pct:.1f}%，"
-            f"意味着频繁出现较大跟踪偏离。"
+            f"频繁出现较大跟踪偏离。"
         )
 
     # 相关性
@@ -683,28 +670,28 @@ def _assess_duration_position(
     if trend == "down" or trend == "down_flat":
         if est_dur >= 5:
             lines.append(
-                f"当前处于**利率下行环境**，久期 {est_dur:.1f} 年的定位有利于获取资本利得。"
+                f"当前**利率下行**，久期 {est_dur:.1f} 年的定位有利于获取资本利得。"
             )
         else:
             lines.append(
-                f"当前处于**利率下行环境**，但久期仅 {est_dur:.1f} 年（{dur_range}），"
-                f"可能错失部分利率下行带来的资本利得。如看好利率继续下行，"
-                f"可考虑久期更长的同类产品。"
+                f"当前**利率下行**，但久期仅 {est_dur:.1f} 年（{dur_range}），"
+                f"可能错过部分利率下行带来的资本利得。如果看好利率继续往下走，"
+                f"可以考虑久期更长的同类产品。"
             )
     elif trend == "up" or trend == "up_flat":
         if est_dur <= 3:
             lines.append(
-                f"当前处于**利率上行环境**，短久期（{est_dur:.1f}年）定位是明智之举，"
+                f"当前**利率上行**，短久期（{est_dur:.1f}年）是明智之举，"
                 f"能有效控制利率风险。"
             )
         else:
             lines.append(
-                f"当前处于**利率上行环境**，久期 {est_dur:.1f} 年偏长，"
-                f"面临较大的净值回撤风险。建议关注短久期品种。"
+                f"当前**利率上行**，久期 {est_dur:.1f} 年偏长，"
+                f"净值回撤风险较大。建议关注短久期品种。"
             )
     else:
         lines.append(
-            f"当前利率方向不明，久期 {est_dur:.1f} 年（{dur_range}）的定位较为中性。"
+            f"利率方向不明，久期 {est_dur:.1f} 年（{dur_range}）的定位比较中性。"
         )
 
     if current_y10y is not None:
@@ -712,7 +699,7 @@ def _assess_duration_position(
         if pct <= 20:
             lines.append(
                 f"10Y 收益率处于历史 {pct:.0f}% 分位（低位），"
-                f"未来下行空间有限、上行风险更大，注意久期风险控制。"
+                f"往下空间有限、往上风险更大，注意久期风险控制。"
             )
         elif pct >= 80:
             lines.append(
@@ -725,10 +712,10 @@ def _assess_duration_position(
 
 def _format_liq_risk(risk: str) -> str:
     risk_map = {
-        "high": "🔴 高",
-        "medium": "🟡 中",
-        "low": "🟢 低",
-        "unknown": "⚪ 未知",
+        "high": "高",
+        "medium": "中",
+        "low": "低",
+        "unknown": "未知",
     }
     return risk_map.get(risk, risk)
 
@@ -738,18 +725,18 @@ def _assess_liquidity_risk(liq_risk: str, penalty: float, avg_rebal: float) -> s
     if liq_risk == "high":
         return (
             f"**流动性风险偏高**。调仓期偏离度异常放大（额外损耗 {penalty:.4f}%），"
-            f"说明该基金在跟踪指数时面临流动性黑洞。"
-            f"在大规模申赎时容易亏钱，建议关注基金规模和申赎状态。"
+            f"说明跟踪指数时遇到了流动性问题。"
+            f"大规模申赎时容易亏钱，建议关注基金规模和申赎状态。"
         )
     elif liq_risk == "medium":
         return (
-            f"**流动性风险中等**。调仓期有轻微的偏离放大（额外损耗 {penalty:.4f}%），"
-            f"属于可接受范围，但需关注调仓窗口前后的净值波动。"
+            f"**流动性风险中等**。调仓期有轻微偏离放大（额外损耗 {penalty:.4f}%），"
+            f"在可接受范围内，但需关注调仓前后的净值波动。"
         )
     elif liq_risk == "low":
         return (
             f"**流动性风险较低**。调仓期间偏离度控制良好，"
-            f"基金经理在调仓时的执行能力较强。"
+            f"基金经理调仓执行能力较强。"
         )
     return "流动性风险评估数据不足。"
 
@@ -765,28 +752,28 @@ def _build_timing_advice(est_dur: float, rate_analysis: dict) -> str:
 
     if trend == "down" or "down_flat":
         lines.extend([
-            f"**当前环境：利率下行趋势**（10Y: {current_y10y or '?'}%, {pattern}）",
+            f"**当前环境：利率下行**（10Y: {current_y10y or '?'}%, {pattern}）",
             "",
-            "- 预期国债收益率继续下行（债市牛市），**优先选久期偏长的指数品种**",
+            "- 预期国债收益率继续下行（债市牛市），**优先选久期偏长的品种**",
             "- 久期越长，利率下行时资本利得越可观",
             f"- 10Y 收益率处于历史 {pct:.0f}% 分位，"
               + ("下行空间仍大" if pct > 30 else "已处低位，注意止盈"),
         ])
     elif trend == "up" or "up_flat":
         lines.extend([
-            f"**当前环境：利率上行趋势**（10Y: {current_y10y or '?'}%, {pattern}）",
+            f"**当前环境：利率上行**（10Y: {current_y10y or '?'}%, {pattern}）",
             "",
-            "- 预期国债收益率上行（债市调整），**立刻撤退到短久期品种避险**",
+            "- 预期国债收益率上行（债市调整），**赶紧切到短久期避险**",
             "- 短久期品种在利率上行时回撤较小",
-            "- 若持有长久期品种，建议止损或转换为短久期产品",
+            "- 如果持有长久期品种，建议止损或换成短久期产品",
         ])
     else:
         lines.extend([
             f"**当前环境：利率方向不明**（10Y: {current_y10y or '?'}%, {pattern}）",
             "",
-            "- 震荡市中建议持有中等久期品种（3-5年）",
+            "- 震荡市建议持有中等久期品种（3-5年）",
             "- 密切关注 20日/60日均线交叉信号",
-            "- 一旦出现死叉或金叉，及时调整久期配置",
+            "- 出现死叉或金叉时，及时调整久期配置",
         ])
 
     return "\n".join(lines)

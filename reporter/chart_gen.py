@@ -29,21 +29,39 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
 
     返回用于图表绘制的基准数据。
     防御性：永远不返回 None，返回空 DataFrame 以避免下游崩溃
+
+    修复（2026-04-01）：
+    - 当 benchmark_df 已包含 bm_ret 且数据有效时，直接使用（避免重复获取和加权信息丢失）
+    - 仅当 bm_ret 数据质量可疑时才尝试重新获取
     """
     # P0-修复：空值保护，返回空 DataFrame 而非 None
     if benchmark_df is None or benchmark_df.empty:
         logger.warning("[chart_gen] 基准数据为空，返回空 DataFrame")
         return pd.DataFrame(columns=['date', 'bm_ret', 'tr_ret'])
 
+    # 如果已经有 bm_ret 列且数据有效（非全零），直接使用
+    # 这避免了重复获取和加权基准信息丢失的问题
+    if 'bm_ret' in benchmark_df.columns:
+        non_zero_count = (benchmark_df['bm_ret'] != 0).sum()
+        total_count = len(benchmark_df)
+        # 如果非零值超过 80%，说明数据质量良好，直接使用
+        if total_count > 0 and non_zero_count / total_count > 0.8:
+            # 如果同时有 tr_ret 列，保留它供下游使用
+            if 'tr_ret' not in benchmark_df.columns:
+                benchmark_df = benchmark_df.copy()
+                benchmark_df['tr_ret'] = benchmark_df['bm_ret']
+            logger.info(f"[chart_gen] 基准数据质量良好（{non_zero_count}/{total_count} 非零），直接使用")
+            return benchmark_df
+        else:
+            logger.warning(f"[chart_gen] 基准数据 bm_ret 质量较差（{non_zero_count}/{total_count} 非零），尝试重新获取")
+
     # 检查是否已经是全收益数据
-    # 如果benchmark_df中包含'tr_ret'列，说明已经是全收益数据
-    if 'tr_ret' in benchmark_df.columns:
-        # 重命名列为bm_ret以兼容现有代码
+    if 'tr_ret' in benchmark_df.columns and 'bm_ret' not in benchmark_df.columns:
         result_df = benchmark_df.copy()
         result_df['bm_ret'] = result_df['tr_ret']
         return result_df
 
-    # 如果没有全收益数据，尝试重新获取
+    # 如果没有有效的 bm_ret 数据，尝试重新获取
     # 从基准解析结果中提取指数代码
     if hasattr(basic, 'benchmark_parsed') and basic.benchmark_parsed and basic.benchmark_parsed.get('components'):
         # 只处理第一个基准组件（简化处理）
@@ -56,10 +74,8 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
                 end_date = benchmark_df['date'].max().strftime('%Y%m%d')
 
                 try:
-                    # 获取全收益指数数据
                     total_return_df = get_total_return_series(index_code, start_date, end_date)
                     if not total_return_df.empty and 'tr_ret' in total_return_df.columns:
-                        # 重命名列为bm_ret以兼容现有代码
                         total_return_df['bm_ret'] = total_return_df['tr_ret']
                         logger.info(f"[chart_gen] 成功获取全收益指数数据: {index_code}")
                         return total_return_df
@@ -67,15 +83,12 @@ def _replace_benchmark_for_charts(benchmark_df: pd.DataFrame, basic: Any) -> pd.
                     logger.warning(f"[chart_gen] 获取全收益指数失败: {e}")
 
     # 如果无法获取全收益数据，返回原始基准数据
-    # 修复：确保列名为bm_ret以兼容现有代码
     logger.info("[chart_gen] 使用原始基准数据")
     result_df = benchmark_df.copy()
     
-    # 如果原始数据的收益率列名为ret，重命名为bm_ret
     if 'ret' in result_df.columns and 'bm_ret' not in result_df.columns:
         result_df['bm_ret'] = result_df['ret']
     elif 'bm_ret' not in result_df.columns:
-        # 如果既没有ret也没有bm_ret，创建一个空列
         result_df['bm_ret'] = 0.0
         logger.warning("[chart_gen] 原始基准数据既没有ret列也没有bm_ret列")
     
@@ -175,11 +188,17 @@ def generate_chart_data(report: Any) -> Dict[str, Any]:
         if bond_class:
             charts['bond_holdings_pie'] = _bond_holdings_pie_chart(bond_class)
 
-    # 6.9 资产配置饼图（偏债混合型基金专用）
-    if report.bond_metrics and report.fund_type == "hybrid_bond":
+    # 6.9 资产配置饼图（偏债混合型 + 混合二级债基）
+    if report.bond_metrics and report.fund_type in ("hybrid_bond", "bond_mixed2"):
         asset_pie = _asset_allocation_pie_chart(report)
         if asset_pie:
             charts['asset_allocation_pie'] = asset_pie
+
+    # 6.11 转债「价格-溢价率」气泡图（混合一级/二级债基）
+    if report.bond_metrics and report.fund_type in ("bond_mixed1", "bond_mixed2"):
+        cb_bubble = _cb_price_premium_bubble_chart(report)
+        if cb_bubble:
+            charts['cb_price_premium'] = cb_bubble
 
     # 6.5 波动率区间监控图（绝对收益型专用）
     if report.fund_type == "hybrid_absreturn":
@@ -272,6 +291,18 @@ def _cumulative_return_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = 
         # 4. 对齐日期和填充缺失数据
         # 创建日期对齐的基准数据
         bm_aligned = bm_df.set_index('date').reindex(nav_df['date'], method='ffill')
+        
+        # 4.1 关键修复：对齐后填充 NaN
+        # 当基准数据起始日期晚于基金时，ffill 无法填充前面的 NaN
+        # 必须在对齐后再做一次 fillna(0)
+        if bm_aligned[f'{target_ret_col}_clean'].isna().any():
+            na_count = bm_aligned[f'{target_ret_col}_clean'].isna().sum()
+            total_count = len(bm_aligned)
+            logger.warning(
+                f"[_cumulative_return_chart] 基准对齐后有 {na_count}/{total_count} 个 NaN "
+                f"（基准起始可能晚于基金），填充为 0"
+            )
+            bm_aligned[f'{target_ret_col}_clean'] = bm_aligned[f'{target_ret_col}_clean'].fillna(0)
         
         # 5. 数据清洗预处理：剔除"伪平曲线"
         # 识别连续不变的基准收益率（可能表示数据缺失）
@@ -424,6 +455,15 @@ def _drawdown_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = None) -> 
         
         # 2. 对齐日期
         bm_aligned = bm_df.set_index('date').reindex(nav_df['date'], method='ffill')
+        
+        # 2.1 关键修复：对齐后填充 NaN
+        if bm_aligned[f'{target_ret_col}_clean'].isna().any():
+            na_count = bm_aligned[f'{target_ret_col}_clean'].isna().sum()
+            total_count = len(bm_aligned)
+            logger.warning(
+                f"[_drawdown_chart] 基准对齐后有 {na_count}/{total_count} 个 NaN，填充为 0"
+            )
+            bm_aligned[f'{target_ret_col}_clean'] = bm_aligned[f'{target_ret_col}_clean'].fillna(0)
         
         if not bm_aligned.empty and f'{target_ret_col}_clean' in bm_aligned.columns:
             # 3. 计算基准累计净值和回撤
@@ -740,6 +780,12 @@ def _excess_return_chart(nav_df: pd.DataFrame, benchmark_df: pd.DataFrame = None
         # ===================== 对齐日期 =====================
         # 确保基金和基准日期对齐
         bm_aligned = bm_df.set_index('date').reindex(nav_df['date'], method='ffill')
+        
+        # 对齐后填充 NaN
+        if bm_aligned[f'{target_ret_col}_clean'].isna().any():
+            na_count = bm_aligned[f'{target_ret_col}_clean'].isna().sum()
+            logger.warning(f"[_excess_return_chart] 基准对齐后有 {na_count} 个 NaN，填充为 0")
+            bm_aligned[f'{target_ret_col}_clean'] = bm_aligned[f'{target_ret_col}_clean'].fillna(0)
         
         if bm_aligned.empty or f'{target_ret_col}_clean' not in bm_aligned.columns:
             data['series'].append({
@@ -1223,6 +1269,77 @@ def _asset_allocation_pie_chart(report: Any) -> Dict:
         'values': values,
         'colors': colors,
         'title': '资产配置占比（股/债/转债/现金）'
+    }
+
+
+def _cb_price_premium_bubble_chart(report: Any) -> Dict:
+    """
+    转债「价格-溢价率」气泡图。
+
+    X 轴：正股价格（元）
+    Y 轴：转股溢价率（%）
+    气泡大小：占净值比例（%）
+    颜色：溢价率区间（低/合理/偏高/高估）
+
+    数据来源：report.chart_data["cb_holdings_df"]
+    图表标记：CB_PRICE_PREMIUM
+    """
+    if not hasattr(report, 'chart_data'):
+        return {}
+
+    cb_df = report.chart_data.get("cb_holdings_df")
+    if cb_df is None or not hasattr(cb_df, 'empty') or cb_df.empty:
+        return {}
+
+    # 检查必要列
+    required = {"stock_price", "premium_ratio", "债券名称"}
+    if not required.issubset(set(cb_df.columns)):
+        return {}
+
+    # 清洗数据
+    df = cb_df[["债券名称", "stock_price", "premium_ratio"]].dropna().copy()
+    if df.empty:
+        return {}
+
+    # 过滤异常值
+    df = df[df["stock_price"] > 0]
+    df = df[df["premium_ratio"].abs() < 200]  # 溢价率 < 200%
+    if df.empty:
+        return {}
+
+    # 占净值比例（气泡大小），可能有也可能没有
+    if "占净值比例" in cb_df.columns:
+        df["ratio"] = cb_df.loc[df.index, "占净值比例"].fillna(0.1)
+    else:
+        df["ratio"] = 0.1  # 默认小气泡
+    # 如果 ratio 是百分比格式（>1.5），转换为小数
+    df["ratio"] = df["ratio"].clip(lower=0.01)
+
+    # 颜色映射：溢价率区间
+    colors = []
+    for _, row in df.iterrows():
+        pr = float(row["premium_ratio"])
+        if pr <= 10:
+            colors.append("#27ae60")    # 绿色 - 低估
+        elif pr <= 20:
+            colors.append("#2ecc71")    # 浅绿 - 合理
+        elif pr <= 35:
+            colors.append("#e67e22")    # 橙色 - 偏高
+        else:
+            colors.append("#e74c3c")    # 红色 - 高估
+
+    # 气泡大小缩放
+    sizes = df["ratio"].values * 800  # 放大以显示
+    sizes = sizes.clip(min=15, max=80)
+
+    return {
+        'type': 'bubble',
+        'names': df["债券名称"].tolist(),
+        'x': df["stock_price"].tolist(),
+        'y': df["premium_ratio"].tolist(),
+        'sizes': sizes.tolist(),
+        'colors': colors,
+        'title': '转债持仓分布：价格 vs 溢价率（气泡=占净值比）',
     }
 
 

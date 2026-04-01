@@ -1,6 +1,5 @@
 """
 债券型基金深度评价报告生成器 — fund_quant_v2
-角色：资深固收研究员（FICCC 分析师）
 报告结构：5章节 + 图表插入点标记 + 利率专题（仅 bond_long）
 """
 
@@ -204,11 +203,9 @@ def _build_headline(
 ) -> str:
     """报告标题行"""
     return (
-        f"## [债基深度评级] {style_tag}：{fund_name} 固收穿透分析报告\n\n"
-        f"**分析日期：** {end_date}　｜　**统计区间：** {start_date} ~ {end_date}　｜　"
-        f"**综合评级：** {grade}\n\n"
-        f"**核心结论：** 该基金{grade_desc}。"
-        f"以下报告将从收益归因、风险防守、持有体验三个维度对其进行系统性穿透。"
+        f"## {fund_name} — {style_tag}\n\n"
+        f"**统计区间：** {start_date} ~ {end_date}\n\n"
+        f"该基金{grade_desc}，下面从持仓、收益、风险三个角度拆开看。"
     )
 
 
@@ -221,7 +218,7 @@ def _section0_bond_holdings_analysis(
     """零、债券持仓分析：券种配置与信用结构"""
     
     if not bond_classification:
-        return """### 零、债券持仓分析：券种配置与信用结构
+        return """### 债券持仓分析
 
 **数据说明：** 当前基金持仓数据正在加载中，请稍候刷新页面查看详细分析。
 
@@ -289,9 +286,9 @@ def _section0_bond_holdings_analysis(
 > **说明**：信用评级数据正在对接中，后续将展示详细的评级分布和变化趋势。
 """
     
-    return f"""### 零、债券持仓分析：券种配置与信用结构
+    return f"""### 债券持仓分析
 
-对于债券型基金而言，底层资产的信用质量和券种配置直接决定了其风险收益特征。
+这只债基的钱都投了什么债券，直接决定了它赚不赚得稳、亏不亏得深。
 
 **券种配置结构：**
 
@@ -320,7 +317,7 @@ def _section0_bond_holdings_analysis(
 
 - **利率债占比高**：净值波动较小，收益相对稳定，适合保守型投资者
 - **信用债占比高**：潜在收益更高，但需承担信用利差扩大风险
-- **城投/地产占比高**：对宏观政策和行业景气度敏感，需动态跟踪"}}"""
+- **城投/地产占比高**：对宏观政策和行业景气度敏感，需动态跟踪"""
 
 
 def _section1_return_logic(
@@ -345,43 +342,42 @@ def _section1_return_logic(
     # 久期解读
     if duration <= 1.5:
         dur_comment = (
-            f"该基金久期仅约 {duration:.1f} 年，偏向**超短端配置**，"
-            f"对利率波动极不敏感，几乎不依赖资本利得获利。"
+            f"该基金久期仅约 {duration:.1f} 年，几乎不依赖资本利得，"
+            f"赚的是实打实的票息钱。"
         )
     elif duration <= 3.0:
         dur_comment = (
-            f"该基金久期约 {duration:.1f} 年，属于**中短端布局**，"
-            f"在利率下行阶段可适度获取资本利得，但核心收益仍来自票息保护。"
+            f"该基金久期约 {duration:.1f} 年，利率下行时能吃到一点资本利得，"
+            f"但核心还是靠票息打底。"
         )
     else:
         dur_comment = (
-            f"该基金久期约 {duration:.1f} 年，属于**中长端配置**，"
-            f"经理有意拉长久期以博取资本利得，超额收益的波动性较高。"
+            f"该基金久期约 {duration:.1f} 年，经理有意拉长久期博资本利得，"
+            f"弹性大了，但利率一旦转向也会很受伤。"
         )
 
     # Alpha 债券三因子解读
     alpha_comment = ""
     if alpha_bond > 0.3:
         alpha_comment = (
-            f"\n\n债券三因子回归显示，在剔除短端利率、长端利率和信用利差的系统性贡献后，"
-            f"经理仍贡献了约 **{alpha_bond:.2f}%** 的年化纯Alpha，体现了选券和择时的综合优势。"
+            f"\n\n剔除利率和信用利差的系统性贡献后，"
+            f"经理还贡献了约 **{alpha_bond:.2f}%** 的年化纯Alpha，选券眼光不错。"
         )
     elif alpha_bond < -0.1:
         alpha_comment = (
             f"\n\n债券三因子回归显示，经理的年化Alpha为 **{alpha_bond:.2f}%**，"
-            f"系统性因子贡献了超额收益的绝大部分，需关注策略的可持续性。"
+            f"超额收益主要靠天吃饭，策略可持续性有待观察。"
         )
 
     return (
-        f"### 一、收益获取逻辑：票息与资本利得的动态平衡\n\n"
-        f"债基的收益由**票息（Carry）**和**资本利得（Capital Gain）**两部分构成。"
-        f"在评价 {fund_name} 时，我们以 {bm_label} 作为全收益基准进行对比。\n\n"
-        f"**数据表现：**\n"
+        f"### 收益逻辑：靠票息还是靠博弈\n\n"
+        f"债基的收益来自两块：**票息（持债收利息）** 和 **资本利得（利率下行赚差价）**。"
+        f"以 {bm_label} 为基准，看看这只基金赚得怎么样。\n\n"
+        f"**核心数据：**\n"
         f"统计区间（{start_date} ~ {end_date}）内，该基金年化收益率为 **{ann_ret:.2f}%**，"
         f"{bm_excess_sign}基准约 **{bps_abs} bps**（基准年化约 {ann_bm:.2f}%）。"
         f"区间累计收益 {cum_ret:.1f}%，基准累计 {cum_bm:.1f}%。\n\n"
         f"[INSERT_CHART: CUM_RET]\n\n"
-        f"**解读：**\n"
         f"{style_desc}"
         f"{dur_comment}"
         f"{alpha_comment}"
@@ -414,9 +410,7 @@ def _section2_drawdown_recovery(
     # 修复期文字
     if recovery_days > 0:
         recovery_text = (
-            f"净值在触底后经历 **{recovery_days} 个交易日**完成修复，{recovery_desc}。"
-            f"这种「坑浅、填得快」的特征，"
-            f"证明底层资产流动性良好且久期配置合理。"
+            f"净值在触底后用了 **{recovery_days} 个交易日**回血，{recovery_desc}。"
         )
     else:
         recovery_text = (
@@ -426,18 +420,16 @@ def _section2_drawdown_recovery(
     dd_date_text = f"（发生于 {dd_date_str}）" if dd_date_str else ""
 
     return (
-        f"### 二、风险边际控制：水下回撤与修复效率\n\n"
-        f"对于债基持有者，**回撤深度**和**「回血」速度**是决定持有信心的核心指标。"
-        f"回撤越浅、修复越快，持有人越不容易在低谷割肉。\n\n"
-        f"**数据表现：**\n"
+        f"### 回撤与修复：跌了能扛，亏了能回\n\n"
+        f"买债基最怕的不是赚得少，而是跌起来收不住、亏了半天回不来。"
+        f"下面看看这只基金的抗跌能力和回血速度。\n\n"
+        f"**核心数据：**\n"
         f"统计区间内，{fund_name} 的最大回撤为 **{fund_dd_abs:.2f}%**{dd_date_text}，"
         f"{vs_bm_text}\n\n"
         f"[INSERT_CHART: DRAWDOWN]\n\n"
-        f"**解读：**\n"
         f"{recovery_text}\n\n"
-        f"水下回撤图清晰呈现了历次调整的**深度与持续时长**。"
-        f"优秀的固收产品应呈现「回撤面积小、修复斜率陡」的形态——即每一次向下都浅而短暂，"
-        f"向上修复则迅速有力。这一特征是票息保护能力的直接体现。"
+        f"好的债基应该是「坑浅、填得快」——偶尔亏一点没关系，"
+        f"关键是要能快速涨回来。水下回撤图的形态最能说明问题。"
     )
 
 
@@ -457,53 +449,49 @@ def _section3_monthly_stability(
     # 月度胜率解读
     if pos_rate >= 92:
         win_rate_comment = (
-            f"在过去 **{total_months} 个月**中，仅有 **{neg_months} 个月**出现净值下滑，"
+            f"过去 **{total_months} 个月**中，只有 **{neg_months} 个月**是亏的，"
             f"正收益月份占比高达 **{pos_rate:.1f}%**。"
-            f"这意味着投资者在任意时点介入后，持有满3个月获得正收益的概率趋近于100%。"
+            f"基本上随便什么时候买入，持有3个月大概率不亏钱。"
         )
     elif pos_rate >= 80:
         win_rate_comment = (
-            f"在过去 **{total_months} 个月**中，正收益月份占比为 **{pos_rate:.1f}%**，"
-            f"共有 **{neg_months} 个月**出现轻微回调，整体持有体验较好。"
+            f"过去 **{total_months} 个月**中，正收益月份占比为 **{pos_rate:.1f}%**，"
+            f"共有 **{neg_months} 个月**出现轻微回调，整体持有体验还不错。"
         )
     else:
         win_rate_comment = (
-            f"在过去 **{total_months} 个月**中，正收益月份占比为 **{pos_rate:.1f}%**，"
-            f"波动较为明显，需关注持有期的回撤管理。"
+            f"过去 **{total_months} 个月**中，正收益月份占比为 **{pos_rate:.1f}%**，"
+            f"波动比较明显，持有体验不算稳定。"
         )
 
     # 卡玛比率解读
     if calmar >= 5.0:
         calmar_comment = (
-            f"卡玛比率（Calmar Ratio）高达 **{calmar:.1f}**，"
-            f"意味着每承担1%的最大回撤，可以换取 {calmar:.1f}% 的年化收益，"
-            f"风险收益效率属于**顶尖水平**。"
+            f"卡玛比率 **{calmar:.1f}**，"
+            f"意思是每承受1%的最大回撤，能换来 {calmar:.1f}% 的年化收益，性价比极高。"
         )
     elif calmar >= 2.0:
         calmar_comment = (
-            f"卡玛比率（Calmar Ratio）为 **{calmar:.1f}**，"
-            f"风险调整后收益表现**良好**，属于中上水平的固收产品。"
+            f"卡玛比率 **{calmar:.1f}**，风险调整后收益表现不错，"
+            f"属于中上水平的固收产品。"
         )
     else:
         calmar_comment = (
-            f"卡玛比率（Calmar Ratio）为 **{calmar:.1f}**，"
-            f"风险调整后收益表现**一般**，性价比有待提升。"
+            f"卡玛比率 **{calmar:.1f}**，性价比一般，还有提升空间。"
         )
 
     return (
-        f"### 三、波动率管理：持有体验的量化拆解\n\n"
-        f"波动率是衡量债基「持有体感」的终极指标。"
-        f"年化波动率 **{volatility:.2f}%** 的背后，是经理日复一日对流动性管理和杠杆控制的体现。\n\n"
-        f"**数据表现：**\n"
+        f"### 月度胜率：持有体验够不够稳\n\n"
+        f"年化波动率 **{volatility:.2f}%**，"
+        f"数字越小说明净值走得越稳，持有人的心理压力也越小。\n\n"
+        f"**核心数据：**\n"
         f"{win_rate_comment} "
         f"{calmar_comment}\n\n"
         f"[INSERT_CHART: HEATMAP]\n\n"
-        f"**解读：**\n"
-        f"月度热力图是持有体验最直观的展示。{hold_exp_desc}"
-        f"在债市出现理财赎回潮、资金面收紧等极端情形时，"
-        f"优秀的经理可以通过精细化的**流动性管理**和**杠杆压降**，"
-        f"将月度亏损控制在极小范围内。"
-        f"热力图中绿色（亏损）方格的深浅和密度，是判断经理防御能力的重要视觉信号。"
+        f"{hold_exp_desc}"
+        f"月度热力图里绿色（亏损）格子越少越浅，说明经理的防御做得越好。"
+        f"尤其在理财赎回潮、资金面收紧这种极端行情下，"
+        f"能把单月亏损控制在1%以内就算合格了。"
     )
 
 
@@ -527,20 +515,18 @@ def _conclusion_advice(
     # 经理画像
     if calmar >= 5.0 and abs(max_dd) <= 0.5:
         manager_portrait = (
-            "该经理是典型的**「绝对收益导向型」**选手。"
-            "不追求极致的业绩排名，但极其厌恶回撤。"
-            "收益来源清晰：通过严控信用风险，换取确定性的票息溢价。"
+            "这位经理属于**「求稳派」**，不追求排名，但极度厌恶回撤。"
+            "赚钱的方式很朴素：严控信用风险，吃确定性的票息。"
         )
     elif calmar >= 2.0:
         manager_portrait = (
-            "该经理是**「稳健收益型」**选手。"
-            "在票息积累的基础上，适度参与久期博弈，"
-            "追求在不同债市环境下均能获取稳健的正收益。"
+            "这位经理属于**「稳健派」**，票息打底的基础上偶尔参与久期博弈，"
+            "追求在各种市场环境下都能赚到钱。"
         )
     else:
         manager_portrait = (
-            "该经理风格偏向**「主动久期管理型」**，"
-            "在利率趋势判断上表现积极，收益弹性较大但回撤相对明显。"
+            "这位经理风格偏**「主动型」**，利率判断比较积极，"
+            "弹性大了但波动也不小，适合能扛得住回撤的投资者。"
         )
 
     # 核心风险点（基于利率预测 + 基金久期）
@@ -563,7 +549,7 @@ def _conclusion_advice(
     redeem_fee = basic.fee_redeem * 100 if hasattr(basic, 'fee_redeem') and basic.fee_redeem else 0.0
 
     return (
-        f"### 四、综合结论与投资建议\n\n"
+        f"### 综合结论与投资建议\n\n"
         f"**1. 经理画像**\n\n"
         f"{manager_portrait}\n\n"
         f"**2. 核心风险点**\n\n"
@@ -652,25 +638,25 @@ def _generate_risk_point(duration: float, wacs_score: float, rate_prediction: di
     if direction == "up" and duration >= 3.0:
         rate_impact = (
             f"\n\n**利率环境影响：**\n"
-            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"技术指标模型预测未来3个月10Y国债收益率将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（置信度：{confidence_cn}）。"
             f"\n\n由于该基金久期较长，在利率上行阶段，净值可能面临**资本利得亏损风险**，回撤幅度可能加大。"
         )
     elif direction == "down" and duration <= 2.0:
         rate_impact = (
             f"\n\n**利率环境影响：**\n"
-            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"技术指标模型预测未来3个月10Y国债收益率将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（置信度：{confidence_cn}）。"
             f"\n\n由于该基金久期较短，在利率下行阶段，可能因久期不足而**跟涨偏慢**，超额收益空间受限。"
         )
     elif direction == "down" and duration >= 3.0:
         rate_impact = (
             f"\n\n**利率环境影响：**\n"
-            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"技术指标模型预测未来3个月10Y国债收益率将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（置信度：{confidence_cn}）。"
             f"\n\n该基金久期较长，在利率下行阶段有望通过**资本利得放大收益**，但需警惕利率反弹时的回撤风险。"
         )
     else:
         rate_impact = (
             f"\n\n**利率环境影响：**\n"
-            f"根据技术指标模型，未来3个月10Y国债收益率预计将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（预测置信度：{confidence_cn}）。"
+            f"技术指标模型预测未来3个月10Y国债收益率将从 **{current:.2f}%** {direction_cn}至 **{mid_term:.2f}%**（置信度：{confidence_cn}）。"
             f"\n\n利率环境对基金表现影响中性，建议关注后续政策面变化。"
         )
 
@@ -697,26 +683,24 @@ def _infer_return_style(volatility: float, duration: float, calmar: float) -> tu
     if volatility <= 0.8 and duration <= 2.0:
         tag = "票息之石与回撤之盾"
         desc = (
-            "累计收益曲线**极度平滑**，向上斜率高度一致。"
-            "这表明经理并不依赖频繁的久期博弈（博取资本利得），"
-            "而是通过持有高质量信用债，赚取**确定性的票息收入**。"
-            "在利率下行周期中，超额收益缓慢但稳健地积累，体现了极佳的配置性价比。\n\n"
+            "累计收益曲线**极度平滑**，基本是一条稳步向上的直线。"
+            "经理不赌利率方向，踏踏实实赚票息，赚得慢但赚得稳。\n\n"
         )
     # 中等波动 + 中等久期 = 票息+适度博弈
     elif volatility <= 1.5 and duration <= 4.0:
         tag = "票息护城河与久期杠杆"
         desc = (
-            "累计收益曲线较为平稳，但在利率趋势行情中会出现**阶段性加速上扬**。"
-            "这表明经理在票息保护的基础上，会在判断利率趋势明确时适度拉长久期，"
-            "通过**资本利得放大收益**，整体策略兼顾稳健性与弹性。\n\n"
+            "收益曲线整体平稳，但在利率行情明确时会出现**阶段性加速上涨**。"
+            "说明经理在票息保护的基础上，偶尔也会拉长久期博一把，"
+            "属于"稳中求进"的策略。\n\n"
         )
     # 高波动 + 长久期 = 久期博弈主导
     else:
         tag = "久期博弈者的攻守之道"
         desc = (
-            "收益曲线呈现出较明显的**波动特征**，阶段性涨跌幅度超出纯债基金常见区间。"
-            "这表明经理主动参与久期博弈，在利率下行阶段通过**拉长组合久期**博取较大资本利得，"
-            "但在利率上行或震荡阶段亦会承受更深的回撤。\n\n"
+            "收益曲线**波动明显**，阶段性的涨跌幅度不小。"
+            "经理在利率下行时拉长久期博大收益，"
+            "但利率反转时也扛得住更大的回撤。\n\n"
         )
     return tag, desc
 
@@ -741,33 +725,31 @@ def _recovery_quality(recovery_days: int) -> str:
     if recovery_days <= 0:
         return "修复情况数据不足"
     elif recovery_days <= 10:
-        return "修复速度**极快**（10个交易日内完成修复，流动性管理出色）"
+        return "回血速度**极快**，10个交易日内就涨回来了"
     elif recovery_days <= 30:
-        return "修复速度**较快**（约1~1.5个月完成修复，属于良好水平）"
+        return "回血速度**较快**，大约1到1.5个月修复"
     elif recovery_days <= 60:
-        return "修复速度**一般**（约2~3个月完成修复，处于同类中游）"
+        return "回血速度**一般**，2到3个月才修复"
     else:
-        return f"修复速度**偏慢**（约 {recovery_days} 个交易日才完成修复，需关注经理的风险处置能力）"
+        return f"回血用了 **{recovery_days} 个交易日**，速度偏慢，需关注经理的风险处置能力"
 
 
 def _hold_experience(pos_rate: float, calmar: float) -> str:
     """持有体验评价"""
     if pos_rate >= 90 and calmar >= 4.0:
         return (
-            "该基金的持有体验属于**顶尖水平**。"
-            "负收益月份极少，且每次亏损幅度极小，"
-            "投资者几乎感受不到明显波动，是理想的「睡后资产」。"
+            "持有体验属于**顶尖水平**，"
+            "负收益月份极少，几乎感觉不到波动，是理想的"睡后资产"。"
         )
     elif pos_rate >= 80 and calmar >= 2.0:
         return (
-            "该基金的持有体验**良好**。"
-            "大多数月份保持正收益，偶有轻微回调，"
-            "整体节奏稳健，适合中低风险偏好的投资者长期持有。"
+            "持有体验**良好**，"
+            "大部分月份都是赚钱的，偶尔小幅回调，适合长期持有。"
         )
     else:
         return (
-            "该基金的持有体验**一般**，"
-            "月度收益波动相对明显，需要投资者具备一定的心理承受能力。"
+            "持有体验**一般**，"
+            "月度收益波动比较明显，需要投资者有一定的心理承受力。"
         )
 
 

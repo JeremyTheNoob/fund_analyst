@@ -142,9 +142,6 @@ with st.spinner("🧠 净值大模型分析中，请稍候..."):
 # 报告展示
 # ============================================================
 
-# 分隔线
-st.divider()
-
 if report is None:
     st.error("分析失败，请检查基金代码")
     st.stop()
@@ -153,11 +150,6 @@ text = report.text_report
 basic = report.basic
 fund_type = report.fund_type
 charts = report.chart_data
-
-# 移除旧的 Part 1（基础信息）和 Part 2（通用图表）
-# 深度报告中已包含所需图表和解读
-
-st.divider()
 
 # ============================================================
 # Part 3 + Part 4: 深度报告（权益类 vs 其他类型分路渲染）
@@ -1131,6 +1123,61 @@ def _render_bond_mixed2_report(report, charts, deep):
                 )
                 return fig
 
+            elif chart_key == "ASSET_ALLOCATION_PIE":
+                pie_data = charts.get("asset_allocation_pie", {})
+                if not (pie_data and "labels" in pie_data and "values" in pie_data):
+                    return None
+                fig = go.Figure(data=go.Pie(
+                    labels=pie_data["labels"],
+                    values=pie_data["values"],
+                    hole=0.4,
+                    marker=dict(colors=pie_data.get("colors", ["#e67e22", "#3498db", "#27ae60", "#e74c3c"])),
+                    textinfo="label+percent",
+                    textposition="outside",
+                    textfont=dict(size=12),
+                ))
+                fig.update_layout(
+                    title="资产配置占比（股/债/转债/现金）",
+                    height=380, margin=dict(t=50, b=30, l=60, r=60),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="v", yanchor="middle", y=0.5,
+                        xanchor="left", x=1.05, font=dict(size=11),
+                    ),
+                )
+                return fig
+
+            elif chart_key == "CB_PRICE_PREMIUM":
+                bubble = charts.get("cb_price_premium", {})
+                if not (bubble and "x" in bubble and "y" in bubble):
+                    return None
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=bubble["x"], y=bubble["y"],
+                    mode="markers+text",
+                    text=bubble.get("names", []),
+                    textposition="top center",
+                    textfont=dict(size=9),
+                    marker=dict(
+                        size=bubble.get("sizes", [20]*len(bubble["x"])),
+                        color=bubble.get("colors", ["#e67e22"]*len(bubble["x"])),
+                        opacity=0.7,
+                        line=dict(width=1, color="white"),
+                    ),
+                    hovertemplate="转债: %{text}<br>正股价: %{x:.2f}元<br>溢价率: %{y:.1f}%<extra></extra>",
+                ))
+                fig.add_hline(y=20, line_dash="dash", line_color="#95a5a6",
+                              annotation_text="合理线 (20%)")
+                fig.add_hline(y=35, line_dash="dash", line_color="#e67e22",
+                              annotation_text="偏高线 (35%)")
+                fig.update_layout(
+                    title=bubble.get("title", "转债价格 vs 溢价率"),
+                    xaxis_title="正股价格（元）",
+                    yaxis_title="转股溢价率（%）",
+                    height=420, margin=dict(t=50, b=30, l=60, r=20),
+                )
+                return fig
+
         except Exception as e:
             logger.error(f"[mixed2 chart] {chart_key} 渲染失败: {e}")
             return None
@@ -1284,6 +1331,37 @@ def _render_bond_mixed1_report(report, charts, deep):
                         orientation="h", yanchor="bottom", y=-0.25,
                         xanchor="center", x=0.5, font=dict(size=10),
                     )
+                )
+                return fig
+
+            elif chart_key == "CB_PRICE_PREMIUM":
+                bubble = charts.get("cb_price_premium", {})
+                if not (bubble and "x" in bubble and "y" in bubble):
+                    return None
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=bubble["x"], y=bubble["y"],
+                    mode="markers+text",
+                    text=bubble.get("names", []),
+                    textposition="top center",
+                    textfont=dict(size=9),
+                    marker=dict(
+                        size=bubble.get("sizes", [20]*len(bubble["x"])),
+                        color=bubble.get("colors", ["#e67e22"]*len(bubble["x"])),
+                        opacity=0.7,
+                        line=dict(width=1, color="white"),
+                    ),
+                    hovertemplate="转债: %{text}<br>正股价: %{x:.2f}元<br>溢价率: %{y:.1f}%<extra></extra>",
+                ))
+                fig.add_hline(y=20, line_dash="dash", line_color="#95a5a6",
+                              annotation_text="合理线 (20%)")
+                fig.add_hline(y=35, line_dash="dash", line_color="#e67e22",
+                              annotation_text="偏高线 (35%)")
+                fig.update_layout(
+                    title=bubble.get("title", "转债价格 vs 溢价率"),
+                    xaxis_title="正股价格（元）",
+                    yaxis_title="转股溢价率（%）",
+                    height=420, margin=dict(t=50, b=30, l=60, r=20),
                 )
                 return fig
 
@@ -1544,7 +1622,7 @@ def _render_idx_stock_report(report, charts, deep):
         _render_idx_stock_section(deep[sec_key])
         st.markdown("")
 
-    st.divider()
+    st.markdown("")
     _render_idx_stock_section(deep["section5"])
 
 
@@ -1700,7 +1778,7 @@ def _render_idx_bond_report(report, charts, deep):
         _render_idx_bond_section(deep[sec_key])
         st.markdown("")
 
-    st.divider()
+    st.markdown("")
     _render_idx_bond_section(deep["section5"])
 
 def _render_legacy_index_report(report, charts):
@@ -1831,7 +1909,7 @@ def _render_legacy_index_report(report, charts):
         _render_legacy_idx_section(deep_idx[sec_key])
         st.markdown("")
 
-    st.divider()
+    st.markdown("")
     st.markdown(deep_idx["conclusion"])
 
 
@@ -2280,7 +2358,7 @@ elif report.bond_metrics:
             _render_hybrid_bond_section(hybrid_bond_report[sec_key])
             st.markdown("")
 
-        st.divider()
+        st.markdown("")
         _render_hybrid_bond_section(hybrid_bond_report["section5"])
 
     else:
@@ -2575,13 +2653,13 @@ elif report.bond_metrics:
         st.markdown("")  # 章节间空行
 
     # ── 结论章节（可能包含利率预测图表）────────────────────────
-    st.divider()
+    st.markdown("")
     _render_bond_section(deep_bond["conclusion"])
 
     # ── 利率专题（仅 bond_long 长债型：10年国债收益率分析）───
     section_rate = deep_bond.get("section_rate", "")
     if section_rate:
-        st.divider()
+        st.markdown("")
         _render_bond_section(section_rate)
 
 elif report.index_metrics:
@@ -2768,7 +2846,7 @@ elif report.cb_metrics:
             st.markdown("")  # 章节间空行
 
     # ── 结论章节 ──────────────────────────────────────────────
-    st.divider()
+    st.markdown("")
     st.markdown(deep_cb["conclusion"])
 
 else:
@@ -2794,7 +2872,7 @@ else:
                         st.metric(label=label, value=value)
                 break
 
-    st.divider()
+    st.markdown("")
 
     # 深度诊断（兜底）
     col_l, col_r = st.columns([3, 2])
@@ -2804,10 +2882,9 @@ else:
         body_text = text.get("body", "")
         if body_text:
             sections = body_text.split("\n\n\n")
-            for i, section in enumerate(sections):
+            for section in sections:
                 st.markdown(section)
-                if i < len(sections) - 1:
-                    st.markdown("---")
+                st.markdown("")
 
         if report.tags:
             st.markdown("🏷️ **性格标签**")

@@ -374,12 +374,8 @@ def _run_equity_pipeline(
             logger.warning(f"[analyze_fund] {symbol} 历史资产配置加载失败: {e}")
 
     # 构建报告
-    has_benchmark = (
-        basic.benchmark_parsed and
-        basic.benchmark_parsed.get("components") and
-        len(basic.benchmark_parsed.get("components", [])) > 0
-    )
-
+    # 修复：无论 has_benchmark 是否为 True，只要 benchmark.df 有有效数据就传入 chart_data
+    # build_benchmark() 在 benchmark_parsed 为空时也会生成默认基准（沪深300全收益）
     chart_data = {
         "nav_df": clean_nav.df,
         "holdings": {
@@ -391,8 +387,12 @@ def _run_equity_pipeline(
             "historical_allocation": historical_allocation,
         },
     }
-    if has_benchmark:
+    # 始终尝试传入基准数据（只要非空）
+    if benchmark.df is not None and not benchmark.df.empty:
         chart_data["benchmark_df"] = benchmark.df
+        logger.info(f"[pipeline] {symbol} 基准数据已传入 chart_data: {benchmark.df.shape[0]} 行")
+    else:
+        logger.warning(f"[pipeline] {symbol} 基准数据为空，图表可能缺少基准曲线")
 
     report = FundReport(
         symbol=symbol,

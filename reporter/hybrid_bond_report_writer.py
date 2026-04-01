@@ -1,6 +1,5 @@
 """
 混合型-偏债基金深度评价报告生成器 — fund_quant_v2
-角色：资深固收+策略分析师
 报告结构：5板块 + 图表插入点标记 + 投资建议
 
 板块设计：
@@ -124,7 +123,7 @@ def generate_hybrid_bond_report(report: Any) -> dict:
     }.get(grade, "偏债基金品种")
 
     # ── 生成各章节 ─────────────────────────────────────
-    headline = _build_headline(fund_name, grade_desc, start_date, end_date, grade)
+    headline = _build_headline(fund_name, start_date, end_date)
 
     section1 = _section1_performance(
         fund_name, ann_ret, ann_bm, excess_bps, cum_ret, cum_bm,
@@ -193,56 +192,41 @@ def _section1_performance(
 
     # 夏普比率解读
     if sharpe >= 2.0:
-        sharpe_comment = (
-            f"夏普比率高达 **{sharpe:.2f}**，在承担单位风险的同时获取了极高的超额回报，"
-            f"风险调整后收益能力属于**顶尖水平**。"
-        )
+        sharpe_comment = f"夏普比率 **{sharpe:.2f}**，承担1单位风险能换回来超过2单位收益，这水平相当顶尖。"
     elif sharpe >= 1.0:
-        sharpe_comment = (
-            f"夏普比率为 **{sharpe:.2f}**，每承担1单位风险可获得超过1单位的超额收益，"
-            f"风险收益性价比**良好**，适合作为组合的核心底仓。"
-        )
+        sharpe_comment = f"夏普比率 **{sharpe:.2f}**，风险收益性价比不错，适合做组合的底仓。"
     elif sharpe >= 0.5:
-        sharpe_comment = (
-            f"夏普比率为 **{sharpe:.2f}**，风险调整后收益处于**中等水平**，"
-            f"作为「固收+」策略而言，超额收益的稳定性仍有提升空间。"
-        )
+        sharpe_comment = f"夏普比率 **{sharpe:.2f}**，中等水平，作为「固收+」策略来说，超额收益的稳定性还有提升空间。"
     else:
-        sharpe_comment = (
-            f"夏普比率仅 **{sharpe:.2f}**，风险收益性价比**偏弱**，"
-            f"需要关注基金是否过度暴露于权益风险或信用下沉。"
-        )
+        sharpe_comment = f"夏普比率只有 **{sharpe:.2f}**，承担了波动但没赚到多少超额收益，性价比不高。"
 
     # 稳健性解读（波动率 + 月度胜率）
     if volatility <= 1.5 and pos_rate >= 80:
         stability_desc = (
-            f"年化波动率仅 **{volatility:.2f}%**，在过去 {total_months} 个月中正收益月份占比 **{pos_rate:.0f}%**，"
-            f"净值曲线极为平滑，持有人体验**极佳**。这种「低波动+高胜率」的特征，"
-            f"是偏债混合基金作为「理财替代品」的核心竞争力。"
+            f"年化波动率只有 **{volatility:.2f}%**，"
+            f"过去 {total_months} 个月里 {pos_rate:.0f}% 都是正收益，"
+            f"持有体验非常好。这种「低波动+高胜率」就是偏债混合基金作为「理财替代品」的底气。"
         )
     elif volatility <= 3.0 and pos_rate >= 70:
         stability_desc = (
             f"年化波动率 **{volatility:.2f}%**，月度胜率 **{pos_rate:.0f}%**，"
-            f"整体走势稳健。偶有阶段性回撤，但修复速度较快，持有体验**良好**。"
+            f"整体走势稳健，偶尔有阶段性回撤但修复快，持有体验不错。"
         )
     else:
         stability_desc = (
             f"年化波动率达 **{volatility:.2f}%**，月度胜率 **{pos_rate:.0f}%**，"
-            f"波动特征偏权益化。需评估该基金的回撤修复能力和风险控制水平是否满足您的预期。"
+            f"波动有点偏权益化了。买偏债基金图的就是稳，这个波动水平需要掂量一下。"
         )
 
     # 索提诺比率补充
     sortino_comment = ""
     if sortino >= 2.0:
-        sortino_comment = (
-            f"\n\n索提诺比率（Sortino）为 **{sortino:.2f}**，"
-            f"在剔除上行波动后，下行风险控制能力尤为突出，体现了经理优秀的「守门员」意识。"
-        )
+        sortino_comment = f"\n\n索提诺比率 **{sortino:.2f}**，下行风险控制非常出色，经理有很强的「守门员」意识。"
 
     return (
-        f"### 一、收益表现：稳健性与性价比的双重检验\n\n"
-        f"偏债混合基金的核心价值在于「**比纯债多一层弹性，比偏股少一层恐惧**」。"
-        f"我们以 {bm_label} 作为基准，对 {fund_name} 的收益表现进行全景扫描。\n\n"
+        f"### 一、收益表现\n\n"
+        f"偏债混合基金的定位是「**比纯债多一层弹性，比偏股少一层恐惧**」。"
+        f"我们用 {bm_label} 做基准，看看 {fund_name} 表现如何。\n\n"
         f"**核心数据：**\n"
         f"- 年化收益率：**{ann_ret:.2f}%**（基准 {ann_bm:.2f}%，{bm_excess_sign} **{bps_abs} bps**）\n"
         f"- 区间累计收益：**{cum_ret:.1f}%**（基准 {cum_bm:.1f}%）\n"
@@ -275,23 +259,23 @@ def _section2_attribution(
     # 资产配置结构评价
     if sr <= 10:
         allocation_comment = (
-            f"**股票仓位仅 {sr:.1f}%**，基本属于「纯债增强型」配置，"
-            f"收益弹性有限，但回撤控制能力极强。适合作为绝对收益目标的底仓资产。"
+            f"股票仓位只有 {sr:.1f}%，基本是「纯债增强型」，"
+            f"收益弹性有限，但回撤控制非常强。适合追求绝对收益的底仓配置。"
         )
     elif sr <= 20:
         allocation_comment = (
-            f"**股票仓位 {sr:.1f}%** 处于偏债混合型的典型区间，"
-            f"在债底保护的基础上获取适度权益弹性，兼顾稳健性和收益增强。"
+            f"股票仓位 {sr:.1f}% 是偏债混合的典型水平，"
+            f"债券打底 + 适度权益增强，稳健和收益兼顾。"
         )
     elif sr <= 30:
         allocation_comment = (
-            f"**股票仓位 {sr:.1f}%** 偏高，权益暴露已接近混合平衡型水平，"
-            f"需关注经理的择时能力和回撤控制水平，净值波动可能显著高于同类偏债基金。"
+            f"股票仓位 {sr:.1f}% 偏高了，快赶上混合平衡型了，"
+            f"净值波动会比同类偏债基金大不少，要关注经理的择时和风控能力。"
         )
     else:
         allocation_comment = (
-            f"**股票仓位高达 {sr:.1f}%**，已远超偏债混合型的常规配置，"
-            f"⚠️ **注意**：该基金的实际风格可能已偏离「偏债」定位，更接近平衡混合型。"
+            f"股票仓位高达 {sr:.1f}%，这已经不像「偏债」了。"
+            f"实际风格可能更接近平衡混合型，买之前要想清楚自己能不能承受这个波动。"
         )
 
     # 转债评价
@@ -299,25 +283,23 @@ def _section2_attribution(
     if cb_ratio > 0.05:
         if cb_ratio <= 0.15:
             cb_comment = (
-                f"\n\n**可转债配置 {cb_r:.1f}%**，作为「进可攻退可守」的工具，"
-                f"在股市上涨时可获取权益弹性，下跌时有债底保护。"
+                f"\n\n可转债配了 {cb_r:.1f}%，是个不错的弹性工具——"
+                f"股市涨的时候能跟着涨，跌的时候有债底保护。"
             )
         else:
             cb_comment = (
-                f"\n\n**可转债配置高达 {cb_r:.1f}%**，显著提升了组合的权益弹性。"
-                f"但需注意转债整体估值水平对收益的影响——在转股溢价率偏高时，"
-                f"转债的「债底保护」可能名不副实。"
+                f"\n\n可转债配了 {cb_r:.1f}%，挺高的。"
+                f"转债估值偏高的时候，所谓的「债底保护」可能靠不住。"
             )
 
     # 收益贡献估算（简化模型）
-    # 假设：债券贡献 = bond_ratio * 3.5%（中债综合年化）；股票贡献 = stock_ratio * 沪深300年化
     bond_contribution = bond_ratio * 3.5
-    stock_contribution = stock_ratio * 8.0  # 沪深300长期年化约8-10%
+    stock_contribution = stock_ratio * 8.0
     cash_contribution = cash_ratio * 1.5
     other_contribution = ann_ret - bond_contribution - stock_contribution - cash_contribution
 
     contribution_text = (
-        f"**收益贡献估算（简化模型）：**\n\n"
+        f"**收益贡献估算：**\n\n"
         f"| 资产类别 | 仓位占比 | 估算贡献 | 说明 |\n"
         f"|---------|---------|---------|------|\n"
         f"| 债券 | {br:.1f}% | ≈ {bond_contribution:.2f}% | 票息 + 久期管理 |\n"
@@ -332,18 +314,19 @@ def _section2_attribution(
 
     if other_contribution > 0.5:
         contribution_text += (
-            f"\n\n> **Alpha 解读**：基金经理通过主动管理贡献了约 **{other_contribution:.2f}%** 的超额收益，"
-            f"体现了选券和择时方面的综合能力。"
+            f"\n\n经理通过主动管理多赚了约 **{other_contribution:.2f}%**，"
+            f"选券和择时能力还可以。"
         )
     elif other_contribution < -0.5:
         contribution_text += (
-            f"\n\n> **Alpha 解读**：基金经理的主动管理贡献约为 **{other_contribution:.2f}%**，"
-            f"存在**负向Alpha**，建议关注管理人的投资策略稳定性。"
+            f"\n\n经理的主动管理反而拖累了约 **{abs(other_contribution):.2f}%**，"
+            f"超额收益为负，要想想是不是策略出了问题。"
         )
 
     return (
-        f"### 二、收益归因：股债协同的收益拆解\n\n"
-        f"理解偏债混合基金的收益来源，需要将其拆解为「**债券底仓 + 股票增强 + 现金管理**」三部分。\n\n"
+        f"### 二、收益归因\n\n"
+        f"偏债混合的收益来源可以拆成「**债券底仓 + 股票增强 + 现金管理**」三块。"
+        f"下面来看看每块贡献了多少。\n\n"
         f"[INSERT_CHART: ASSET_ALLOCATION_PIE]\n\n"
         f"**资产配置结构：**\n\n"
         f"{allocation_comment}"
@@ -371,25 +354,25 @@ def _section3_bond_deep(
 
         bond_pie_text = (
             f"[INSERT_CHART: BOND_HOLDINGS_PIE]\n\n"
-            f"**数据解读：**\n\n"
-            f"- **利率债（国债、政金债）**：{gov_ratio:.1f}% — 风险最低，票息确定性高\n"
-            f"- **信用债（企业债、公司债）**：{credit_ratio:.1f}% — 收益增强来源\n"
+            f"**券种分布：**\n\n"
+            f"- **利率债**（国债、政金债）：{gov_ratio:.1f}% — 最安全，票息确定\n"
+            f"- **信用债**（企业债、公司债）：{credit_ratio:.1f}% — 收益增强来源\n"
             f"- **城投债**：{urban_ratio:.1f}% — 区域性债务\n"
-            f"- **地产债**：{estate_ratio:.1f}% — 周期性敏感\n"
+            f"- **地产债**：{estate_ratio:.1f}% — 跟房地产周期走\n"
         )
 
         # 信用结构分析
         credit_analysis = []
         if gov_ratio > 60:
-            credit_analysis.append("**利率债占比超六成**，信用风险极低，组合安全性极高")
+            credit_analysis.append("利率债占比超六成，信用风险极低，组合很安全")
         elif gov_ratio > 30:
-            credit_analysis.append("**利率债占比三成以上**，具备一定防御性，同时通过信用债增厚收益")
+            credit_analysis.append("利率债占比三成以上，有一定防御性，同时用信用债增厚收益")
         else:
-            credit_analysis.append("**利率债占比较低**，主要通过信用下沉获取超额收益，需关注信用风险")
+            credit_analysis.append("利率债占比较低，主要靠信用下沉赚超额，要关注信用风险")
         if urban_ratio > 10:
-            credit_analysis.append(f"城投债占比 {urban_ratio:.1f}%，需关注地方债务化解进展")
+            credit_analysis.append(f"城投债占比 {urban_ratio:.1f}%，关注地方债务化解进展")
         if estate_ratio > 5:
-            credit_analysis.append(f"地产债占比 {estate_ratio:.1f}%，需密切关注房地产政策调控")
+            credit_analysis.append(f"地产债占比 {estate_ratio:.1f}%，盯紧房地产政策")
     else:
         bond_pie_text = "债券持仓数据暂不可用，建议稍后刷新查看。\n\n"
         credit_analysis = []
@@ -397,28 +380,28 @@ def _section3_bond_deep(
     # 久期分析
     if duration <= 2.0:
         dur_type = "短债型"
-        dur_comment = f"组合久期约 **{duration:.1f} 年**，属于**短债配置**，对利率波动极不敏感。加息100BP预计仅影响净值约 {duration:.1f}%，防御能力极强。"
+        dur_comment = f"组合久期约 **{duration:.1f} 年**，短债配置，对利率波动不敏感。加息100BP大概影响净值 {duration:.1f}%，防御力很强。"
     elif duration <= 4.0:
         dur_type = "中短债型"
-        dur_comment = f"组合久期约 **{duration:.1f} 年**，属于**中短端布局**，在利率下行阶段可适度获取资本利得，同时保持较低的利率敏感度。加息100BP预计影响净值约 {duration:.1f}%。"
+        dur_comment = f"组合久期约 **{duration:.1f} 年**，中短端布局，利率下行时能吃到资本利得，加息100BP大概影响 {duration:.1f}%。"
     else:
         dur_type = "中长债型"
-        dur_comment = f"组合久期约 **{duration:.1f} 年**，属于**中长端配置**，利率敏感度较高。加息100BP预计影响净值约 {duration:.1f}%，需关注利率上行风险。"
+        dur_comment = f"组合久期约 **{duration:.1f} 年**，中长端配置，利率敏感度较高。加息100BP大概影响 {duration:.1f}%，要注意利率上行风险。"
 
     # WACS 信用评分
     if wacs_score >= 80:
-        wacs_comment = f"持仓加权平均信用评分（WACS）为 **{int(wacs_score)} 分**，信用资质**优良**，违约风险极低。"
+        wacs_comment = f"持仓加权平均信用评分（WACS）**{int(wacs_score)} 分**，信用资质优良，违约风险极低。"
     elif wacs_score >= 60:
-        wacs_comment = f"持仓加权平均信用评分（WACS）为 **{int(wacs_score)} 分**，信用资质**中等**，以AA级信用债为主。"
+        wacs_comment = f"持仓加权平均信用评分（WACS）**{int(wacs_score)} 分**，信用资质中等，以AA级信用债为主。"
     else:
-        wacs_comment = f"持仓加权平均信用评分（WACS）为 **{int(wacs_score)} 分**，信用资质**偏低**，存在一定的信用下沉博弈。"
+        wacs_comment = f"持仓加权平均信用评分（WACS）**{int(wacs_score)} 分**，信用资质偏低，存在信用下沉博弈。"
 
     # Alpha 解读
     alpha_comment = ""
     if alpha_bond > 0.3:
-        alpha_comment = f"\n\n债券三因子回归显示，经理贡献了约 **{alpha_bond:.2f}%** 的年化纯Alpha，体现了选券和择时的综合优势。"
+        alpha_comment = f"\n\n债券三因子回归显示，经理贡献了约 **{alpha_bond:.2f}%** 的年化纯Alpha，选券和择时有真功夫。"
     elif alpha_bond < -0.1:
-        alpha_comment = f"\n\n债券三因子回归显示，年化Alpha为 **{alpha_bond:.2f}%**，超额收益主要来自系统性因子。"
+        alpha_comment = f"\n\n债券三因子回归显示，年化Alpha为 **{alpha_bond:.2f}%**，超额收益主要来自系统性因子，主动管理没加分。"
 
     # 信用分析文本
     credit_text = ""
@@ -426,12 +409,11 @@ def _section3_bond_deep(
         credit_text = "\n\n**信用结构分析：**\n\n" + "\n".join(f"- {c}" for c in credit_analysis)
 
     return (
-        f"### 三、债券持仓深度分析：券种、久期与利率敏感度\n\n"
-        f"对于偏债混合基金，债券底仓的质量直接决定了组合的安全垫厚度。\n\n"
-        f"**券种配置：**\n\n"
+        f"### 三、债券持仓深度分析\n\n"
+        f"对于偏债混合基金，债券底仓的质量直接决定了安全垫有多厚。\n\n"
         f"{bond_pie_text}"
         f"**久期分析：**\n\n"
-        f"- **久期类型**：{dur_type}（{duration:.1f} 年）\n"
+        f"- 久期类型：{dur_type}（{duration:.1f} 年）\n"
         f"- {dur_comment}\n\n"
         f"**信用质量：**\n\n"
         f"- {wacs_comment}"
@@ -458,13 +440,11 @@ def _section4_risk_warning(
     redline_warnings = []
     if sr > 30:
         redline_warnings.append(
-            f"⚠️ **仓位逼近合同红线**：股票仓位 {sr:.1f}% 已超过偏债混合型常规上限（30%），"
-            f"风格漂移风险较高，需关注合同条款中的权益仓位限制。"
+            f"股票仓位 {sr:.1f}% 已超过偏债混合型常规上限（30%），风格漂移风险较高"
         )
     elif sr > 20:
         redline_warnings.append(
-            f"📊 **仓位偏高预警**：股票仓位 {sr:.1f}% 处于偏债混合型的上限区间，"
-            f"在市场急跌时可能面临较大回撤压力。"
+            f"股票仓位 {sr:.1f}% 处于偏债混合的上限区间，市场急跌时回撤压力不小"
         )
 
     # 仓位趋势（如果有历史数据）
@@ -473,21 +453,20 @@ def _section4_risk_warning(
         stock_comment = "\n\n" + "\n".join(f"- {w}" for w in redline_warnings)
     else:
         stock_comment = (
-            f"\n\n当前股票仓位 **{sr:.1f}%** 处于合理区间，"
-            f"暂无仓位越限风险。"
+            f"\n\n当前股票仓位 **{sr:.1f}%** 处于合理区间，暂无仓位越限风险。"
         )
 
     # ---- 回撤分析 ----
     dd_date_text = f"（发生于 {dd_date_str}）" if dd_date_str else ""
 
     if fund_dd_abs <= 1.0:
-        dd_quality = "回撤控制**极其优秀**，属于顶尖防御水平"
+        dd_quality = "回撤控制极其优秀"
     elif fund_dd_abs <= 3.0:
-        dd_quality = "回撤控制**良好**，处于偏债混合型基金的合理范围"
+        dd_quality = "回撤控制良好，正常水平"
     elif fund_dd_abs <= 5.0:
-        dd_quality = "回撤控制**一般**，需关注是否因权益仓位过高导致"
+        dd_quality = "回撤控制一般，可能因为权益仓位偏高"
     else:
-        dd_quality = "回撤控制**偏弱**，最大回撤已超过偏债混合型的常见区间"
+        dd_quality = "回撤控制偏弱，已超过偏债混合的常见区间"
 
     # 基准对比
     bm_dd_abs = abs(max_dd_bm)
@@ -495,21 +474,21 @@ def _section4_risk_warning(
     if bm_dd_abs > 0:
         vs_bm_text = (
             f"同期基准最大回撤 {bm_dd_abs:.2f}%，"
-            f"该基金为基准回撤深度的 **{defensive_ratio:.0%}**，{dd_quality}。"
+            f"该基金为基准回撤的 **{defensive_ratio:.0%}**，{dd_quality}。"
         )
 
     # ---- 修复天数 ----
     if recovery_days > 0:
         if recovery_days <= 15:
-            recovery_comment = f"经历 **{recovery_days} 个交易日**完成修复，修复速度**极快**。"
+            recovery_comment = f"**{recovery_days} 个交易日**就修复了，修复速度很快。"
         elif recovery_days <= 45:
-            recovery_comment = f"经历 **{recovery_days} 个交易日**完成修复，修复速度**较快**。"
+            recovery_comment = f"用了 **{recovery_days} 个交易日**修复，速度还可以。"
         elif recovery_days <= 90:
-            recovery_comment = f"经历 **{recovery_days} 个交易日**完成修复，修复速度**一般**。"
+            recovery_comment = f"用了 **{recovery_days} 个交易日**修复，磨了一阵子。"
         else:
-            recovery_comment = f"经历 **{recovery_days} 个交易日**完成修复，修复速度**偏慢**，需关注经理的风险处置能力。"
+            recovery_comment = f"用了 **{recovery_days} 个交易日**才修复，修复比较慢，风控能力存疑。"
     else:
-        recovery_comment = "统计区间内尚未完全修复至前高，或回撤持续时间较短。"
+        recovery_comment = "统计区间内尚未完全修复至前高，或者回撤持续时间很短。"
 
     # ---- 利率环境影响 ----
     rate_comment = ""
@@ -524,17 +503,17 @@ def _section4_risk_warning(
         dir_cn = dir_map.get(direction, "震荡")
         rate_comment = (
             f"\n\n**利率环境研判：**\n\n"
-            f"技术指标模型预测未来3个月10Y国债收益率将从 **{current_rate:.2f}%** {dir_cn}至 **{mid_term_rate:.2f}%**"
+            f"技术指标预测未来3个月10Y国债收益率从 **{current_rate:.2f}%** {dir_cn}至 **{mid_term_rate:.2f}%**"
             f"（置信度 {int(confidence * 100)}%）。"
         )
         if direction == "up" and duration >= 3.0:
             rate_comment += (
-                f"\n\n⚠️ **利率上行风险**：该基金久期较长（{duration:.1f}年），"
-                f"在利率上行阶段可能面临较大的资本利得亏损风险。"
+                f"\n\n**利率上行风险**：该基金久期较长（{duration:.1f}年），"
+                f"利率上行阶段可能面临较大亏损。"
             )
         elif direction == "down":
             rate_comment += (
-                f"在利率下行周期中，该基金有望通过久期管理获取额外的资本利得收益。"
+                f"\n\n利率下行周期中，基金有望通过久期管理多吃到一些资本利得。"
             )
 
     # ---- 压力测试 ----
@@ -556,13 +535,12 @@ def _section4_risk_warning(
         )
 
     return (
-        f"### 四、风险预警：仓位穿透与回撤防御\n\n"
-        f"**1. 股票仓位穿透监测**\n\n"
-        f"偏债混合基金的合同通常对股票仓位有明确上限（常见为30%或40%），"
-        f"仓位逼近红线是风格漂移的重要预警信号。"
+        f"### 四、风险预警\n\n"
+        f"**1. 股票仓位穿透**\n\n"
+        f"偏债混合基金的合同通常对股票仓位有上限（常见30%或40%），仓位逼近红线意味着风格可能漂移了。"
         f"{stock_comment}\n\n"
-        f"**2. 回撤深度与修复能力**\n\n"
-        f"统计区间内，{fund_name} 的最大回撤为 **{fund_dd_abs:.2f}%**{dd_date_text}。"
+        f"**2. 回撤与修复**\n\n"
+        f"统计区间内，{fund_name} 最大回撤 **{fund_dd_abs:.2f}%**{dd_date_text}。"
         f"{vs_bm_text}\n\n"
         f"[INSERT_CHART: DRAWDOWN]\n\n"
         f"{recovery_comment}"
@@ -588,57 +566,53 @@ def _section5_investment_advice(
     # ---- 拟买入 ----
     if grade in ("A+", "A"):
         buy_advice = (
-            f"**推荐评级：⭐⭐⭐⭐⭐ 积极配置**\n\n"
-            f"该基金综合评级 {grade}（{grade_desc}），夏普比率 {sharpe:.2f}，最大回撤 {abs(max_dd):.2f}%，"
-            f"各项指标均处于偏债混合型的**第一梯队**。"
-            f"\n\n建议作为固收组合的**核心底仓**配置，适合追求稳健增值的投资者。"
-            f"在市场震荡期可发挥「稳定器」作用，在牛市中也可通过权益仓位获取弹性收益。"
+            f"该基金综合评级 {grade}（{grade_desc}），夏普 {sharpe:.2f}，最大回撤 {abs(max_dd):.2f}%，"
+            f"各项指标都在偏债混合的第一梯队。\n\n"
+            f"建议作为固收组合的**核心底仓**，追求稳健增值。"
+            f"市场震荡时能当「稳定器」，牛市中也能通过权益仓位吃到弹性收益。"
         )
     elif grade == "B":
         buy_advice = (
-            f"**推荐评级：⭐⭐⭐ 可配置**\n\n"
-            f"该基金综合评级 {grade}，表现处于同类**中等水平**。"
-            f"夏普比率 {sharpe:.2f}，最大回撤 {abs(max_dd):.2f}%。"
-            f"\n\n可作为固收组合的**卫星配置**，建议小仓位观察，待业绩企稳后再考虑加仓。"
-            f"需特别关注基金经理的投资风格稳定性和信用风险管理能力。"
+            f"该基金综合评级 {grade}，表现中等。夏普 {sharpe:.2f}，最大回撤 {abs(max_dd):.2f}%。\n\n"
+            f"可以小仓位观察，等业绩企稳再考虑加仓。"
+            f"重点关注基金经理的风格稳定性和信用风险管理能力。"
         )
     else:
         buy_advice = (
-            f"**推荐评级：⭐⭐ 谨慎观察**\n\n"
-            f"该基金综合评级 {grade}，多项指标处于偏债混合型的**后段**。"
-            f"建议暂缓配置，等待基金经理调整策略或市场环境改善后再做评估。"
+            f"该基金综合评级 {grade}，多项指标处于偏债混合的后段。\n\n"
+            f"建议暂缓配置，等基金经理调整策略或市场环境改善后再评估。"
         )
 
     # ---- 持有中 ----
     hold_signals = []
     if sharpe >= 1.0:
-        hold_signals.append("夏普比率保持健康水平，风险收益性价比良好 ✅")
+        hold_signals.append("夏普比率健康，风险收益性价比还行")
     else:
-        hold_signals.append(f"夏普比率降至 {sharpe:.2f}，风险收益性价比下降 ⚠️")
+        hold_signals.append(f"夏普比率降到 {sharpe:.2f}，性价比在下降")
 
     if abs(max_dd) <= 3.0:
-        hold_signals.append("最大回撤处于可控范围，防御能力稳定 ✅")
+        hold_signals.append("最大回撤可控，防御能力稳定")
     elif abs(max_dd) > 5.0:
-        hold_signals.append(f"最大回撤达 {abs(max_dd):.2f}%，超出偏债混合型正常区间 ❌")
+        hold_signals.append(f"最大回撤达 {abs(max_dd):.2f}%，超出偏债混合的正常范围")
 
     if stock_ratio <= 0.25:
-        hold_signals.append("权益仓位合理，无风格漂移风险 ✅")
+        hold_signals.append("权益仓位合理，没有风格漂移")
     elif stock_ratio > 0.35:
-        hold_signals.append(f"权益仓位 {stock_ratio:.0%} 偏高，风格偏离偏债定位 ❌")
+        hold_signals.append(f"权益仓位 {stock_ratio:.0%} 偏高，风格偏离了偏债定位")
 
     if calmar >= 2.0:
-        hold_signals.append(f"卡玛比率 {calmar:.1f}，回撤修复效率高 ✅")
+        hold_signals.append(f"卡玛比率 {calmar:.1f}，回撤修复效率高")
 
     hold_advice = (
         f"**持有诊断：**\n\n"
         + "\n".join(f"- {s}" for s in hold_signals)
         + "\n\n> 综合评估："
     )
-    negative_signals = sum(1 for s in hold_signals if "❌" in s)
+    negative_signals = sum(1 for s in hold_signals if "超出" in s or "偏离" in s or "下降" in s)
     if negative_signals >= 2:
-        hold_advice += "多项预警信号触发，建议**降低仓位或转入观察模式**。"
+        hold_advice += "多项预警触发，建议**降低仓位或转入观察模式**。"
     elif negative_signals == 1:
-        hold_advice += "存在个别风险信号，建议**密切跟踪下一季度报告**。"
+        hold_advice += "有个别风险信号，**密切跟踪下一季报**。"
     else:
         hold_advice += "各项指标健康，**继续持有**。"
 
@@ -651,23 +625,22 @@ def _section5_investment_advice(
 
     exit_advice = (
         f"**离场信号监测：**\n\n以下任一条件触发时，建议启动离场评估：\n\n"
-        + "\n".join(f"- ⚡ {s}" for s in exit_signals)
+        + "\n".join(f"- {s}" for s in exit_signals)
     )
 
     return (
         f"### 五、投资建议\n\n"
-        f"**📊 拟买入评估**\n\n"
+        f"**拟买入评估**\n\n"
         f"{buy_advice}\n\n"
         f"---\n\n"
-        f"**🔄 持有中诊断**\n\n"
+        f"**持有中诊断**\n\n"
         f"{hold_advice}\n\n"
         f"---\n\n"
         f"{exit_advice}\n\n"
         f"---\n\n"
         f"**成本项披露：**\n\n"
         f"- 管理费率：{mgmt_fee:.2f}%　托管费率：{custody_fee:.2f}%\n\n"
-        f"> **风险提示：** 以上分析基于历史数据，不构成任何投资建议。"
-        f"过往业绩不代表未来表现。基金有风险，投资需谨慎。"
+        f"> **风险提示：** 以上分析基于历史数据，不构成投资建议。过往业绩不代表未来表现。"
     )
 
 
@@ -714,14 +687,13 @@ def _format_date(d) -> str:
         return str(d)
 
 
-def _build_headline(fund_name, grade_desc, start_date, end_date, grade) -> str:
-    """报告标题行"""
+def _build_headline(fund_name, start_date, end_date) -> str:
+    """报告标题行（无评分/评级）"""
     return (
-        f"## [偏债混合深度评级] {fund_name} — {grade_desc}\n\n"
-        f"**分析日期：** {end_date}　｜　**统计区间：** {start_date} ~ {end_date}　｜　"
-        f"**综合评级：** {grade}\n\n"
-        f"以下报告从收益表现、资产归因、债券持仓、风险预警、投资建议五个维度"
-        f"对 {fund_name} 进行系统性穿透分析。"
+        f"## {fund_name} — 混合型·偏债 深度分析\n"
+        f"分析区间：{start_date} 至 {end_date}\n\n"
+        f"偏债混合基金的卖点是「**比纯债多赚一点，比偏股少亏一点**」。"
+        f"下面从收益表现、资产归因、债券持仓、风险预警、投资建议五个方面来拆解。"
     )
 
 

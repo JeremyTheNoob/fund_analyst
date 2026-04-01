@@ -1,7 +1,6 @@
 """
 混合型-绝对收益基金深度评价报告生成器 — fund_quant_v2
-角色：资深基金分析师（CFA 持证人）
-报告结构：4板块 + 图表插入点标记（投资建议后补）
+报告结构：4板块 + 图表插入点标记
   1. 收益情况展示（累计收益 + 年度收益表）
   2. 收益解析（净值直线度 + 避风港概率 + 正收益月占比）
   3. 深度分析（策略稳定性 + 波动率区间 + 回撤控制评估）
@@ -63,9 +62,6 @@ def generate_hybrid_absreturn_report(report: Any) -> dict:
     historical_allocation = holdings.get("historical_allocation", [])
     top10_stocks = holdings.get("top10_stocks", [])
 
-    # 评级描述
-    grade_desc = _grade_description(grade, score)
-
     # ── 核心分析指标 ──────────────────────────────────────
     # 1. 净值直线度（Linearity R²）
     linearity = _compute_linearity(charts)
@@ -102,7 +98,7 @@ def generate_hybrid_absreturn_report(report: Any) -> dict:
         "tags": tags,
     }
 
-    headline = _build_headline(fund_name, grade_desc, start_date, end_date, grade)
+    headline = _build_headline(fund_name, start_date, end_date)
 
     section1 = _section1_performance(fund_name, cm, m, start_date, end_date, charts)
     section2 = _section2_return_analysis(
@@ -160,15 +156,15 @@ def _section1_performance(fund_name, cm, m, start_date, end_date, charts) -> str
 
     # 收益评价（绝对收益型标准不同）
     if ann_ret > 8:
-        ret_eval = "🌟 绝对收益优异"
+        ret_eval = "绝对收益优异"
     elif ann_ret > 5:
-        ret_eval = "✅ 稳健正收益"
+        ret_eval = "稳健正收益"
     elif ann_ret > 2:
-        ret_eval = "⚠️ 收益偏低，需关注是否达到同类平均"
+        ret_eval = "收益偏低"
     elif ann_ret > 0:
-        ret_eval = "⚠️ 微正收益，收益能力不足"
+        ret_eval = "微正收益"
     else:
-        ret_eval = "❌ 收益为负，绝对收益目标未达成"
+        ret_eval = "收益为负，没达到绝对收益目标"
 
     # 夏普评价（绝对收益型标准）
     if sharpe > 2.0:
@@ -184,38 +180,37 @@ def _section1_performance(fund_name, cm, m, start_date, end_date, charts) -> str
 
     # 波动评价
     if volatility < 3:
-        vol_eval = "🟢 极低波动，类似固收产品"
+        vol_eval = "极低波动，类似固收产品"
     elif volatility < 5:
-        vol_eval = "🟢 低波动，符合绝对收益定位"
+        vol_eval = "低波动，符合绝对收益定位"
     elif volatility < 8:
-        vol_eval = "🟡 中等波动，略高于绝对收益预期"
+        vol_eval = "中等波动，略高于预期"
     else:
-        vol_eval = "🔴 高波动，偏离绝对收益定位"
+        vol_eval = "高波动，偏离绝对收益定位"
 
     # 年度收益分析
     annual_table = _compute_annual_returns_table(charts)
 
-    text = f"""### 一、收益情况展示
+    text = f"""### 一、收益情况
 
-**{fund_name}** 分析区间：{start_date} ~ {end_date}
+{fund_name} 是一只绝对收益型基金，买它的目的就是「穿越牛熊、年年正收益」。我们先看收益。
 
 | 指标 | 数值 | 评价 |
 |------|------|------|
 | 年化收益 | {ann_ret:+.2f}% | {ret_eval} |
 | 累计收益 | {cum_ret:+.2f}% | — |
-| 最大回撤 | {max_dd:.2f}% | {'可控' if abs(max_dd) < 8 else '需警惕' if abs(max_dd) < 15 else '🔴 过大'} |
+| 最大回撤 | {max_dd:.2f}% | {'可控' if abs(max_dd) < 8 else '需警惕' if abs(max_dd) < 15 else '过大'} |
 | 夏普比率 | {sharpe:.2f} | {sharpe_eval} |
 | Sortino | {sortino:.2f} | — |
 | 年化波动 | {volatility:.2f}% | {vol_eval} |
 | Beta（全期）| {beta:.3f} | {'低相关' if beta < 0.3 else '弱相关' if beta < 0.6 else '市场跟随'} |
 | 年化 Alpha | {net_alpha:+.2f}% | {'显著' if net_alpha > 3 else '微弱' if net_alpha > 0 else '无'} |
-| R² | {r2:.2%} | {'市场解释力强' if r2 > 0.5 else '独立走势（对冲策略特征）'} |
+| R² | {r2:.2%} | {'跟市场走势强相关' if r2 > 0.5 else '独立走势，像是对冲策略'} |
 
-**绝对收益定位检验：**
-- {'✅ 波动率 < 5%，符合绝对收益产品的低波动定位' if volatility < 5 else '⚠️ 波动率 ≥ 5%，偏离绝对收益产品应有水平'}
-- {'✅ 最大回撤 < 8%，风控能力良好' if abs(max_dd) < 8 else '⚠️ 最大回撤 ≥ 8%，需关注极端行情下的风控'}
-- {'✅ Beta < 0.5，与市场相关性低，具备对冲特征' if beta < 0.5 else '🟡 Beta ≥ 0.5，市场相关性偏高，可能缺乏有效对冲'}
-- R² = {r2:.2%}（{'模型对基金解释力弱，符合量化对冲/市场中性策略特征' if r2 < 0.3 else '模型有一定解释力，基金不完全独立于市场'})
+**绝对收益成色检验：**
+- {'波动率 < 5%，符合绝对收益的低波动定位' if volatility < 5 else '波动率 ≥ 5%，偏离了绝对收益应有的低波动水平'}
+- {'最大回撤 < 8%，风控到位' if abs(max_dd) < 8 else '最大回撤 ≥ 8%，极端行情下的风控要打问号'}
+- {'Beta < 0.5，跟大盘没啥关系，像是在做对冲' if beta < 0.5 else 'Beta ≥ 0.5，跟市场联动偏多，可能没做有效对冲'}
 
 [INSERT_CHART: CUM_RET]
 
@@ -283,15 +278,15 @@ def _section2_return_analysis(
     slope_annual = linearity.get("slope_annual", 0.0) * 100
 
     if r2 > 0.85:
-        linearity_eval = "🌟 **卓越** — 净值几乎是一条完美的上升直线，收益极度平滑"
+        linearity_eval = f"R² = {r2:.4f}，净值几乎是一条完美的上升直线，收益极度平滑"
     elif r2 > 0.70:
-        linearity_eval = "✅ **优秀** — 净值曲线与线性增长拟合良好，收益平滑度高"
+        linearity_eval = f"R² = {r2:.4f}，净值曲线很直，收益平滑度高"
     elif r2 > 0.50:
-        linearity_eval = "🟡 **一般** — 净值有一定波动，但整体趋势向上"
+        linearity_eval = f"R² = {r2:.4f}，净值有一定波动，但整体向上"
     elif r2 > 0.30:
-        linearity_eval = "⚠️ **偏差** — 净值波动较大，直线度偏低"
+        linearity_eval = f"R² = {r2:.4f}，波动较大，直线度偏低"
     else:
-        linearity_eval = "🔴 **差** — 净值走势与线性增长偏离严重，收益极不平稳"
+        linearity_eval = f"R² = {r2:.4f}，走势跟直线差很远，收益很不平稳"
 
     if slope_annual > 0:
         trend_desc = f"趋势方向：上升（年化斜率 {slope_annual:+.2f}%）"
@@ -305,21 +300,21 @@ def _section2_return_analysis(
     win_loss_ratio = haven_ratio.get("win_loss_ratio", 0.0)
 
     if haven > 55:
-        haven_eval = f"🟢 **优秀的避风港** — 日收益率 > 0 的天数占 {haven:.1f}%，大部分交易日都能带来正收益"
+        haven_eval = f"正收益天数占 {haven:.1f}%，大部分交易日都能赚钱，是个不错的「避风港」"
     elif haven > 50:
-        haven_eval = f"🟡 **合格的避风港** — 日收益率 > 0 的天数占 {haven:.1f}%，略高于50%"
+        haven_eval = f"正收益天数占 {haven:.1f}%，刚过半，只能说勉强合格"
     else:
-        haven_eval = f"🔴 **避风港能力不足** — 日收益率 > 0 的天数仅 {haven:.1f}%，与抛硬币无异"
+        haven_eval = f"正收益天数只有 {haven:.1f}%，跟抛硬币差不多，避风港谈不上"
 
     # 盈亏比分析
     if win_loss_ratio > 1.5:
-        wl_eval = "盈利日的平均收益远超亏损日，策略具有不对称优势"
+        wl_eval = "赚钱的时候赚得多，亏钱的时候亏得少，这种不对称优势很重要"
     elif win_loss_ratio > 1.0:
-        wl_eval = "盈利日的平均收益略高于亏损日，具备一定的盈亏比优势"
+        wl_eval = "赚钱的时候平均比亏钱多一点点，还行"
     elif win_loss_ratio > 0.7:
-        wl_eval = "盈亏比接近 1:1，策略缺乏不对称优势"
+        wl_eval = "盈亏比接近 1:1，没有不对称优势"
     else:
-        wl_eval = "⚠️ 亏损日平均亏损幅度大于盈利日平均盈利，策略不对称性为负"
+        wl_eval = "亏的时候平均亏得更多，策略不对称性为负"
 
     # ── 正收益月占比 ──
     monthly_pos = monthly_positive_ratio.get("positive_ratio", 0.0) * 100
@@ -327,16 +322,15 @@ def _section2_return_analysis(
     positive_months = monthly_positive_ratio.get("positive_months", 0)
 
     if monthly_pos > 80:
-        monthly_eval = f"🌟 {monthly_pos:.0f}% 月份正收益（{positive_months}/{total_months}月），绝对收益目标达成度极高"
+        monthly_eval = f"{monthly_pos:.0f}% 的月份正收益（{positive_months}/{total_months}月），绝对收益目标达成度极高"
     elif monthly_pos > 70:
-        monthly_eval = f"✅ {monthly_pos:.0f}% 月份正收益（{positive_months}/{total_months}月），表现稳健"
+        monthly_eval = f"{monthly_pos:.0f}% 的月份正收益（{positive_months}/{total_months}月），表现稳健"
     elif monthly_pos > 60:
-        monthly_eval = f"🟡 {monthly_pos:.0f}% 月份正收益（{positive_months}/{total_months}月），达标率尚可"
+        monthly_eval = f"{monthly_pos:.0f}% 的月份正收益（{positive_months}/{total_months}月），达标率一般"
     else:
-        monthly_eval = f"🔴 {monthly_pos:.0f}% 月份正收益（{positive_months}/{total_months}月），月度正收益占比偏低"
+        monthly_eval = f"{monthly_pos:.0f}% 的月份正收益（{positive_months}/{total_months}月），月度正收益占比偏低"
 
     # ── 综合评分 ──
-    # 绝对收益综合评分
     score_items = []
     if r2 > 0.7:
         score_items.append("净值平滑")
@@ -349,43 +343,42 @@ def _section2_return_analysis(
 
     n_passed = len(score_items)
     if n_passed >= 4:
-        overall_eval = f"🌟 **绝对收益四维全部达标**（{score_items[0]} + {score_items[1]} + {score_items[2]} + {score_items[3]}），堪称「画线派」"
+        overall_eval = f"四个维度全部达标（{score_items[0]} + {score_items[1]} + {score_items[2]} + {score_items[3]}），堪称「画线派」"
     elif n_passed >= 3:
-        overall_eval = f"✅ **绝对收益三维度达标**（{' + '.join(score_items)}），收益质量良好"
+        overall_eval = f"三个维度达标（{' + '.join(score_items)}），收益质量不错"
     elif n_passed >= 2:
-        overall_eval = f"🟡 **绝对收益两维度达标**（{' + '.join(score_items)}），部分指标需关注"
+        overall_eval = f"两个维度达标（{' + '.join(score_items)}），部分指标需要关注"
     else:
-        overall_eval = f"⚠️ **绝对收益维度达标不足**（仅 {' + '.join(score_items) if score_items else '无'}），收益质量堪忧"
+        overall_eval = f"达标项太少（仅 {' + '.join(score_items) if score_items else '无'}），收益质量堪忧"
 
     text = f"""### 二、收益解析
 
-**这类基金的目标是年年正收益、日日小赚。我们从三个核心维度评估其收益质量：**
+绝对收益型基金的目标是天天小赚、月月正收益。我们从三个维度来看看这只基金有没有做到。
 
-#### 📐 净值直线度（Linearity）
+**净值直线度**
 
-计算净值曲线与时间线性增长线的拟合优度 R²，R² 越高说明净值走势越平稳。
+看净值曲线有多「直」。R² 越高，说明走势越平稳，越像一条斜线。
 
-- **R² = {r2:.4f}** — {linearity_eval}
+- {linearity_eval}
 - {trend_desc}
-- 绝对收益型基金的 R² 理想值应 > 0.70，当前{'达标' if r2 > 0.70 else '未达标'}
+- 绝对收益型基金 R² 理想值应 > 0.70，当前{'达标' if r2 > 0.70 else '没达标'}
 
-#### 🏝️ 避风港概率（Haven Ratio）
+**避风港概率**
 
-统计日收益率 > 0 的天数占比，评估基金是否能在大多数交易日带来正收益。
+统计有多少个交易日是赚钱的。
 
-- **正收益天数占比：{haven:.1f}%**
 - {haven_eval}
-- 盈利日平均涨幅：{avg_pos_ret:+.3f}% | 亏损日平均跌幅：{avg_neg_ret:.3f}%
-- 盈亏比（平均盈利/平均亏损）：{win_loss_ratio:.2f} — {wl_eval}
+- 赚的日子平均涨 {avg_pos_ret:+.3f}%，亏的日子平均跌 {avg_neg_ret:.3f}%
+- 盈亏比 {win_loss_ratio:.2f} — {wl_eval}
 
-#### 📅 正收益月占比
+**正收益月占比**
 
-统计月度收益 > 0 的月份占比。
+统计有多少个月是正收益的。
 
-- **{monthly_eval}**
-- 绝对收益型基金月度正收益占比理想值应 > 70%，当前{'达标' if monthly_pos > 70 else '未达标'}
+- {monthly_eval}
+- 理想值应 > 70%，当前{'达标' if monthly_pos > 70 else '没达标'}
 
-**📊 收益质量综合评价：**
+**收益质量综合评价：**
 - {overall_eval}"""
 
     return text
@@ -419,19 +412,19 @@ def _section3_deep_analysis(
 
     # 波动率区间判断
     if vol_in_target:
-        vol_band_eval = f"🟢 **波动率稳定在目标区间**（{vol_range_min:.1f}% ~ {vol_range_max:.1f}%），符合量化对冲/多策略的预期"
+        vol_band_eval = f"波动率稳在目标区间（{vol_range_min:.1f}% ~ {vol_range_max:.1f}%），策略运作正常"
     elif vol_mean < 8:
-        vol_band_eval = f"🟡 **波动率偏低但稳定**（均值 {vol_mean:.1f}%，范围 {vol_range_min:.1f}% ~ {vol_range_max:.1f}%），策略运作正常"
+        vol_band_eval = f"波动率均值 {vol_mean:.1f}%（范围 {vol_range_min:.1f}% ~ {vol_range_max:.1f}%），还算稳定"
     else:
-        vol_band_eval = f"🔴 **波动率偏高或剧烈波动**（均值 {vol_mean:.1f}%，范围 {vol_range_min:.1f}% ~ {vol_range_max:.1f}%），可能存在策略失效风险"
+        vol_band_eval = f"波动率均值 {vol_mean:.1f}%（范围 {vol_range_min:.1f}% ~ {vol_range_max:.1f}%），偏高或波动剧烈，策略可能出问题了"
 
     # 趋势判断
     if rolling_vol_trend == "上升":
-        trend_alert = "⚠️ 近期波动率呈上升趋势，策略可能正在经历风格切换或风控放宽"
+        trend_alert = "近期波动率在上升，策略可能在换打法，或者风控放宽了"
     elif rolling_vol_trend == "下降":
-        trend_alert = "✅ 近期波动率下降，策略趋于稳定"
+        trend_alert = "近期波动率在下降，策略趋于稳定"
     else:
-        trend_alert = "ℹ️ 波动率近期保持稳定"
+        trend_alert = "波动率近期比较稳定"
 
     # ── 回撤修复分析 ──
     max_dd_days = cm.max_drawdown_duration
@@ -443,11 +436,11 @@ def _section3_deep_analysis(
 
     if avg_recovery > 0:
         if avg_recovery < 30:
-            recovery_eval = f"🟢 平均修复 {avg_recovery:.0f} 天，回撤修复速度较快"
+            recovery_eval = f"平均修复 {avg_recovery:.0f} 天，回血速度较快"
         elif avg_recovery < 60:
-            recovery_eval = f"🟡 平均修复 {avg_recovery:.0f} 天，回撤修复速度一般"
+            recovery_eval = f"平均修复 {avg_recovery:.0f} 天，修复速度一般"
         else:
-            recovery_eval = f"🔴 平均修复 {avg_recovery:.0f} 天，回撤修复较慢"
+            recovery_eval = f"平均修复 {avg_recovery:.0f} 天，回血比较慢"
 
         fast_eval = f"快速修复（<30天）占比 {fast_recovery_ratio:.0%}" if fast_recovery_ratio > 0 else ""
     else:
@@ -468,32 +461,32 @@ def _section3_deep_analysis(
 
     text = f"""### 三、深度分析
 
-#### 🧪 策略类型识别与有效性
+**策略类型与有效性**
 
-通过 Beta、波动率、收益分布等特征，推测该基金采用的策略类型：
+通过 Beta、波动率、收益分布等特征，推测该基金采用的策略类型。
 
 - **策略类型推测：{strategy_type}**
 - **策略有效性：{effectiveness}**
 - {strategy_desc}
 - 最新资产配置为 {asset_desc}
 
-#### 📊 波动率稳定性监控
+**波动率监控**
 
-绝对收益型基金的核心竞争力是**波动率控制**。监测年化波动率是否在狭窄区间（2%-5%）内波动。
+绝对收益型基金的命根子是**波动率控制**。波动率越稳、越低，持有体验越好。
 
-- **滚动年化波动率：** 均值 {vol_mean:.2f}%，标准差 {vol_std:.2f}%
-- **波动率范围：** {vol_range_min:.2f}% ~ {vol_range_max:.2f}%
+- 滚动年化波动率：均值 {vol_mean:.2f}%，标准差 {vol_std:.2f}%
+- 波动率范围：{vol_range_min:.2f}% ~ {vol_range_max:.2f}%
 - {vol_band_eval}
 - {trend_alert}
 
 [INSERT_CHART: VOLATILITY_BAND]
 
-#### 🔄 回撤修复能力
+**回撤修复能力**
 
-回撤发生后能否快速修复，是评估绝对收益策略韧性的关键指标。
+回撤了能不能快速爬回来，是衡量绝对收益策略韧性的关键。
 
-- **历史最大回撤：** {max_dd:.2f}%，持续 {max_dd_days} 天
-- **显著回撤次数（>3%）：** {n_drawdowns} 次
+- 历史最大回撤：{max_dd:.2f}%，持续了 {max_dd_days} 天
+- 显著回撤次数（>3%）：{n_drawdowns} 次
 - {recovery_eval}
 - 最长修复天数：{max_recovery:.0f} 天
 - {fast_eval}"""
@@ -523,19 +516,19 @@ def _section4_risk_warning(
     vol_percentile = vol_anomaly.get("current_percentile", 50)
 
     if is_anomaly:
-        anomaly_alert = f"🔴 **异常波动预警** — 当前日波动率 {current_vol:.2f}% 显著高于历史均值 {historical_mean:.2f}%（Z-score = {z_score:.1f}），策略可能正在失效或面临极端行情冲击"
+        anomaly_alert = f"当前日波动率 {current_vol:.2f}% 远高于历史均值 {historical_mean:.2f}%（Z-score = {z_score:.1f}），策略可能正在失效或遇到极端行情"
     elif z_score > 1.5:
-        anomaly_alert = f"🟡 **波动率偏高注意** — 当前日波动率 {current_vol:.2f}% 略高于历史均值 {historical_mean:.2f}%（Z-score = {z_score:.1f}），建议持续关注"
+        anomaly_alert = f"当前日波动率 {current_vol:.2f}% 略高于历史均值 {historical_mean:.2f}%（Z-score = {z_score:.1f}），建议持续关注"
     elif z_score > -1.0:
-        anomaly_alert = f"🟢 **波动率正常** — 当前日波动率 {current_vol:.2f}% 处于历史正常范围（Z-score = {z_score:.1f}），策略运作平稳"
+        anomaly_alert = f"当前日波动率 {current_vol:.2f}% 处于历史正常范围（Z-score = {z_score:.1f}），策略运作平稳"
     else:
-        anomaly_alert = f"🟢 **波动率偏低** — 当前日波动率 {current_vol:.2f}% 低于历史均值（Z-score = {z_score:.1f}），策略趋于保守"
+        anomaly_alert = f"当前日波动率 {current_vol:.2f}% 低于历史均值（Z-score = {z_score:.1f}），策略趋于保守"
 
     # 异常天数描述
     if anomaly_days > 0:
-        anomaly_days_desc = f"近60个交易日内有 {anomaly_days} 天出现异常波动（超过2倍标准差）"
+        anomaly_days_desc = f"近60个交易日中有 {anomaly_days} 天出现异常波动（超过2倍标准差）"
     else:
-        anomaly_days_desc = "近60个交易日内无异常波动"
+        anomaly_days_desc = "近60个交易日无异常波动"
 
     # 波动百分位描述
     if vol_percentile > 90:
@@ -553,28 +546,28 @@ def _section4_risk_warning(
     basis_pressure = basis_risk.get("basis_pressure", "未知")
 
     if has_basis_data:
-        basis_text = f"""#### 📉 基差风险分析
+        basis_text = f"""**基差风险分析**
 
-量化对冲/市场中性策略通常使用股指期货进行对冲。基差变动会直接影响对冲成本。
+量化对冲/市场中性策略通常用股指期货对冲，基差变动会直接影响对冲成本。
 
 - {basis_desc}
 - 基差压制评估：{basis_pressure}"""
     else:
-        basis_text = """#### 📉 基差风险分析
+        basis_text = """**基差风险分析**
 
-> 💡 量化对冲/市场中性策略通常使用股指期货进行对冲，基差变动会直接影响对冲成本。当前版本暂未接入期货基差数据，以下提供定性分析：
+量化对冲/市场中性策略通常用股指期货对冲，基差变动会直接影响对冲成本。当前暂未接入期货基差数据，提供定性分析：
 
-- 若基金采用股指期货对冲（如 IC/IF），当基差贴水时，对冲端会额外贡献正收益（移仓收益），反之升水时会产生成本
-- 基差剧烈波动（如交割周附近）可能导致短期净值波动放大
-- 建议结合基金季报中的「衍生品投资」部分确认对冲工具使用情况"""
+- 如果基金用股指期货对冲（如 IC/IF），基差贴水时对冲端会额外赚钱（移仓收益），升水时则产生成本
+- 基差剧烈波动（如交割周）可能导致短期净值波动放大
+- 建议结合基金季报的「衍生品投资」部分确认对冲工具"""
 
     text = f"""### 四、风险预警
 
 [INSERT_CHART: DRAWDOWN]
 
-#### ⚡ 日波动异常检测
+**日波动异常检测**
 
-监测近期日收益率波动是否突破历史均值，判断当前策略是否处于正常状态。
+看最近日收益率波动有没有突破历史均值，判断策略是否还在正常工作。
 
 - {anomaly_alert}
 - {anomaly_days_desc}
@@ -584,9 +577,9 @@ def _section4_risk_warning(
 {basis_text}
 
 **综合风险指标：**
-- 最大回撤：{max_dd:.2f}%（{'✅ 可控' if abs(max_dd) < 8 else '⚠️ 偏高' if abs(max_dd) < 15 else '🔴 高风险'}）
+- 最大回撤：{max_dd:.2f}%（{'可控' if abs(max_dd) < 8 else '偏高' if abs(max_dd) < 15 else '高风险'}）
 - 年化波动：{volatility:.2f}%
-- {'✅ 未检测到策略失效信号' if not is_anomaly and z_score < 2 else '🔴 建议密切关注，策略可能正在失效'}"""
+- {'未检测到策略失效信号' if not is_anomaly and z_score < 2 else '建议密切关注，策略可能正在失效'}"""
 
     return text
 
@@ -895,52 +888,46 @@ def _evaluate_strategy_effectiveness(cm, charts: dict) -> dict:
     sortino = cm.sortino_ratio
     max_dd = cm.max_drawdown * 100
 
-    # 策略类型推断
-    # 根据波动率、Beta、收益特征来推断
-    # 这里用一些启发式规则
-
     strategy_type = "待识别"
     description = ""
     effectiveness = "待评估"
 
     if vol < 3 and max_dd < 5:
         strategy_type = "量化对冲/市场中性"
-        description = "极低波动 + 低回撤 + 低 Beta，典型的市场中性策略特征。可能使用股指期货对冲+量化选股获取 Alpha"
-        effectiveness = "✅ 策略运作有效" if sharpe > 1.0 else "🟡 策略效果一般"
+        description = "极低波动 + 低回撤 + 低 Beta，典型的市场中性策略特征，可能用股指期货对冲 + 量化选股获取 Alpha"
+        effectiveness = "策略运作有效" if sharpe > 1.0 else "策略效果一般"
     elif vol < 5 and max_dd < 10:
-        # 进一步区分
         if sharpe > 1.5:
             strategy_type = "量化对冲/市场中性"
-            description = "低波动 + 高夏普 + 低 Beta，量化对冲策略运作良好，Alpha 来源稳定"
-            effectiveness = "✅ 策略运作高效"
+            description = "低波动 + 高夏普 + 低 Beta，量化对冲运作良好，Alpha 来源稳定"
+            effectiveness = "策略运作高效"
         elif sortino > 2.0:
             strategy_type = "期权策略/波动率套利"
-            description = "低波动 + 极高 Sortino 比率，可能是期权策略或波动率套利，下行保护能力强"
-            effectiveness = "✅ 策略下行保护优秀"
+            description = "低波动 + 极高 Sortino，可能是期权策略或波动率套利，下行保护能力强"
+            effectiveness = "下行保护优秀"
         else:
             strategy_type = "固收+/多策略"
-            description = "低波动 + 中等夏普，可能是固收+策略（债券打底+小比例权益增强）或多策略组合"
-            effectiveness = "🟡 策略效果一般" if sharpe > 0.5 else "⚠️ 策略效果偏低"
+            description = "低波动 + 中等夏普，可能是固收+策略（债券打底 + 小比例权益增强）或多策略组合"
+            effectiveness = "策略效果一般" if sharpe > 0.5 else "策略效果偏低"
     elif vol < 8:
         if rets is not None and len(rets) > 60:
-            # 检查偏度
             skewness = float(pd.Series(rets).skew())
             if skewness < -0.5:
                 strategy_type = "尾部风险对冲/期权策略"
-                description = f"中等波动 + 负偏度（{skewness:.2f}），收益分布左偏，可能使用期权做尾部保护（卖波动率/买看跌）"
-                effectiveness = "🟡 需关注极端行情表现"
+                description = f"中等波动 + 负偏度（{skewness:.2f}），收益分布左偏，可能用期权做尾部保护"
+                effectiveness = "需关注极端行情表现"
             else:
                 strategy_type = "灵活对冲/多策略"
-                description = f"中等波动 + 对称分布（偏度 {skewness:.2f}），可能是灵活对冲或多策略组合，根据市场环境动态调整"
-                effectiveness = "✅ 策略有一定灵活性" if sharpe > 0.8 else "🟡 策略效果一般"
+                description = f"中等波动 + 对称分布（偏度 {skewness:.2f}），可能是灵活对冲或多策略组合"
+                effectiveness = "有一定灵活性" if sharpe > 0.8 else "策略效果一般"
         else:
             strategy_type = "混合策略"
             description = "中等波动水平，策略特征不够明显，可能混合了多种策略"
-            effectiveness = "🟡 策略效果一般"
+            effectiveness = "策略效果一般"
     else:
         strategy_type = "偏高波动策略（偏离绝对收益定位）"
-        description = f"高波动（{vol:.1f}%）+ 大回撤（{max_dd:.1f}%），已偏离绝对收益产品应有水平，可能包含较高比例的权益暴露"
-        effectiveness = "⚠️ 偏离绝对收益定位"
+        description = f"高波动（{vol:.1f}%）+ 大回撤（{max_dd:.1f}%），已偏离绝对收益应有水平"
+        effectiveness = "偏离绝对收益定位"
 
     return {
         "strategy_type": strategy_type,
@@ -1031,36 +1018,23 @@ def _extract_date_range(charts: dict) -> tuple[str, str]:
     return "—", "—"
 
 
-def _grade_description(grade: str, score: float) -> str:
-    """评级描述"""
-    grade_map = {
-        "S": "稀缺优质 ⭐⭐⭐⭐⭐",
-        "A": "优秀 ⭐⭐⭐⭐",
-        "B": "良好 ⭐⭐⭐",
-        "C": "一般 ⭐⭐",
-        "D": "较差 ⭐",
-    }
-    return f"{grade} 级（{score:.0f} 分）" + grade_map.get(grade, "")
-
-
-def _build_headline(fund_name, grade_desc, start_date, end_date, grade) -> str:
-    """报告标题行"""
+def _build_headline(fund_name, start_date, end_date) -> str:
+    """报告标题行（无评分/评级）"""
     return (
-        f"## 📊 {fund_name} — 混合型·绝对收益深度评价\n\n"
-        f"**综合评级：{grade_desc}** | 分析区间：{start_date} ~ {end_date}\n\n"
-        f"> 💡 绝对收益型基金的核心价值在于**「年年正收益、低波动画线」**。"
-        f"这类基金通常采用量化对冲或多策略，目标是穿越牛熊、稳健增值。"
-        f"本报告将从收益质量、策略稳定性、风险预警三个维度进行穿透式分析。"
+        f"## {fund_name} — 混合型·绝对收益 深度分析\n"
+        f"分析区间：{start_date} 至 {end_date}\n\n"
+        f"绝对收益型基金的目标是**「年年正收益、低波动画线」**，"
+        f"通常用量化对冲或多策略穿越牛熊。下面从收益质量、策略稳定性、风险预警三个方面来拆解。"
     )
 
 
 def _fallback_report(basic) -> dict:
     """数据不足时的兜底报告"""
     fund_name = basic.name if hasattr(basic, "name") else "未知基金"
-    text = f"### {fund_name}\n\n⚠️ 数据不足，无法生成完整分析报告。请确认基金代码正确且数据源可用。"
+    text = f"### {fund_name}\n\n数据不足，无法生成完整分析报告。请确认基金代码正确且数据源可用。"
     return {
         "meta": {"fund_name": fund_name, "fund_type": "混合型-绝对收益"},
-        "headline": f"## 📊 {fund_name}",
+        "headline": f"## {fund_name}",
         "section1": text,
         "section2": "",
         "section3": "",

@@ -1,10 +1,9 @@
 """
 中短债基金深度评价报告生成器 — fund_quant_v2
-角色：固收研究员（短端利率专家）
 报告结构：5板块 + 图表插入点标记 + 投资建议
 
 板块设计：
-1. 基本信息与信用垫层（券种分布 + WACS + 政金债/信用债穿透）
+1. 信用垫层（券种分布 + WACS + 政金债/信用债穿透）
 2. 收益表现与滚动持有体验（累计收益 + 滚动持有X天不亏钱概率）
 3. 深度分析与杠杆率（杠杆利用率 + 杠杆风险评估）
 4. 风险预警与规模变动（规模变动趋势 + 流动性预警 + 申赎监测）
@@ -190,7 +189,7 @@ def generate_bond_short_report(report: Any) -> dict:
 
 
 # ============================================================
-# 板块 1：基本信息与信用垫层
+# 板块 1：信用垫层
 # ============================================================
 
 def _section1_credit_cushion(
@@ -200,7 +199,7 @@ def _section1_credit_cushion(
     """一、信用垫层分析：券种配置与信用结构"""
 
     if not bond_classification:
-        return """### 一、信用垫层分析：券种配置与信用结构
+        return """### 信用垫层分析
 
 **数据说明：** 当前基金持仓数据正在加载中，请稍候刷新页面查看详细分析。
 
@@ -230,11 +229,11 @@ def _section1_credit_cushion(
         )
         # 期限匹配评价
         if short_ratio > 50:
-            maturity_text += "\n\n> 该基金**集中配置短期限债券**，与中短债基金「低波动、稳健收益」的定位高度一致。"
+            maturity_text += "\n\n> 该基金**集中配置短期限债券**，和中短债「低波动、稳健收益」的定位高度一致。"
         elif short_ratio + mid_ratio > 80:
-            maturity_text += "\n\n> 期限结构以中短期为主，符合中短债基金的典型特征。"
+            maturity_text += "\n\n> 期限以中短期为主，符合中短债基金的典型特征。"
         else:
-            maturity_text += "\n\n> ⚠️ 长期债券占比较高，可能增加利率敏感度，需关注久期管理。"
+            maturity_text += "\n\n> 长期债券占比较高，可能增加利率敏感度，需关注久期管理。"
 
     # WACS 信用评分
     if wacs_score >= 80:
@@ -252,13 +251,12 @@ def _section1_credit_cushion(
     elif duration <= 3.0:
         dur_comment = f"加权久期 **{duration:.1f} 年**，处于中短端，加息1%预计影响净值约 {duration:.1f}%"
     else:
-        dur_comment = f"加权久期 **{duration:.1f} 年**，⚠️ 偏长，需关注利率上行风险"
+        dur_comment = f"加权久期 **{duration:.1f} 年**，偏长，需关注利率上行风险"
 
     return (
-        f"### 一、信用垫层分析：券种配置与信用结构\n\n"
-        f"对于中短债基金而言，底层资产的**信用质量**和**期限分布**直接决定了"
-        f"它作为「货币增强品」的定位是否稳固。投资者购买中短债，"
-        f"追求的就是比货基多赚一点、波动比长债少一大截。\n\n"
+        f"### 信用垫层分析\n\n"
+        f"买中短债基金，图的就是比货币基金多赚一点、波动比长债少一大截。"
+        f"底层资产买的是什么债券，直接决定了这个目标能不能实现。\n\n"
         f"**券种配置结构：**\n\n"
         f"[INSERT_CHART: BOND_HOLDINGS_PIE]\n\n"
         f"**数据解读：**\n\n"
@@ -302,20 +300,15 @@ def _section2_return_holding_experience(
             prob = win_rate * 100
             if prob >= 95:
                 experience = "极佳，几乎稳赚"
-                emoji = "🟢"
             elif prob >= 85:
                 experience = "很好，大概率盈利"
-                emoji = "🟢"
             elif prob >= 75:
                 experience = "良好，需要耐心"
-                emoji = "🟡"
             elif prob >= 60:
                 experience = "一般，偶有浮亏"
-                emoji = "🟡"
             else:
                 experience = "较差，波动较大"
-                emoji = "🔴"
-            holding_table += f"| {window}天 | {prob:.1f}% {emoji} | {experience} |\n"
+            holding_table += f"| {window}天 | {prob:.1f}% | {experience} |\n"
 
         holding_table += "\n"
         # 滚动持有体验总结
@@ -323,39 +316,37 @@ def _section2_return_holding_experience(
         win_90 = holding_win_rates.get(90, 0) * 100
         if win_90 >= 90:
             holding_summary = (
-                f"> 该基金持有 90 天不亏钱概率高达 **{win_90:.1f}%**，"
+                f"> 持有 90 天不亏钱的概率高达 **{win_90:.1f}%**，"
                 f"持有 30 天不亏钱概率 **{win_30:.1f}%**。"
-                f"这表明投资者在任何时点买入后，只要持有耐心，大概率不会亏损。"
-                f"作为「比货基多赚一点」的产品，**持有体验极佳**。"
+                f"只要拿得住，大概率不会亏。持有体验**极佳**。"
             )
         elif win_90 >= 75:
             holding_summary = (
                 f"> 持有 90 天不亏钱概率 **{win_90:.1f}%**，"
                 f"持有 30 天不亏钱概率 **{win_30:.1f}%**。"
-                f"建议投资者持有 **至少 3 个月** 以获得较好的体验。"
+                f"建议至少持有 **3 个月**，体验会好很多。"
             )
         else:
             holding_summary = (
                 f"> 持有 90 天不亏钱概率 **{win_90:.1f}%**，波动相对明显。"
-                f"建议投资者根据自身风险承受能力谨慎配置，并做好 **6 个月以上** 的持有准备。"
+                f"建议做好 **6 个月以上** 的持有准备，不要因为短期浮亏就跑。"
             )
         holding_table += holding_summary
 
     # 收益评价
     if ann_ret >= 4.0:
-        ret_comment = f"年化收益率 **{ann_ret:.2f}%**，远超同期货币基金（约 1.5-2.0%），展现了优秀的管理能力"
+        ret_comment = f"年化收益率 **{ann_ret:.2f}%**，远超货币基金（约1.5-2.0%），管理能力优秀"
     elif ann_ret >= 3.0:
-        ret_comment = f"年化收益率 **{ann_ret:.2f}%**，显著跑赢货币基金，体现了中短债基金的定位优势"
+        ret_comment = f"年化收益率 **{ann_ret:.2f}%**，跑赢货币基金，体现了中短债基金该有的水平"
     elif ann_ret >= 2.0:
-        ret_comment = f"年化收益率 **{ann_ret:.2f}%**，略优于货币基金，但与其他优秀中短债基金相比仍有差距"
+        ret_comment = f"年化收益率 **{ann_ret:.2f}%**，略优于货币基金，但和其他优秀中短债比还有差距"
     else:
-        ret_comment = f"年化收益率仅 **{ann_ret:.2f}%**，接近或低于货币基金水平，收益增强能力不足"
+        ret_comment = f"年化收益率仅 **{ann_ret:.2f}%**，接近货币基金水平，收益增强能力不足"
 
     return (
-        f"### 二、收益表现与滚动持有体验\n\n"
-        f"中短债基金的核心卖点不是高收益，而是**持有体验的可预期性**。"
-        f"我们以 {bm_label} 作为基准，并引入「**滚动持有胜率**」指标，"
-        f"量化评估在不同持有期下的不亏钱概率。\n\n"
+        f"### 收益表现与持有体验\n\n"
+        f"中短债基金的核心卖点不是高收益，而是**拿着不操心**。"
+        f"下面看看这只基金赚得怎么样，以及持有多少天大概率不亏钱。\n\n"
         f"**核心数据：**\n\n"
         f"- 年化收益率：**{ann_ret:.2f}%**（基准 {ann_bm:.2f}%，{bm_excess_sign} **{bps_abs} bps**）\n"
         f"- 区间累计收益：**{cum_ret:.1f}%**（基准 {cum_bm:.1f}%）\n"
@@ -396,14 +387,12 @@ def _section3_leverage_analysis(
         )
     else:
         leverage_comment = (
-            f"⚠️ 当前杠杆率 **{leverage_ratio:.2f}倍**（即杠杆贡献约 {(leverage_ratio-1)*100:.1f}%），"
+            f"当前杠杆率 **{leverage_ratio:.2f}倍**（即杠杆贡献约 {(leverage_ratio-1)*100:.1f}%），"
             f"处于**激进水平**，大幅使用杠杆放大收益，但在资金面收紧时可能面临较大的去杠杆压力。"
         )
 
     # 杠杆评级
-    grade_emoji = {"保守": "🟢", "温和": "🟢", "中等": "🟡", "激进": "🔴"}
-    emoji = grade_emoji.get(leverage_grade, "⚪")
-    leverage_grade_text = f"杠杆评级：**{leverage_grade}** {emoji}"
+    leverage_grade_text = f"杠杆评级：**{leverage_grade}**"
 
     # 杠杆来源说明
     leverage_source = ""
@@ -411,8 +400,7 @@ def _section3_leverage_analysis(
         leverage_source = (
             f"\n\n**杠杆来源分析：**\n\n"
             f"债券仓位占净值比 **{bond_ratio:.1%}**（超过100%），"
-            f"说明基金通过**正回购**（卖出回购）借入资金加仓债券。"
-            f"这是债基杠杆的主要来源。"
+            f"说明基金通过**正回购**借入资金加仓债券。"
         )
         if cash_ratio < 0.02:
             leverage_source += (
@@ -441,7 +429,7 @@ def _section3_leverage_analysis(
             f"\n\n**杠杆收益估算：**\n\n"
             f"按当前杠杆率 {leverage_ratio:.2f}倍、假设债券综合收益率为 3.5% 估算，"
             f"杠杆贡献约 **{lever_return:.1f}%** 的额外收益。"
-            f"但需注意：杠杆是双刃剑——盈利时放大收益，亏损时同样放大损失。"
+            f"但杠杆是双刃剑——赚钱时放大收益，亏钱时同样放大损失。"
         )
 
     # 压力测试
@@ -459,14 +447,14 @@ def _section3_leverage_analysis(
             impact = s.get("price_impact", 0)
             stress_text += f"| {s['scenario']} | {impact:+.2f}% |\n"
         stress_text += (
-            f"\n> 中短债基金久期短，对利率冲击天然具有防御性。"
+            f"\n> 中短债基金久期短，对利率冲击天然有防御性。"
             f"最不利情景「**{worst_scenario}**」下，预估净值仅下跌 **{worst_impact:.2f}%**。"
         )
 
     return (
-        f"### 三、深度分析：杠杆利用率\n\n"
-        f"短债基金通常有**杠杆操作空间**（合同允许范围内通过正回购加仓）。"
-        f"杠杆是双刃剑——牛市时放大收益，资金面收紧时可能被迫去杠杆引发净值波动。\n\n"
+        f"### 杠杆率分析\n\n"
+        f"中短债基金可以通过正回购加杠杆买更多债券。"
+        f"牛市时多赚，资金面收紧时可能被迫卖债还钱，引发净值波动。\n\n"
         f"**杠杆监测：**\n\n"
         f"{leverage_comment}\n\n"
         f"{leverage_grade_text}"
@@ -514,7 +502,7 @@ def _section4_risk_warning(
         elif recovery_days_chart <= 45:
             recovery_comment = f"净值在 **{recovery_days_chart} 个交易日**内完成修复，修复速度较快"
         else:
-            recovery_comment = f"净值在 **{recovery_days_chart} 个交易日**内完成修复，修复速度偏慢"
+            recovery_comment = f"净值用了 **{recovery_days_chart} 个交易日**才修复，速度偏慢"
     else:
         recovery_comment = "统计区间内尚未完全修复至前高"
 
@@ -540,7 +528,7 @@ def _section4_risk_warning(
                 scale_comment = f"基金规模 **{fund_scale}**，属于**中小规模**产品，策略灵活性较高"
             else:
                 scale_level = "小规模"
-                scale_comment = f"基金规模 **{fund_scale}**，属于**小规模**产品。⚠️ 需关注流动性风险：小规模基金在市场波动时可能面临赎回冲击"
+                scale_comment = f"基金规模 **{fund_scale}**，属于**小规模**产品。需关注流动性风险：小规模基金在市场波动时可能面临赎回冲击"
 
             scale_text = (
                 f"\n\n**规模与流动性：**\n\n"
@@ -550,11 +538,11 @@ def _section4_risk_warning(
             # 流动性预警信号
             liquidity_warnings = []
             if scale_num < 5:
-                liquidity_warnings.append(f"⚠️ **小规模风险**：当前规模 {fund_scale}，低于 5 亿元警戒线，存在清盘风险")
+                liquidity_warnings.append(f"小规模风险：当前规模 {fund_scale}，低于 5 亿元警戒线，存在清盘风险")
             if scale_num < 2:
-                liquidity_warnings.append(f"🔴 **清盘预警**：当前规模不足 2 亿元，需高度关注基金连续 60 日净值低于 5000 万的清盘风险")
+                liquidity_warnings.append(f"清盘预警：当前规模不足 2 亿元，需高度关注基金连续 60 日净值低于 5000 万的清盘风险")
             if scale_num > 200:
-                liquidity_warnings.append(f"📊 **大额赎回敏感性**：大规模基金在市场恐慌时可能遭遇集中赎回，导致被迫卖出资产引发净值波动")
+                liquidity_warnings.append(f"大额赎回敏感性：大规模基金在市场恐慌时可能遭遇集中赎回，导致被迫卖出资产引发净值波动")
 
             if liquidity_warnings:
                 scale_text += "**流动性预警信号：**\n\n" + "\n".join(f"- {w}" for w in liquidity_warnings)
@@ -600,10 +588,9 @@ def _section4_risk_warning(
         )
 
     return (
-        f"### 四、风险预警与规模变动\n\n"
-        f"中短债基金的最大风险不来自信用违约（久期短、信用等级高），"
-        f"而来自**流动性冲击**和**规模骤减**引发的被动卖出。"
-        f"当市场恐慌性赎回时，基金经理可能被迫在不利价位卖出资产，加剧净值波动。\n\n"
+        f"### 风险预警与规模变动\n\n"
+        f"中短债基金最大的风险不是信用违约，"
+        f"而是**大规模赎回**迫使经理在不利价位卖债，加剧净值波动。\n\n"
         f"**回撤与修复：**\n\n"
         f"统计区间内，{fund_name} 的最大回撤为 **{fund_dd_abs:.2f}%**。{vs_bm_text}\n"
         f"{recovery_comment}。\n\n"
@@ -631,7 +618,7 @@ def _section5_investment_advice(
     # ---- 拟买入评估 ----
     if grade in ("A+", "A"):
         buy_advice = (
-            f"**推荐评级：⭐⭐⭐⭐⭐ 适合配置**\n\n"
+            f"**推荐评级：适合配置**\n\n"
             f"该中短债基金综合评级 {grade}，夏普比率 {sharpe:.2f}，最大回撤 {abs(max_dd):.2f}%，"
             f"各项指标均处于同类**第一梯队**。\n\n"
             f"**配置建议：** 可作为「**货币基金增强替代品**」配置 **30%~50%** 的闲置资金，"
@@ -644,14 +631,14 @@ def _section5_investment_advice(
         )
     elif grade == "B":
         buy_advice = (
-            f"**推荐评级：⭐⭐⭐ 可以配置**\n\n"
+            f"**推荐评级：可以配置**\n\n"
             f"该中短债基金综合评级 {grade}，表现处于同类**中等水平**。\n\n"
             f"**配置建议：** 可作为「**过渡性配置**」小仓位持有，建议 **10%~20%**。"
             f"需持续关注基金经理的投资风格稳定性和信用风险管理能力。"
         )
     else:
         buy_advice = (
-            f"**推荐评级：⭐⭐ 谨慎观察**\n\n"
+            f"**推荐评级：谨慎观察**\n\n"
             f"该中短债基金综合评级 {grade}，多项指标处于同类**后段**。\n\n"
             f"**配置建议：** 建议暂缓配置，等待基金经理调整策略或市场环境改善后再做评估。"
         )
@@ -659,34 +646,34 @@ def _section5_investment_advice(
     # ---- 已持有诊断 ----
     hold_signals = []
     if sharpe >= 1.5:
-        hold_signals.append(("夏普比率优秀，风险收益性价比突出", "✅"))
+        hold_signals.append(("夏普比率优秀，风险收益性价比突出", "OK"))
     elif sharpe >= 0.8:
-        hold_signals.append(("夏普比率健康", "✅"))
+        hold_signals.append(("夏普比率健康", "OK"))
     else:
-        hold_signals.append((f"夏普比率降至 {sharpe:.2f}，性价比下降", "⚠️"))
+        hold_signals.append((f"夏普比率降至 {sharpe:.2f}，性价比下降", "WARN"))
 
     if abs(max_dd) <= 1.0:
-        hold_signals.append(("回撤极浅，防御能力出色", "✅"))
+        hold_signals.append(("回撤极浅，防御能力出色", "OK"))
     elif abs(max_dd) > 2.0:
-        hold_signals.append((f"最大回撤达 {abs(max_dd):.2f}%，超出中短债常见区间", "❌"))
+        hold_signals.append((f"最大回撤达 {abs(max_dd):.2f}%，超出中短债常见区间", "BAD"))
 
     if leverage_ratio <= 1.15:
-        hold_signals.append(("杠杆率温和，无激进操作风险", "✅"))
+        hold_signals.append(("杠杆率温和，无激进操作风险", "OK"))
     elif leverage_ratio > 1.30:
-        hold_signals.append((f"杠杆率 {leverage_ratio:.2f} 倍偏高，放大风险敞口", "❌"))
+        hold_signals.append((f"杠杆率 {leverage_ratio:.2f} 倍偏高，放大风险敞口", "BAD"))
 
     if wacs_score >= 60:
-        hold_signals.append(("信用资质良好", "✅"))
+        hold_signals.append(("信用资质良好", "OK"))
     elif wacs_score < 50:
-        hold_signals.append((f"信用评分 {int(wacs_score)} 分偏低，信用下沉风险", "⚠️"))
+        hold_signals.append((f"信用评分 {int(wacs_score)} 分偏低，信用下沉风险", "WARN"))
 
     hold_advice = "**持有诊断：**\n\n" + "\n".join(
-        f"- {text} {emoji}" for text, emoji in hold_signals
+        f"- {text}" for text, emoji in hold_signals
     )
 
-    negative_count = sum(1 for _, emoji in hold_signals if emoji == "❌")
+    negative_count = sum(1 for _, emoji in hold_signals if emoji == "BAD")
     if negative_count >= 2:
-        hold_advice += "\n\n> ⚠️ **多项预警触发**，建议降低仓位或转入观察模式"
+        hold_advice += "\n\n> **多项预警触发**，建议降低仓位或转入观察模式"
     elif negative_count == 1:
         hold_advice += "\n\n> 存在个别风险信号，建议密切跟踪下一季度报告"
     else:
@@ -702,15 +689,15 @@ def _section5_investment_advice(
     ]
     exit_advice = (
         f"**离场信号监测：**\n\n以下任一条件触发时，建议启动离场评估：\n\n"
-        + "\n".join(f"- ⚡ {s}" for s in exit_signals)
+        + "\n".join(f"- {s}" for s in exit_signals)
     )
 
     return (
-        f"### 五、投资建议\n\n"
-        f"**📊 拟买入评估**\n\n"
+        f"### 投资建议\n\n"
+        f"**拟买入评估**\n\n"
         f"{buy_advice}\n\n"
         f"---\n\n"
-        f"**🔄 已持有诊断**\n\n"
+        f"**已持有诊断**\n\n"
         f"{hold_advice}\n\n"
         f"---\n\n"
         f"{exit_advice}\n\n"
@@ -984,7 +971,7 @@ def _analyze_gov_credit_breakdown(
             )
         if estate_count > 0:
             credit_text += (
-                f"\n\n⚠️ 含地产债 {estate_count} 只（占比 {estate_r:.1f}%），"
+                f"\n\n含地产债 {estate_count} 只（占比 {estate_r:.1f}%），"
                 f"受房地产周期影响较大，需密切关注。"
             )
 
@@ -1037,12 +1024,10 @@ def _format_date(d) -> str:
 def _build_headline(fund_name, duration, wacs_score, start_date, end_date, grade) -> str:
     """报告标题行"""
     return (
-        f"## [中短债深度评级] {fund_name}\n\n"
-        f"**分析日期：** {end_date}　｜　**统计区间：** {start_date} ~ {end_date}　｜　"
-        f"**综合评级：** {grade}　｜　"
+        f"## {fund_name} — 中短债基金分析\n\n"
+        f"**统计区间：** {start_date} ~ {end_date}　｜　"
         f"**久期：** {duration:.1f}年　｜　**WACS：** {int(wacs_score)}分\n\n"
-        f"以下报告从信用垫层、收益体验、杠杆利用率、风险预警和投资建议五个维度"
-        f"对 {fund_name} 进行系统性穿透分析。"
+        f"从信用垫层、收益体验、杠杆率、风险预警和投资建议五个维度拆开看。"
     )
 
 

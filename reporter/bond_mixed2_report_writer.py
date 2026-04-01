@@ -1,14 +1,13 @@
 """
 债券型-混合二级基金专属深度报告生成器 — fund_quant_v2
-角色：资深固收+研究员
 
 混合二级债基特点：债底 + 不超过20%股票 + 可转债增强
 分析框架 5 板块：
-  ① 基本信息：资产结构概览 + 股票仓位红线监控
-  ② 收益表现：收益展示 + 债券类型分布 + 股票增强质量分析
-  ③ 深度分析：转债配置策略 + 溢价率/仓位监控
-  ④ 风险预警：股债双杀复盘（2022等极端年份）
-  ⑤ 投资建议：拟购入 / 已持有 分场景建议
+  ① 资产结构概览 + 股票仓位红线监控
+  ② 收益表现 + 债券类型分布 + 股票增强质量分析
+  ③ 转债配置策略 + 溢价率/仓位监控
+  ④ 股债双杀风险复盘 + 压力测试
+  ⑤ 拟购入 / 已持有 投资建议
 """
 
 from __future__ import annotations
@@ -152,7 +151,7 @@ def generate_bond_mixed2_report(report: Any) -> dict:
 
 
 # ============================================================
-# 板块 1：基本信息与股票仓位监控
+# 板块 1：资产结构概览
 # ============================================================
 
 def _section1_basic_info(
@@ -176,31 +175,31 @@ def _section1_basic_info(
     # 股票仓位红线监控
     red_line = 20.0  # 混合二级债基股票上限 20%
     if stock_pct > red_line:
-        red_status = f"**⚠️ 已触及 {red_line:.0f}% 红线**（当前 {stock_pct:.1f}%）"
+        red_status = f"**已触及 {red_line:.0f}% 红线**（当前 {stock_pct:.1f}%）"
         red_detail = (
-            "当前股票仓位已超过混合二级债基的法定上限，可能是季报数据更新滞后，"
-            "也可能是基金进行了大额赎回导致被动超标。需密切关注下期季报是否回归合规区间。"
+            "股票仓位已超过混合二级债基的法定上限，可能是季报数据更新滞后，"
+            "也可能是基金大额赎回导致被动超标。需密切关注下期季报是否回归合规区间。"
         )
     elif stock_pct > red_line * 0.8:
-        red_status = f"**⚡ 接近红线**（当前 {stock_pct:.1f}% / 上限 {red_line:.0f}%）"
+        red_status = f"**接近红线**（当前 {stock_pct:.1f}% / 上限 {red_line:.0f}%）"
         red_detail = (
-            f"股票仓位已接近 {red_line:.0f}% 上限，基金经理后续加仓空间有限。"
+            f"股票仓位已接近 {red_line:.0f}% 上限，后续加仓空间有限。"
             "若看好后市，可能需要先减仓再换股，交易成本增加。"
         )
     elif stock_pct > 10:
-        red_status = f"**🟢 适中偏积极**（当前 {stock_pct:.1f}%）"
+        red_status = f"**适中偏积极**（当前 {stock_pct:.1f}%）"
         red_detail = (
             "股票仓位处于中等偏高水平，在获取权益增强收益的同时，"
             "也为后续加仓留有约 {:.0f}% 的操作空间。".format(red_line - stock_pct)
         )
     elif stock_pct > 5:
-        red_status = f"**🟢 稳健配置**（当前 {stock_pct:.1f}%）"
+        red_status = f"**稳健配置**（当前 {stock_pct:.1f}%）"
         red_detail = (
             "股票仓位适中，以债券为核心收益来源，股票作为适度增强。"
             f"仍有约 {red_line - stock_pct:.0f}% 的加仓空间可用。"
         )
     else:
-        red_status = f"**🟢 保守配置**（当前 {stock_pct:.1f}%）"
+        red_status = f"**保守配置**（当前 {stock_pct:.1f}%）"
         red_detail = (
             "股票仓位偏低，增强力度有限，收益弹性较小。"
             "但这也意味着在股市下跌时的防护能力更强。"
@@ -256,30 +255,21 @@ def _section1_basic_info(
     if hasattr(basic, 'scale') and basic.scale:
         scale_text = f"**基金规模：** {basic.scale}\n\n"
 
-    return f"""### 一、资产结构概览与股票仓位监控
+    return f"""### 资产结构概览
 
-混合二级债基的核心策略是「**债底保护 + 权益增强**」：
-以债券投资为主体获取稳定收益，以不超过 **{red_line:.0f}%** 的股票仓位获取超额收益。
+混合二级债基的策略很简单：**债打底、股增强**。
+债券是基本盘，股票仓位不超过 **{red_line:.0f}%** 用来赚超额收益。
 
-**当前资产配置：**
-
-| 资产类别 | 占比 | 说明 |
-| --- | --- | --- |
-| 债券 | {bond_pct:.1f}% | 核心底仓 |
-| 股票 | {stock_pct:.1f}% | 权益增强（上限 {red_line:.0f}%） |
-| 可转债 | {cb_pct:.1f}% | 攻守兼备 |
-| 现金 | {cash_pct:.1f}% | 流动性储备 |
-| 其他 | {other_pct:.1f}% | 衍生品/买入返售等 |
+[INSERT_CHART: ASSET_ALLOCATION_PIE]
 
 **股票仓位红线监控：** {red_status}
 
 {red_detail}
-{scale_text}{stock_detail}{history_text}
-"""
+{scale_text}{stock_detail}{history_text}"""
 
 
 # ============================================================
-# 板块 2：收益表现与股票增强分析
+# 板块 2：收益表现
 # ============================================================
 
 def _section2_return_analysis(
@@ -326,7 +316,7 @@ def _section2_return_analysis(
         top10_stocks, stock_ratio, ann_ret, ann_bm, excess_bps
     )
 
-    return f"""### 二、收益表现与增强质量分析
+    return f"""### 收益表现与增强质量分析
 
 **收益数据总览：**
 
@@ -349,8 +339,7 @@ def _section2_return_analysis(
 
 {stock_enhance}
 
-[INSERT_CHART: HEATMAP]
-"""
+[INSERT_CHART: HEATMAP]"""
 
 
 # ============================================================
@@ -373,17 +362,13 @@ def _section3_cb_strategy(
     if cb_pct < 1 and (not bond_details or not any(
         "转债" in str(b.get("债券名称", "")) for b in bond_details
     )):
-        return f"""### 三、转债配置策略分析
+        return f"""### 转债配置策略分析
 
 **转债仓位：{cb_pct:.1f}%** —— 当前未配置可转债。
 
-该基金以纯债 + 股票为主要配置策略，未参与转债市场。这种策略的优点是：
-- 收益结构清晰，不含转债估值波动的不确定性
-- 在转债市场整体高估时避免了估值回调风险
-
-但同时也放弃了转债「**下跌有底、上涨不封顶**」的非对称收益特征。
-如果未来转债估值回归合理区间（平均溢价率降至 25% 以下），
-适度配置转债可以有效提升组合的风险收益比。
+该基金以纯债 + 股票为主要策略，没有参与转债市场。
+好处是收益结构简单、不受转债估值波动影响；
+代价是放弃了转债「**下跌有底、上涨不封顶**」的非对称收益特征。
 """
 
     # 从 bond_details 中提取转债明细
@@ -401,7 +386,7 @@ def _section3_cb_strategy(
         cb_level_desc = f"转债仓位 {cb_pct:.1f}%，适度参与转债增强，兼顾攻守。"
     else:
         cb_level = "较低"
-        cb_level_desc = f"转债仓位 {cb_pct:.1f}%，以少量转债做增强，对整体影响有限。"
+        cb_level_desc = f"转债仓位 {cb_pct:.1f}%，少量转债做增强，对整体影响有限。"
 
     # 转债持仓详情
     cb_detail_text = ""
@@ -473,19 +458,18 @@ def _section3_cb_strategy(
             f"转债对组合整体风险收益的影响有限。"
         )
 
-    return f"""### 三、转债配置策略分析
+    return f"""### 转债配置策略分析
 
-混合二级债基除了直接持有股票外，还常通过**可转债**实现「股债双击」：
-- **正股上涨时**：转债跟随正股上涨，享受权益收益
-- **正股下跌时**：有债底保护，跌幅通常小于正股
-- **条款博弈**：下修、回售等条款提供额外收益来源
+混合二级债基除了直接买股票，还经常通过**可转债**实现"股债双击"：
+正股涨时跟着涨，正股跌时有债底托着。
 
 **转债仓位：{cb_pct:.1f}%（{cb_level}）**
 
 {cb_level_desc}
 
-{cb_detail_text}{strategy_eval}
-"""
+[INSERT_CHART: CB_PRICE_PREMIUM]
+
+{cb_detail_text}{strategy_eval}"""
 
 
 # ============================================================
@@ -520,13 +504,13 @@ def _section4_risk_review(
     # 修复评价
     if recovery_days > 0:
         if recovery_days <= 30:
-            recovery_text = f"**{recovery_days} 个交易日**完成修复，修复速度**极快**"
+            recovery_text = f"**{recovery_days} 个交易日**完成修复，回血速度**极快**"
         elif recovery_days <= 60:
-            recovery_text = f"**{recovery_days} 个交易日**完成修复，修复速度**较快**"
+            recovery_text = f"**{recovery_days} 个交易日**完成修复，回血速度**较快**"
         elif recovery_days <= 120:
-            recovery_text = f"约 **{recovery_days // 22} 个月**完成修复，修复速度**一般**"
+            recovery_text = f"约 **{recovery_days // 22} 个月**完成修复，回血速度**一般**"
         else:
-            recovery_text = f"超过 **{recovery_days // 22} 个月**，修复速度**偏慢**"
+            recovery_text = f"超过 **{recovery_days // 22} 个月**，回血速度**偏慢**"
     else:
         recovery_text = "统计区间内尚未完全修复至前高"
 
@@ -543,7 +527,7 @@ def _section4_risk_review(
         dual_kill_risk = "**中等**"
         dual_kill_desc = (
             f"综合权益暴露约 {equity_risk*100:.1f}%，适度暴露权益风险。"
-            "在股债双杀环境下会有一定回撤，但债券底仓可以提供缓冲。"
+            "在股债双杀环境下会有一定回撤，但债券底仓可以缓冲。"
         )
     else:
         dual_kill_risk = "**较低**"
@@ -560,10 +544,9 @@ def _section4_risk_review(
         stress_text += "| --- | --- | --- | --- |\n"
         for s in stress_results:
             impact = s.get("price_impact", 0)
-            color = "🔴" if impact < -3 else ("🟡" if impact < -1 else "🟢")
             stress_text += (
                 f"| {s['scenario']} | {s.get('long_bp', 0):+.0f} | "
-                f"{s.get('credit_bp', 0):+.0f} | {color} {impact:.2f}% |\n"
+                f"{s.get('credit_bp', 0):+.0f} | {impact:.2f}% |\n"
             )
 
         # 股票 + 转债的额外冲击估算
@@ -588,21 +571,19 @@ def _section4_risk_review(
         dir_cn = dir_map.get(direction, "震荡")
         rate_text = (
             f"\n\n**利率环境研判：**\n\n"
-            f"根据技术指标模型，10Y 国债收益率预计从 **{current_rate:.2f}%** "
-            f"在未来 3 个月{dir_cn}至 **{mid_rate:.2f}%**"
+            f"技术指标模型预测10Y国债收益率从 **{current_rate:.2f}%** "
+            f"在未来3个月{dir_cn}至 **{mid_rate:.2f}%**"
             f"（置信度 {int(confidence*100)}%）。\n\n"
         )
 
         if direction == "up" and duration >= 3:
             rate_text += (
-                f"⚠️ **风险提示：** 该基金久期约 {duration:.1f} 年，"
-                f"在利率上行阶段，债券部分可能承压。"
-                f"叠加股票仓位回撤，需警惕股债双杀风险。"
+                f"**风险提示：** 该基金久期约 {duration:.1f} 年，"
+                f"利率上行阶段债券部分可能承压。叠加股票回撤，需警惕股债双杀。"
             )
         elif direction == "down":
             rate_text += (
-                f"利好信号：利率下行有利于债券价格回升，"
-                f"同时转债的期权价值也会提升。"
+                f"利好：利率下行有利于债券价格回升，转债的期权价值也会提升。"
             )
         else:
             rate_text += "当前利率环境对基金表现影响中性。"
@@ -610,7 +591,7 @@ def _section4_risk_review(
         # 风险因素
         factors = rate_prediction.get("key_factors", [])
         if factors:
-            rate_text += "\n\n**关键判断依据：**\n" + "\n".join(f"• {f}" for f in factors[:3])
+            rate_text += "\n\n**关键判断依据：**\n" + "\n".join(f"- {f}" for f in factors[:3])
     else:
         rate_text = (
             "\n\n**利率环境研判：**\n\n"
@@ -623,23 +604,23 @@ def _section4_risk_review(
     if risks:
         risk_signal_text = (
             "\n\n**需警惕的风险信号：**\n"
-            + "\n".join(f"• {r}" for r in risks[:3])
+            + "\n".join(f"- {r}" for r in risks[:3])
         )
 
     # 综合风险等级
     if fund_dd_abs < 1 and equity_risk < 0.10:
-        overall_risk = "🟢 **低风险**"
+        overall_risk = "**低风险**"
     elif fund_dd_abs < 2 and equity_risk < 0.15:
-        overall_risk = "🟢 **中低风险**"
+        overall_risk = "**中低风险**"
     elif fund_dd_abs < 4 and equity_risk < 0.20:
-        overall_risk = "🟡 **中等风险**"
+        overall_risk = "**中等风险**"
     else:
-        overall_risk = "🔴 **中高风险**"
+        overall_risk = "**中高风险**"
 
-    return f"""### 四、股债双杀风险复盘与预警
+    return f"""### 股债双杀风险复盘与预警
 
-混合二级债基同时持有债券、转债和股票，在**股债双杀**环境下（如 2022 年 11 月理财赎回潮），
-这类基金可能面临「债券端因利率上行而下跌 + 股票端因市场下跌而亏损」的双重打击。
+混合二级债基同时持有债券、转债和股票，遇到**股债双杀**（如2022年11月理财赎回潮）时，
+可能面临"债券端因利率上行跌 + 股票端因市场下跌亏"的双重打击。
 
 **历史回撤表现：**
 
@@ -658,8 +639,7 @@ def _section4_risk_review(
 {dual_kill_desc}
 {stress_text}{rate_text}{risk_signal_text}
 
-**综合风险等级：{overall_risk}**
-"""
+**综合风险等级：{overall_risk}**"""
 
 
 # ============================================================
@@ -691,50 +671,50 @@ def _section5_advice(
 
     # 收益维度
     if ann_ret >= 5:
-        buy_checks.append(("✅", f"年化收益 {ann_ret:.2f}%，收益水平优良"))
+        buy_checks.append(("OK", f"年化收益 {ann_ret:.2f}%，收益水平优良"))
     elif ann_ret >= 3:
-        buy_checks.append(("✅", f"年化收益 {ann_ret:.2f}%，收益水平适中"))
+        buy_checks.append(("OK", f"年化收益 {ann_ret:.2f}%，收益水平适中"))
     elif ann_ret >= 1:
-        buy_checks.append(("🟡", f"年化收益 {ann_ret:.2f}%，收益水平偏低"))
+        buy_checks.append(("WARN", f"年化收益 {ann_ret:.2f}%，收益水平偏低"))
     else:
-        buy_checks.append(("🔴", f"年化收益 {ann_ret:.2f}%，收益不达预期"))
+        buy_checks.append(("BAD", f"年化收益 {ann_ret:.2f}%，收益不达预期"))
 
     # 回撤维度
     if fund_dd_abs < 1:
-        buy_checks.append(("✅", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制极优"))
+        buy_checks.append(("OK", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制极优"))
     elif fund_dd_abs < 2.5:
-        buy_checks.append(("✅", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制良好"))
+        buy_checks.append(("OK", f"最大回撤 {fund_dd_abs:.2f}%，回撤控制良好"))
     elif fund_dd_abs < 5:
-        buy_checks.append(("🟡", f"最大回撤 {fund_dd_abs:.2f}%，回撤中等"))
+        buy_checks.append(("WARN", f"最大回撤 {fund_dd_abs:.2f}%，回撤中等"))
     else:
-        buy_checks.append(("🔴", f"最大回撤 {fund_dd_abs:.2f}%，回撤较大"))
+        buy_checks.append(("BAD", f"最大回撤 {fund_dd_abs:.2f}%，回撤较大"))
 
     # 夏普维度
     if sharpe >= 1.5:
-        buy_checks.append(("✅", f"夏普比率 {sharpe:.2f}，风险收益效率极佳"))
+        buy_checks.append(("OK", f"夏普比率 {sharpe:.2f}，风险收益效率极佳"))
     elif sharpe >= 0.8:
-        buy_checks.append(("✅", f"夏普比率 {sharpe:.2f}，风险收益效率良好"))
+        buy_checks.append(("OK", f"夏普比率 {sharpe:.2f}，风险收益效率良好"))
     elif sharpe >= 0.3:
-        buy_checks.append(("🟡", f"夏普比率 {sharpe:.2f}，风险收益效率一般"))
+        buy_checks.append(("WARN", f"夏普比率 {sharpe:.2f}，风险收益效率一般"))
     else:
-        buy_checks.append(("🔴", f"夏普比率 {sharpe:.2f}，风险收益效率偏低"))
+        buy_checks.append(("BAD", f"夏普比率 {sharpe:.2f}，风险收益效率偏低"))
 
     # 信用质量
     if wacs >= 75:
-        buy_checks.append(("✅", f"WACS信用评分 {int(wacs)}，持仓信用资质优良"))
+        buy_checks.append(("OK", f"WACS信用评分 {int(wacs)}，持仓信用资质优良"))
     elif wacs >= 55:
-        buy_checks.append(("🟅", f"WACS信用评分 {int(wacs)}，信用资质中等"))
+        buy_checks.append(("WARN", f"WACS信用评分 {int(wacs)}，信用资质中等"))
     else:
-        buy_checks.append(("🟡", f"WACS信用评分 {int(wacs)}，信用资质偏低需关注"))
+        buy_checks.append(("WARN", f"WACS信用评分 {int(wacs)}，信用资质偏低需关注"))
 
     # 仓位合规性
     if stock_ratio <= 0.20:
-        buy_checks.append(("✅", f"股票仓位 {stock_ratio*100:.1f}%，合规范围内"))
+        buy_checks.append(("OK", f"股票仓位 {stock_ratio*100:.1f}%，合规范围内"))
     else:
-        buy_checks.append(("🟡", f"股票仓位 {stock_ratio*100:.1f}%，触及20%红线需关注"))
+        buy_checks.append(("WARN", f"股票仓位 {stock_ratio*100:.1f}%，触及20%红线需关注"))
 
-    green_count = sum(1 for s, _ in buy_checks if s == "✅")
-    yellow_count = sum(1 for s, _ in buy_checks if s == "🟡")
+    green_count = sum(1 for s, _ in buy_checks if s == "OK")
+    yellow_count = sum(1 for s, _ in buy_checks if s == "WARN")
 
     if green_count >= 4 and yellow_count == 0:
         buy_verdict = "**强烈推荐购入** — 各项指标优秀，适合作为固收增强的核心配置"
@@ -801,21 +781,21 @@ def _section5_advice(
         exit_text = "当前未检测到明显离场信号，可安心持有。"
     else:
         exit_text = "检测到以下风险信号，需密切关注：\n\n" + "\n".join(
-            f"- ⚠️ **{s}**" for s in exit_signals
+            f"- **{s}**" for s in exit_signals
         )
         exit_text += "\n\n> 出现 **2 个及以上** 信号时，建议考虑减仓或离场。"
 
     # ── 组装建议 ──
-    buy_section = " | ".join(f"{s}{t}" for s, t in buy_checks)
+    buy_section = " | ".join(f"{t}" for _, t in buy_checks)
     hold_section = "\n".join(f"- {t}" for t in hold_checks)
 
     # 成本披露
     mgmt_fee = basic.fee_manage * 100 if hasattr(basic, 'fee_manage') and basic.fee_manage else 0.0
     custody_fee = basic.fee_custody * 100 if hasattr(basic, 'fee_custody') and basic.fee_custody else 0.0
 
-    return f"""### 五、投资建议
+    return f"""### 投资建议
 
-#### 📋 拟购入评估
+#### 拟购入评估
 
 {buy_verdict}
 
@@ -828,11 +808,11 @@ def _section5_advice(
 - 若风险偏好较低，可适当降低比例至 **10%~20%**
 - 建议在**股债利差收窄、转债估值较低**时择机建仓
 
-#### 📋 已持有诊断
+#### 已持有诊断
 
 {hold_section}
 
-#### 📋 离场信号监测
+#### 离场信号监测
 
 {exit_text}
 
@@ -864,9 +844,8 @@ def _build_headline(
     stock_pct = stock_ratio * 100
     cb_pct = cb_ratio * 100
     return (
-        f"## [混合二级债基深度分析] {fund_name}\n\n"
-        f"**分析日期：** {end_date}　｜　**统计区间：** {start_date} ~ {end_date}　｜　"
-        f"**综合评级：** {grade}\n\n"
+        f"## {fund_name} — 混合二级债基分析\n\n"
+        f"**统计区间：** {start_date} ~ {end_date}\n\n"
         f"**核心标签：** 债底保护 | 股票增强({stock_pct:.1f}%) | "
         f"转债配置({cb_pct:.1f}%) | 攻守兼备\n\n"
     )
@@ -895,14 +874,11 @@ def _analyze_bond_structure(bond_classification: dict) -> str:
 
     # 结构评价
     if gov_ratio > 60:
-        text += f"\n\n**结构评价：** 利率债占比超六成（{gov_ratio:.1f}%），组合防守性极强，"
-        text += "信用风险暴露有限。收益主要来自票息和久期管理。"
+        text += f"\n\n**结构评价：** 利率债占比超六成（{gov_ratio:.1f}%），防守极强，信用风险暴露有限。收益主要来自票息和久期管理。"
     elif gov_ratio > 30:
-        text += f"\n\n**结构评价：** 利率债占比三成以上（{gov_ratio:.1f}%），具备一定防御性，"
-        text += f"信用债（{credit_ratio:.1f}%）提供收益增强。"
+        text += f"\n\n**结构评价：** 利率债占比三成以上（{gov_ratio:.1f}%），有一定防御性，信用债（{credit_ratio:.1f}%）提供收益增强。"
     else:
-        text += f"\n\n**结构评价：** 利率债占比较低（{gov_ratio:.1f}%），主要通过信用下沉获取超额收益，"
-        text += "信用风险暴露相对较高。"
+        text += f"\n\n**结构评价：** 利率债占比较低（{gov_ratio:.1f}%），主要通过信用下沉获取超额收益，信用风险暴露较高。"
 
     return text
 
