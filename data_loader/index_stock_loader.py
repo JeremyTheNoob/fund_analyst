@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 
 from config import CACHE_TTL
-from data_loader.base_api import cached, safe_api_call
+from data_loader.base_api import safe_api_call
 from data_loader.akshare_timeout import call_with_timeout
 
 logger = logging.getLogger(__name__)
@@ -88,10 +88,10 @@ def get_index_name(code: str) -> str:
 # PE/PB 估值数据
 # ============================================================
 
-@cached(ttl=CACHE_TTL["long"])
 def load_index_valuation(index_code: str) -> Optional[pd.DataFrame]:
     """
     加载指数 PE/PB 估值历史（中证指数官方接口）。
+    优先从 Supabase 缓存读取，缓存 24 小时。
     
     Args:
         index_code: 指数代码，如 "sh000300"、"000300" 等
@@ -101,6 +101,15 @@ def load_index_valuation(index_code: str) -> Optional[pd.DataFrame]:
         失败返回 None
     """
     short_code = index_code_to_short(index_code)
+
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("index_valuation", ttl_seconds=86400, expect_df=True, symbol=short_code)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
     
     try:
         df = call_with_timeout(
@@ -130,6 +139,14 @@ def load_index_valuation(index_code: str) -> Optional[pd.DataFrame]:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
             
             logger.info(f"[load_index_valuation] {short_code} 估值数据 {len(df)} 行")
+
+            # 写入缓存
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("index_valuation", df, expect_df=True, symbol=short_code)
+            except Exception:
+                pass
+
             return df
     except Exception as e:
         logger.warning(f"[load_index_valuation] {short_code} 估值数据加载失败: {e}")
@@ -213,10 +230,10 @@ def calc_valuation_percentile(
 # 指数成份股权重
 # ============================================================
 
-@cached(ttl=CACHE_TTL["long"])
 def load_index_cons_weights(index_code: str) -> Optional[pd.DataFrame]:
     """
     加载指数成份股及权重（中证指数官方接口）。
+    优先从 Supabase 缓存读取，缓存 7 天（成份股权重半年调整一次）。
     
     Args:
         index_code: 指数代码，如 "sh000300"、"000300" 等
@@ -226,6 +243,15 @@ def load_index_cons_weights(index_code: str) -> Optional[pd.DataFrame]:
         失败返回 None
     """
     short_code = index_code_to_short(index_code)
+
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("index_cons_weights", ttl_seconds=604800, expect_df=True, symbol=short_code)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
     
     try:
         df = call_with_timeout(
@@ -243,6 +269,14 @@ def load_index_cons_weights(index_code: str) -> Optional[pd.DataFrame]:
             df["weight"] = pd.to_numeric(df.get("weight", 0), errors="coerce")
             
             logger.info(f"[load_index_cons_weights] {short_code} 成份股 {len(df)} 只")
+
+            # 写入缓存
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("index_cons_weights", df, expect_df=True, symbol=short_code)
+            except Exception:
+                pass
+
             return df
     except Exception as e:
         logger.warning(f"[load_index_cons_weights] {short_code} 成份股加载失败: {e}")
@@ -319,6 +353,7 @@ def build_concentration_analysis(weights_df: Optional[pd.DataFrame]) -> Dict[str
 def load_fund_fee_detail(symbol: str) -> Dict[str, float]:
     """
     加载基金费率详情（管理费/托管费/销售服务费）。
+    优先从 Supabase 缓存读取，缓存 7 天（费率极少变动）。
     
     Args:
         symbol: 基金代码
@@ -331,6 +366,20 @@ def load_fund_fee_detail(symbol: str) -> Dict[str, float]:
             "total_expense_ratio": 综合费率 TER（小数）,
         }
     """
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_fee_detail", ttl_seconds=604800, expect_df=False, symbol=symbol)
+        if cached is not None and isinstance(cached, dict):
+            cached["total_expense_ratio"] = (
+                cached.get("management_fee", 0.0)
+                + cached.get("custody_fee", 0.0)
+                + cached.get("sales_service_fee", 0.0)
+            )
+            return cached
+    except Exception:
+        pass
+
     result = {
         "management_fee": 0.0,
         "custody_fee": 0.0,
@@ -368,6 +417,13 @@ def load_fund_fee_detail(symbol: str) -> Dict[str, float]:
         + result["custody_fee"]
         + result["sales_service_fee"]
     )
+
+    # 写入缓存
+    try:
+        from data_loader.cache_layer import cache_set as _cs
+        _cs("fund_fee_detail", result, expect_df=False, symbol=symbol)
+    except Exception:
+        pass
     
     return result
 

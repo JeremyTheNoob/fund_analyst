@@ -346,14 +346,25 @@ def _parse_benchmark(text: str) -> dict:
 def load_unit_nav(symbol: str) -> Optional[float]:
     """
     获取最新单位净值（用于基础信息显示）。
+    优先从净值缓存读取（与 load_nav 共享 fund_nav 缓存），避免额外 API 调用。
     """
-    @retry()
-    def _fetch():
-        import akshare as ak
-        return ak.fund_open_fund_info_em(symbol=symbol, indicator="单位净值走势")
-    
-    df = _fetch()
-    if df is None or df.empty:
+    # 优先利用已缓存的净值数据
+    try:
+        from data_loader.cache_layer import cache_get
+        cached_df = cache_get("fund_nav", ttl_seconds=300, expect_df=True, symbol=symbol, indicator="单位净值走势")
+        if cached_df is not None and not cached_df.empty:
+            df = cached_df.iloc[:, :2].copy()
+            df.columns = ["date", "nav"]
+            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+            latest_nav = df["nav"].dropna().iloc[-1]
+            return float(latest_nav)
+    except Exception:
+        pass
+
+    # 缓存未命中，直接调 API
+    from data_loader.base_api import _ak_fund_nav
+    raw = _ak_fund_nav(symbol)
+    if raw is None or raw.empty:
         logger.warning(f"[load_unit_nav] {symbol} 单位净值数据为空")
         return None
     
@@ -369,8 +380,6 @@ def load_unit_nav(symbol: str) -> Optional[float]:
         return None
 
 
-@cached(ttl=CACHE_TTL["short"])
-@cached(ttl=CACHE_TTL["medium"])
 @audit_logger
 def load_nav(
     symbol: str,
@@ -380,26 +389,44 @@ def load_nav(
     """
     加载单位净值走势。
     返回 NavData（df 包含 date / nav / ret）。
-    
-    优化点：
-    1. 添加缓存，避免重复加载相同基金的数据
-    2. 使用safe_api_call支持超时控制
-    3. 优化错误处理和日志记录
+
+    优先从 Supabase 缓存读取（5 分钟 TTL），缓存未命中时调 API。
+    注意：缓存原始 DataFrame（全量历史），时间范围过滤在缓存之后执行。
     """
     _years = years or DATA_CONFIG["nav_years"]
 
-    def _fetch():
-        import akshare as ak
-        return ak.fund_open_fund_info_em(symbol=symbol, indicator="单位净值走势")
-    
-    try:
-        # 使用safe_api_call，设置较短的超时时间，减少重试次数
-        df = safe_api_call(_fetch, timeout_seconds=10.0, max_retries=1)
-    except Exception as e:
-        logger.warning(f"[load_nav] {symbol} 净值数据获取失败: {e}")
+    def _fetch_raw() -> Optional[pd.DataFrame]:
+        """获取原始净值数据（带缓存）"""
+        try:
+            from data_loader.cache_layer import cache_get, cache_set
+            cached = cache_get("fund_nav", ttl_seconds=300, expect_df=True, symbol=symbol, indicator="单位净值走势")
+            if cached is not None:
+                return cached
+        except Exception:
+            pass
+
+        def _call_api():
+            import akshare as ak
+            return ak.fund_open_fund_info_em(symbol=symbol, indicator="单位净值走势")
+
+        try:
+            df = safe_api_call(_call_api, timeout_seconds=10.0, max_retries=1)
+            if df is not None:
+                try:
+                    from data_loader.cache_layer import cache_set as _cs
+                    _cs("fund_nav", df, expect_df=True, symbol=symbol, indicator="单位净值走势")
+                except Exception:
+                    pass
+            return df
+        except Exception as e:
+            logger.warning(f"[load_nav] {symbol} 净值数据获取失败: {e}")
+            return None
         # 返回空数据而不是抛出异常，避免影响用户体验
         empty = NavData(symbol=symbol, df=pd.DataFrame(columns=["date", "nav", "ret"]))
         return empty
+    
+    # 使用缓存获取原始数据
+    df = _fetch_raw()
     
     empty = NavData(symbol=symbol, df=pd.DataFrame(columns=["date", "nav", "ret"]))
 
@@ -686,10 +713,10 @@ def load_ff_factors(start: str, end: str) -> FactorData:
 
 @cached(ttl=CACHE_TTL["long"])
 def load_bond_index(start: str, end: str) -> pd.DataFrame:
-    """中债综合财富指数，返回 date / ret"""
-    import akshare as ak
+    """中债综合财富指数，返回 date / ret。优先使用已缓存的 _ak_bond_composite_index。"""
+    from data_loader.base_api import _ak_bond_composite_index
     try:
-        df = ak.bond_new_composite_index_cbond(indicator="财富")
+        df = _ak_bond_composite_index(indicator="财富")
         if df is None or df.empty:
             return pd.DataFrame(columns=["date", "ret"])
         # 兼容 '日期' 列名

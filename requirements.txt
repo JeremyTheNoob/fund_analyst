@@ -17,6 +17,9 @@ statsmodels>=0.14.0
 # 数据源
 akshare>=1.12.0
 
+# 缓存/数据库
+supabase>=2.0.0
+
 # 可视化
 plotly>=5.18.0
 

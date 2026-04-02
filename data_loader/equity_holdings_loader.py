@@ -175,33 +175,49 @@ def load_holdings_by_year(
     all_holdings = []
 
     for year in years:
-        def _fetch():
-            return ak.fund_portfolio_hold_em(symbol=symbol, date=year)
-
+        # 尝试读 Supabase 缓存（股票持仓，24h TTL）
+        _raw_df = None
         try:
-            df = safe_api_call(_fetch, timeout_seconds=15.0, max_retries=max_retries)
+            from data_loader.cache_layer import cache_get, cache_set as _cache_set
+            _raw_df = cache_get("fund_holdings_stock", ttl_seconds=86400, expect_df=True, symbol=symbol, date=year)
+        except Exception:
+            pass
 
-            if df is None or df.empty:
-                logger.warning(f"[load_holdings_by_year] {symbol} {year}年持仓数据为空")
+        if _raw_df is None:
+            def _fetch():
+                return ak.fund_portfolio_hold_em(symbol=symbol, date=year)
+
+            try:
+                _raw_df = safe_api_call(_fetch, timeout_seconds=15.0, max_retries=max_retries)
+                # 写入缓存
+                if _raw_df is not None:
+                    try:
+                        from data_loader.cache_layer import cache_set as _cache_set
+                        _cache_set("fund_holdings_stock", _raw_df, expect_df=True, symbol=symbol, date=year)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"[load_holdings_by_year] {symbol} {year}年持仓加载失败: {e}")
                 continue
 
-            # 标准化列名
-            df = df.copy()
-            if '股票代码' in df.columns:
-                df = df.rename(columns={'股票代码': '代码', '股票名称': '名称', '占净值比例': '占比'})
-
-            # 添加年份信息（如果不存在则添加）
-            if '年份' not in df.columns:
-                df['年份'] = year
-            else:
-                df['年份'] = df['年份'].astype(str).str.replace(r'\.0$', '', regex=True)
-
-            all_holdings.append(df)
-            logger.info(f"[load_holdings_by_year] {symbol} {year}年持仓加载成功，共 {len(df)} 只股票")
-
-        except Exception as e:
-            logger.error(f"[load_holdings_by_year] {symbol} {year}年持仓加载失败: {e}")
+        df = _raw_df
+        if df is None or df.empty:
+            logger.warning(f"[load_holdings_by_year] {symbol} {year}年持仓数据为空")
             continue
+
+        # 标准化列名
+        df = df.copy()
+        if '股票代码' in df.columns:
+            df = df.rename(columns={'股票代码': '代码', '股票名称': '名称', '占净值比例': '占比'})
+
+        # 添加年份信息（如果不存在则添加）
+        if '年份' not in df.columns:
+            df['年份'] = year
+        else:
+            df['年份'] = df['年份'].astype(str).str.replace(r'\.0$', '', regex=True)
+
+        all_holdings.append(df)
+        logger.info(f"[load_holdings_by_year] {symbol} {year}年持仓加载成功，共 {len(df)} 只股票")
 
     if not all_holdings:
         logger.warning(f"[load_holdings_by_year] {symbol} 所有年份持仓数据均失败")
@@ -258,55 +274,71 @@ def load_asset_structure(
     all_assets = []
 
     for date_str in quarter_end_dates:
-        def _fetch():
-            return ak.fund_individual_detail_hold_xq(symbol=symbol, date=date_str)
-
+        # 尝试读 Supabase 缓存（资产配置，7d TTL，季报数据更新频率低）
+        _raw_df = None
         try:
-            df = safe_api_call(_fetch, timeout_seconds=10.0, max_retries=max_retries)
+            from data_loader.cache_layer import cache_get, cache_set as _cache_set
+            _raw_df = cache_get("fund_asset_alloc", ttl_seconds=604800, expect_df=True, symbol=symbol, date=date_str)
+        except Exception:
+            pass
 
-            if df is None or df.empty:
-                logger.warning(f"[load_asset_structure] {symbol} {date_str} 资产结构数据为空")
+        if _raw_df is None:
+            def _fetch():
+                return ak.fund_individual_detail_hold_xq(symbol=symbol, date=date_str)
+
+            try:
+                _raw_df = safe_api_call(_fetch, timeout_seconds=10.0, max_retries=max_retries)
+                # 写入缓存
+                if _raw_df is not None:
+                    try:
+                        from data_loader.cache_layer import cache_set as _cache_set
+                        _cache_set("fund_asset_alloc", _raw_df, expect_df=True, symbol=symbol, date=date_str)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"[load_asset_structure] {symbol} {date_str} 资产结构加载失败: {e}")
                 continue
 
-            # 提取资产结构
-            # df 列可能包含：'资产类型', '仓位占比' 或 '占净值比例(%)' 等
-            if '资产类型' not in df.columns:
-                logger.warning(f"[load_asset_structure] {symbol} {date_str} 资产结构缺少'资产类型'列")
-                continue
-
-            # 检查比例列名（兼容多种格式）
-            ratio_col = None
-            for col in ['仓位占比', '占净值比例(%)', '占净值比例']:
-                if col in df.columns:
-                    ratio_col = col
-                    break
-
-            if ratio_col is None:
-                logger.warning(f"[load_asset_structure] {symbol} {date_str} 资产结构缺少比例列，可用列：{df.columns.tolist()}")
-                continue
-
-            # 转置 DataFrame，将资产类型转换为列
-            asset_dict = {}
-            for _, row in df.iterrows():
-                asset_type = str(row['资产类型']).strip()
-                ratio = float(row[ratio_col] or 0) / 100
-                asset_dict[asset_type] = ratio
-
-            # 构建标准格式的行
-            row_data = {
-                '日期': pd.to_datetime(date_str),
-                '股票': asset_dict.get('股票', 0.0),
-                '债券': asset_dict.get('债券', 0.0),
-                '现金': asset_dict.get('现金', 0.0) + asset_dict.get('银行存款', 0.0),
-                '其他': asset_dict.get('其他', 0.0)
-            }
-
-            all_assets.append(row_data)
-            logger.info(f"[load_asset_structure] {symbol} {date_str} 资产结构加载成功")
-
-        except Exception as e:
-            logger.error(f"[load_asset_structure] {symbol} {date_str} 资产结构加载失败: {e}")
+        df = _raw_df
+        if df is None or df.empty:
+            logger.warning(f"[load_asset_structure] {symbol} {date_str} 资产结构数据为空")
             continue
+
+        # 提取资产结构
+        # df 列可能包含：'资产类型', '仓位占比' 或 '占净值比例(%)' 等
+        if '资产类型' not in df.columns:
+            logger.warning(f"[load_asset_structure] {symbol} {date_str} 资产结构缺少'资产类型'列")
+            continue
+
+        # 检查比例列名（兼容多种格式）
+        ratio_col = None
+        for col in ['仓位占比', '占净值比例(%)', '占净值比例']:
+            if col in df.columns:
+                ratio_col = col
+                break
+
+        if ratio_col is None:
+            logger.warning(f"[load_asset_structure] {symbol} {date_str} 资产结构缺少比例列，可用列：{df.columns.tolist()}")
+            continue
+
+        # 转置 DataFrame，将资产类型转换为列
+        asset_dict = {}
+        for _, row in df.iterrows():
+            asset_type = str(row['资产类型']).strip()
+            ratio = float(row[ratio_col] or 0) / 100
+            asset_dict[asset_type] = ratio
+
+        # 构建标准格式的行
+        row_data = {
+            '日期': pd.to_datetime(date_str),
+            '股票': asset_dict.get('股票', 0.0),
+            '债券': asset_dict.get('债券', 0.0),
+            '现金': asset_dict.get('现金', 0.0) + asset_dict.get('银行存款', 0.0),
+            '其他': asset_dict.get('其他', 0.0)
+        }
+
+        all_assets.append(row_data)
+        logger.info(f"[load_asset_structure] {symbol} {date_str} 资产结构加载成功")
 
     if not all_assets:
         logger.warning(f"[load_asset_structure] {symbol} 所有日期资产结构数据均失败")

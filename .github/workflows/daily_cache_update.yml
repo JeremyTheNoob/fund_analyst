@@ -1,0 +1,100 @@
+name: Daily Cache Update
+
+on:
+  schedule:
+    # 每天北京时间 6:00 执行（UTC 22:00 前一天）
+    # 选择 6:00 是因为：
+    # - A股收盘数据已更新完毕
+    # - 欧美市场已收盘
+    # - 在用户早间查询前完成缓存刷新
+    - cron: '0 22 * * *'
+
+  # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '更新模式'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full          # 完整更新
+          - market        # 只更新市场数据
+          - prewarm       # 缓存预热
+          - cleanup       # 缓存清理诊断
+
+  # 推送到 main 时也触发一次市场数据更新
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'data_loader/**'
+      - 'config.py'
+
+jobs:
+  update-cache:
+    name: Cache Update
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run daily update (full)
+      if: github.event.inputs.mode == '' || github.event.inputs.mode == 'full'
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_ENABLED: "true"
+      run: |
+        python -m scripts.daily_update
+
+    - name: Run market-only update
+      if: github.event.inputs.mode == 'market'
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_ENABLED: "true"
+      run: |
+        python -m scripts.daily_update --market
+
+    - name: Run prewarm cache
+      if: github.event.inputs.mode == 'prewarm'
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_ENABLED: "true"
+      run: |
+        python -m scripts.prewarm_cache
+
+    - name: Run cleanup diagnostics
+      if: github.event.inputs.mode == 'cleanup'
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_ENABLED: "true"
+      run: |
+        python -m scripts.daily_update --cleanup
+
+    - name: Notify failure
+      if: failure()
+      run: |
+        echo "❌ 缓存更新失败！请检查日志。"

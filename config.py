@@ -3,7 +3,22 @@
 集中管理所有参数、阈值、映射、AkShare 接口常量
 """
 
+import os
 from typing import Dict, List
+
+# ============================================================
+# 🔌 Supabase 配置
+# ============================================================
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL",
+    "https://fwksdeyzgwliivghszaa.supabase.co",
+)
+SUPABASE_ANON_KEY = os.environ.get(
+    "SUPABASE_ANON_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3a3NkZXl6Z3dsaWl2Z2hzemFhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxMjIwMTYsImV4cCI6MjA5MDY5ODAxNn0.U7wq49cOJi4k7cFViO6oKSQg8dqcCZYR8WQLfCCMETI",
+)
+# 是否启用 Supabase 缓存（设为 "false" 可完全禁用，回退到实时 API）
+SUPABASE_ENABLED = os.environ.get("SUPABASE_ENABLED", "true").lower() == "true"
 
 # ============================================================
 # 🗓️ 数据获取参数

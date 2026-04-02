@@ -175,6 +175,7 @@ def safe_df(df: Optional[pd.DataFrame], default_columns: Optional[list] = None) 
 def _ak_fund_basic_xq(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     基金基础信息（雪球）
+    优先从 Supabase 缓存读取，缓存 24 小时。
     
     Args:
         symbol: 基金代码
@@ -182,14 +183,34 @@ def _ak_fund_basic_xq(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     Returns:
         基金基本信息 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_basic_xq", ttl_seconds=86400, expect_df=True, symbol=symbol)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.fund_individual_basic_info_xq(symbol=symbol)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("fund_basic_xq", result, expect_df=True, symbol=symbol)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_fund_name_em(symbol: str, *args, **kwargs) -> Optional[str]:
     """
     基金名称（东方财富）
+    带缓存（5 分钟 TTL，与净值共享前缀）。
     
     Args:
         symbol: 基金代码
@@ -197,12 +218,31 @@ def _ak_fund_name_em(symbol: str, *args, **kwargs) -> Optional[str]:
     Returns:
         基金名称
     """
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_nav", ttl_seconds=300, expect_df=True, symbol=symbol, indicator="单位净值走势")
+        if cached is not None and not cached.empty:
+            # 净值接口返回的第一列第一行是基金名称
+            try:
+                return str(cached.iloc[0, 0])
+            except (IndexError, KeyError):
+                pass
+    except Exception:
+        pass
+
     try:
         df = safe_api_call(
             lambda: ak.fund_open_fund_info_em(symbol=symbol, indicator="单位净值走势")
         )
         if df is not None and not df.empty:
-            return df.iloc[0, 0] if len(df.columns) > 0 else None
+            # 写入缓存（与净值共享）
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("fund_nav", df, expect_df=True, symbol=symbol, indicator="单位净值走势")
+            except Exception:
+                pass
+            return str(df.iloc[0, 0]) if len(df.columns) > 0 else None
     except Exception as e:
         logger.warning(f"_ak_fund_name_em 失败: {e}")
     return None
@@ -211,11 +251,21 @@ def _ak_fund_name_em(symbol: str, *args, **kwargs) -> Optional[str]:
 def _ak_fund_list_em() -> Optional[pd.DataFrame]:
     """
     获取基金代码和名称列表（东方财富）
+    全量接口，带 Supabase 缓存（1h TTL）。
     
     Returns:
         包含基金代码和名称的DataFrame，列名为['基金代码', '基金名称']
         如果没有数据返回None
     """
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_list_all", ttl_seconds=3600, expect_df=True)
+        if cached is not None and not cached.empty:
+            return cached
+    except Exception:
+        pass
+
     try:
         df = safe_api_call(
             lambda: ak.fund_name_em()
@@ -223,11 +273,22 @@ def _ak_fund_list_em() -> Optional[pd.DataFrame]:
         if df is not None and not df.empty:
             # 确保列名标准化
             if '基金代码' in df.columns and '基金名称' in df.columns:
-                return df[['基金代码', '基金名称']].copy()
+                result = df[['基金代码', '基金名称']].copy()
             elif len(df.columns) >= 2:
                 # 如果列名不是标准格式，重命名前两列
                 df.columns = ['基金代码', '基金名称'] + list(df.columns[2:])
-                return df[['基金代码', '基金名称']].copy()
+                result = df[['基金代码', '基金名称']].copy()
+            else:
+                return None
+
+            # 写入缓存
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("fund_list_all", result, expect_df=True)
+            except Exception:
+                pass
+
+            return result
     except Exception as e:
         logger.warning(f"_ak_fund_list_em 失败: {e}")
     return None
@@ -238,6 +299,7 @@ def get_fund_type_em(symbol: str) -> Optional[str]:
     从 fund_name_em 获取基金的权威类型（如 "混合型-偏股"、"债券型-长债"）
 
     使用内存缓存避免重复调用 fund_name_em（全量接口较重）。
+    优先从 Supabase 缓存读取，缓存未命中时才调 API。
 
     Args:
         symbol: 基金代码（6位）
@@ -245,7 +307,16 @@ def get_fund_type_em(symbol: str) -> Optional[str]:
     Returns:
         基金类型字符串，获取失败返回 None
     """
-    # 模块级缓存：首次调用时加载全量列表，后续直接查表
+    # 1. 先查 Supabase 缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_type", ttl_seconds=604800, expect_df=False, symbol=symbol)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    # 2. 再查内存缓存（向后兼容）
     if not hasattr(get_fund_type_em, "_cache"):
         try:
             df = safe_api_call(lambda: ak.fund_name_em())
@@ -257,7 +328,17 @@ def get_fund_type_em(symbol: str) -> Optional[str]:
             logger.warning(f"[get_fund_type_em] fund_name_em 加载失败: {e}")
             get_fund_type_em._cache = {}
 
-    return get_fund_type_em._cache.get(symbol)
+    result = get_fund_type_em._cache.get(symbol)
+
+    # 3. 写入 Supabase 缓存（供其他 worker 复用）
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("fund_type", result, expect_df=False, symbol=symbol)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_fund_scale_sina(symbol: str, *args, **kwargs) -> Optional[float]:
@@ -278,6 +359,7 @@ def _ak_fund_scale_sina(symbol: str, *args, **kwargs) -> Optional[float]:
 def _ak_fund_fee_em(symbol: str = "000001", indicator: str = "运作费用", *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     基金费率（东方财富）
+    优先从 Supabase 缓存读取，缓存 7 天（费率极少变动）。
 
     Args:
         symbol: 基金代码
@@ -286,14 +368,34 @@ def _ak_fund_fee_em(symbol: str = "000001", indicator: str = "运作费用", *ar
     Returns:
         费率信息 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_fee", ttl_seconds=604800, expect_df=True, symbol=symbol, indicator=indicator)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.fund_fee_em(symbol=symbol, indicator=indicator)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("fund_fee", result, expect_df=True, symbol=symbol, indicator=indicator)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_fund_nav(symbol: str, indicator: str = "单位净值走势", *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     基金净值数据（东方财富）
+    优先从 Supabase 缓存读取，缓存 5 分钟。
 
     Args:
         symbol: 基金代码
@@ -302,14 +404,35 @@ def _ak_fund_nav(symbol: str, indicator: str = "单位净值走势", *args, **kw
     Returns:
         净值数据 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_nav", ttl_seconds=300, expect_df=True, symbol=symbol, indicator=indicator)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.fund_open_fund_info_em(symbol=symbol, indicator=indicator)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("fund_nav", result, expect_df=True, symbol=symbol, indicator=indicator)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_fund_purchase_status(symbol: str, *args, **kwargs) -> Optional[dict]:
     """
     基金申购赎回状态（东方财富）
+    全量接口 fund_purchase_em，带 Supabase 缓存（24h TTL）。
+    缓存策略：全量 DataFrame 缓存，每次只取目标基金。
 
     Args:
         symbol: 基金代码
@@ -317,21 +440,41 @@ def _ak_fund_purchase_status(symbol: str, *args, **kwargs) -> Optional[dict]:
     Returns:
         包含申购状态、赎回状态、购买起点的字典
     """
+    # 尝试读缓存（全量数据缓存为一条记录）
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached_df = cache_get("fund_purchase_all", ttl_seconds=86400, expect_df=True)
+        if cached_df is not None and not cached_df.empty:
+            fund_data = cached_df[cached_df['基金代码'] == symbol]
+            if not fund_data.empty:
+                row = fund_data.iloc[0]
+                return {
+                    'purchase_status': row.get('申购状态', ''),
+                    'redeem_status': row.get('赎回状态', ''),
+                    'min_purchase': float(row.get('购买起点', 0.0) or 0.0)
+                }
+    except Exception:
+        pass
+
     try:
         df = safe_api_call(lambda: ak.fund_purchase_em())
-        if df is None or df.empty:
-            return None
+        if df is not None and not df.empty:
+            # 写入缓存（全量）
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("fund_purchase_all", df, expect_df=True)
+            except Exception:
+                pass
 
-        fund_data = df[df['基金代码'] == symbol]
-        if fund_data.empty:
-            return None
-
-        row = fund_data.iloc[0]
-        return {
-            'purchase_status': row.get('申购状态', ''),
-            'redeem_status': row.get('赎回状态', ''),
-            'min_purchase': float(row.get('购买起点', 0.0))
-        }
+            fund_data = df[df['基金代码'] == symbol]
+            if not fund_data.empty:
+                row = fund_data.iloc[0]
+                return {
+                    'purchase_status': row.get('申购状态', ''),
+                    'redeem_status': row.get('赎回状态', ''),
+                    'min_purchase': float(row.get('购买起点', 0.0) or 0.0)
+                }
+        return None
     except Exception as e:
         logger.warning(f"_ak_fund_purchase_status 获取 {symbol} 失败: {e}")
         return None
@@ -340,6 +483,7 @@ def _ak_fund_purchase_status(symbol: str, *args, **kwargs) -> Optional[dict]:
 def _ak_fund_holdings_stock(symbol: str, date: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     基金股票持仓（东方财富）
+    优先从 Supabase 缓存读取，缓存 24 小时。
     
     Args:
         symbol: 基金代码
@@ -348,14 +492,34 @@ def _ak_fund_holdings_stock(symbol: str, date: str, *args, **kwargs) -> Optional
     Returns:
         股票持仓 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_holdings_stock", ttl_seconds=86400, expect_df=True, symbol=symbol, date=date)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.fund_portfolio_hold_em(symbol=symbol, date=date)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("fund_holdings_stock", result, expect_df=True, symbol=symbol, date=date)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_fund_asset_allocation(symbol: str, date: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     基金资产配置（雪球数据源）
+    优先从 Supabase 缓存读取，缓存 7 天（季报数据更新频率低）。
     
     通过 akshare fund_individual_detail_hold_xq 接口获取基金大类资产配置比例。
     返回 DataFrame 列：['资产类型', '仓位占比']，行包含：股票、债券、现金、其他等。
@@ -367,6 +531,15 @@ def _ak_fund_asset_allocation(symbol: str, date: str, *args, **kwargs) -> Option
     Returns:
         资产配置 DataFrame，失败返回空 DataFrame
     """
+    # 尝试读缓存（季报数据，7 天 TTL）
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_asset_alloc", ttl_seconds=604800, expect_df=True, symbol=symbol, date=date)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     def _fetch():
         import akshare as ak
         return ak.fund_individual_detail_hold_xq(symbol=symbol, date=date)
@@ -376,6 +549,14 @@ def _ak_fund_asset_allocation(symbol: str, date: str, *args, **kwargs) -> Option
         if df is not None and not df.empty:
             # 标准化列名
             df.columns = ["资产类型", "占净值比例(%)"]
+
+            # 写入缓存
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("fund_asset_alloc", df, expect_df=True, symbol=symbol, date=date)
+            except Exception:
+                pass
+
         return df
     except Exception as e:
         logger.warning(f"[_ak_fund_asset_allocation] {symbol} {date} 获取失败: {e}")
@@ -385,6 +566,7 @@ def _ak_fund_asset_allocation(symbol: str, date: str, *args, **kwargs) -> Option
 def _ak_index_daily_main(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     指数日线行情（主力）
+    优先从 Supabase 缓存读取，缓存 24 小时。
 
     Args:
         symbol: 指数代码（如 "000300.SH"、"sh000300"）
@@ -392,6 +574,15 @@ def _ak_index_daily_main(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]
     Returns:
         指数行情 DataFrame
     """
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("index_daily", ttl_seconds=86400, expect_df=True, symbol=symbol)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     try:
         # 标准化指数代码到 AkShare 格式
         ak_symbol = symbol
@@ -417,6 +608,15 @@ def _ak_index_daily_main(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]
                         df.columns[0]: "date",
                         df.columns[1]: "close"
                     })
+        
+        # 写入缓存（用原始 symbol 作为 key，而非标准化后的）
+        if df is not None:
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("index_daily", df, expect_df=True, symbol=symbol)
+            except Exception:
+                pass
+        
         return df
     except Exception as e:
         logger.warning(f"_ak_index_daily_main 获取 {symbol} (标准化为 {ak_symbol}) 失败: {e}")
@@ -441,6 +641,7 @@ def _ak_index_daily_em(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
 def _ak_hk_index_daily(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     港股指数日线行情（新浪）
+    优先从 Supabase 缓存读取，缓存 24 小时。
 
     Args:
         symbol: 指数代码（如 "HSI"）
@@ -448,14 +649,34 @@ def _ak_hk_index_daily(symbol: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     Returns:
         指数行情 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("hk_index_daily", ttl_seconds=86400, expect_df=True, symbol=symbol)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.stock_hk_index_daily_sina(symbol=symbol)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("hk_index_daily", result, expect_df=True, symbol=symbol)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_fund_holdings_bond(symbol: str, date: str = "2024", *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     基金债券持仓（东方财富）
+    优先从 Supabase 缓存读取，缓存 24 小时。
     
     Args:
         symbol: 基金代码
@@ -464,19 +685,48 @@ def _ak_fund_holdings_bond(symbol: str, date: str = "2024", *args, **kwargs) -> 
     Returns:
         债券持仓 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_holdings_bond", ttl_seconds=86400, expect_df=True, symbol=symbol, date=date)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.fund_portfolio_bond_hold_em(symbol=symbol, date=date)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("fund_holdings_bond", result, expect_df=True, symbol=symbol, date=date)
+        except Exception:
+            pass
+
+    return result
 
 
 def load_cb_index_hist(symbol: str = "000832", start_date: str = "20200101", end_date: str = None) -> pd.DataFrame:
     """
     加载中证转债指数历史日线数据（AkShare index_zh_a_hist）。
+    优先从 Supabase 缓存读取，缓存 24 小时。
     
     Returns:
         DataFrame with columns: date, open, high, low, close, volume
         日期从近到远排列。如果加载失败返回空 DataFrame。
     """
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("cb_index_hist", ttl_seconds=86400, expect_df=True, symbol=symbol, start_date=start_date, end_date=end_date)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     import time as _time
     if end_date is None:
         end_date = pd.Timestamp.now().strftime("%Y%m%d")
@@ -507,6 +757,14 @@ def load_cb_index_hist(symbol: str = "000832", start_date: str = "20200101", end
                     df = df.rename(columns=col_map)
                 df["date"] = pd.to_datetime(df["date"])
                 df = df.sort_values("date").reset_index(drop=True)
+
+                # 写入缓存
+                try:
+                    from data_loader.cache_layer import cache_set as _cs
+                    _cs("cb_index_hist", df, expect_df=True, symbol=symbol, start_date=start_date, end_date=end_date)
+                except Exception:
+                    pass
+
                 return df
         except Exception as e:
             logger.debug(f"load_cb_index_hist 尝试 {attempt+1} 失败: {e}")
@@ -518,12 +776,22 @@ def load_cb_index_hist(symbol: str = "000832", start_date: str = "20200101", end
 def load_cb_value_analysis() -> pd.DataFrame:
     """
     加载全市场可转债价值分析数据（AkShare bond_zh_cov_value_analysis）。
+    优先从 Supabase 缓存读取，缓存 24 小时。
     
     Returns:
         DataFrame with columns: 日期, 收盘价, 纯债价值, 转股价值, 纯债溢价率, 转股溢价率
         包含全市场所有转债的平均估值水位。
         如果加载失败返回空 DataFrame。
     """
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("cb_value_analysis", ttl_seconds=86400, expect_df=True)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     import time as _time
     for attempt in range(3):
         try:
@@ -531,6 +799,14 @@ def load_cb_value_analysis() -> pd.DataFrame:
             if df is not None and not df.empty:
                 df["日期"] = pd.to_datetime(df["日期"])
                 df = df.sort_values("日期").reset_index(drop=True)
+
+                # 写入缓存
+                try:
+                    from data_loader.cache_layer import cache_set as _cs
+                    _cs("cb_value_analysis", df, expect_df=True)
+                except Exception:
+                    pass
+
                 return df
         except Exception as e:
             logger.debug(f"load_cb_value_analysis 尝试 {attempt+1} 失败: {e}")
@@ -541,22 +817,43 @@ def load_cb_value_analysis() -> pd.DataFrame:
 
 def _ak_bond_us_rate(start_date: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
-    美国国债收益率
-    
+    国债收益率
+    优先从 Supabase 缓存读取，缓存 24 小时。
+
     Args:
         start_date: 开始日期
-    
+
     Returns:
         国债收益率 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("bond_us_rate", ttl_seconds=86400, expect_df=True, start_date=start_date)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.bond_zh_us_rate(start_date=start_date)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("bond_us_rate", result, expect_df=True, start_date=start_date)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_bond_china_yield(start: str, end: str, *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     中国债券信息网-国债及其他债券收益率曲线
+    带 Supabase 缓存（24h TTL）。
 
     包含 3 条曲线：中债中短期票据收益率曲线(AAA)、中债商业银行普通债收益率曲线(AAA)、中债国债收益率曲线
     期限：3月/6月/1年/3年/5年/7年/10年/30年
@@ -572,6 +869,15 @@ def _ak_bond_china_yield(start: str, end: str, *args, **kwargs) -> Optional[pd.D
         宽格式 DataFrame，index=date，columns 包含曲线名称（如"中债中短期票据收益率曲线(AAA)"）
     """
     from datetime import datetime, timedelta
+
+    # 尝试读缓存（整体缓存）
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("bond_china_yield", ttl_seconds=86400, expect_df=True, start=start, end=end)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
 
     # 将 YYYYMMDD 转为 datetime
     start_dt = datetime.strptime(start, "%Y%m%d")
@@ -611,27 +917,56 @@ def _ak_bond_china_yield(start: str, end: str, *args, **kwargs) -> Optional[pd.D
 
     result = pd.concat(pivoted_parts, axis=1, join="outer")
     result.index.name = "date"
+
+    # 写入缓存
+    try:
+        from data_loader.cache_layer import cache_set as _cs
+        _cs("bond_china_yield", result, expect_df=True, start=start, end=end)
+    except Exception:
+        pass
+
     return result
 
 
 def _ak_bond_composite_index(indicator: str = "财富", *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     中债综合指数
-    
+    优先从 Supabase 缓存读取，缓存 24 小时。
+
     Args:
         indicator: 指标类型（财富/总值）
-    
+
     Returns:
         综合指数 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("bond_composite", ttl_seconds=86400, expect_df=True, indicator=indicator)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.bond_new_composite_index_cbond(indicator=indicator)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("bond_composite", result, expect_df=True, indicator=indicator)
+        except Exception:
+            pass
+
+    return result
 
 
 def _ak_cb_info(symbol: str, indicator: str = "基本信息", *args, **kwargs) -> Optional[pd.DataFrame]:
     """
     可转债基本信息
+    带 Supabase 缓存（24h TTL）。
     
     Args:
         symbol: 可转债代码
@@ -640,6 +975,25 @@ def _ak_cb_info(symbol: str, indicator: str = "基本信息", *args, **kwargs) -
     Returns:
         可转债基本信息 DataFrame
     """
-    return safe_api_call(
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("cb_info", ttl_seconds=86400, expect_df=True, symbol=symbol, indicator=indicator)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    result = safe_api_call(
         lambda: ak.bond_zh_cov_info(symbol=symbol, indicator=indicator)
     )
+
+    # 写入缓存
+    if result is not None:
+        try:
+            from data_loader.cache_layer import cache_set as _cs
+            _cs("cb_info", result, expect_df=True, symbol=symbol, indicator=indicator)
+        except Exception:
+            pass
+
+    return result

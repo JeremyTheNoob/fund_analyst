@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 def load_etf_nav_and_price(symbol: str, years: int = 3) -> dict:
     """
     加载 ETF 净值（场内 IOPV）+ 二级市场价格，用于折溢价分析。
+    带缓存（24h TTL）。
 
     返回：
         nav_df:   DataFrame(date / nav)   场内估算净值
@@ -55,22 +56,33 @@ def load_etf_nav_and_price(symbol: str, years: int = 3) -> dict:
     except Exception as e:
         logger.warning(f"[load_etf_nav_and_price] {symbol} 净值获取失败: {e}")
 
-    # --- ETF 二级市场价格 ---
+    # --- ETF 二级市场价格（带缓存） ---
     price_df = pd.DataFrame(columns=["date", "close"])
-    # 尝试 ETF 行情（天天 fund_etf_hist_em 或 stock_zh_a_hist）
     try:
-        df_etf = ak.fund_etf_hist_em(symbol=symbol, period="daily",
-                                      start_date=start_str, end_date=end_str,
-                                      adjust="qfq")
-        if df_etf is not None and not df_etf.empty:
-            date_col  = "日期" if "日期" in df_etf.columns else df_etf.columns[0]
-            close_col = "收盘" if "收盘" in df_etf.columns else "close"
-            if close_col in df_etf.columns:
-                df_etf = df_etf[[date_col, close_col]].copy()
-                df_etf.columns = ["date", "close"]
-                df_etf["date"]  = pd.to_datetime(df_etf["date"])
-                df_etf["close"] = pd.to_numeric(df_etf["close"], errors="coerce")
-                price_df = df_etf.dropna().sort_values("date").reset_index(drop=True)
+        # 尝试读缓存
+        from data_loader.cache_layer import cache_get, cache_set
+        cached_price = cache_get("etf_price", ttl_seconds=86400, expect_df=True, symbol=symbol, start_date=start_str, end_date=end_str, adjust="qfq")
+        if cached_price is not None and not cached_price.empty:
+            price_df = cached_price
+        else:
+            df_etf = ak.fund_etf_hist_em(symbol=symbol, period="daily",
+                                          start_date=start_str, end_date=end_str,
+                                          adjust="qfq")
+            if df_etf is not None and not df_etf.empty:
+                date_col  = "日期" if "日期" in df_etf.columns else df_etf.columns[0]
+                close_col = "收盘" if "收盘" in df_etf.columns else "close"
+                if close_col in df_etf.columns:
+                    df_etf = df_etf[[date_col, close_col]].copy()
+                    df_etf.columns = ["date", "close"]
+                    df_etf["date"]  = pd.to_datetime(df_etf["date"])
+                    df_etf["close"] = pd.to_numeric(df_etf["close"], errors="coerce")
+                    price_df = df_etf.dropna().sort_values("date").reset_index(drop=True)
+                    # 写入缓存
+                    try:
+                        from data_loader.cache_layer import cache_set as _cs
+                        _cs("etf_price", price_df, expect_df=True, symbol=symbol, start_date=start_str, end_date=end_str, adjust="qfq")
+                    except Exception:
+                        pass
     except Exception:
         pass
 
@@ -151,12 +163,21 @@ def load_etf_holdings_ratios(symbol: str) -> HoldingsData:
 def load_etf_daily_trading(symbol: str, years: int = 2) -> pd.DataFrame:
     """
     加载 ETF 日成交数据（成交量 / 成交额），用于流动性分析。
-    返回 date / volume / amount / turnover_rate
+    带缓存（24h TTL）。返回 date / volume / amount / turnover_rate
     """
     from datetime import datetime, timedelta
 
     end_str   = datetime.now().strftime("%Y%m%d")
     start_str = (datetime.now() - timedelta(days=years * 365)).strftime("%Y%m%d")
+
+    # 尝试读缓存
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("etf_trading", ttl_seconds=86400, expect_df=True, symbol=symbol, start_date=start_str, end_date=end_str)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
 
     try:
         df = ak.fund_etf_hist_em(symbol=symbol, period="daily",
@@ -177,7 +198,16 @@ def load_etf_daily_trading(symbol: str, years: int = 2) -> pd.DataFrame:
                 needed.append(col)
             df = df[needed].copy()
             df["date"] = pd.to_datetime(df["date"])
-            return df.sort_values("date").reset_index(drop=True)
+            result = df.sort_values("date").reset_index(drop=True)
+
+            # 写入缓存
+            try:
+                from data_loader.cache_layer import cache_set as _cs
+                _cs("etf_trading", result, expect_df=True, symbol=symbol, start_date=start_str, end_date=end_str)
+            except Exception:
+                pass
+
+            return result
     except Exception as e:
         logger.warning(f"[load_etf_daily_trading] {symbol} 成交数据获取失败: {e}")
 
