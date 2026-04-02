@@ -86,9 +86,15 @@ data_loader/ → processor/ → engine/ → reporter/ → main.py
 
 ### 定时任务
 - **scripts/prewarm_cache.py**：预热各类型 Top20 + 市场数据
+- **scripts/prewarm_active_funds.py**：大规模活跃基金预热（~3000只，~250MB）
 - **scripts/daily_update.py**：每日增量更新（市场/基金类型/热门净值/清理）
 - **.github/workflows/daily_cache_update.yml**：每天北京时间 6:00 自动执行
 - GitHub Secrets 已配置 SUPABASE_URL + SUPABASE_ANON_KEY
+
+### 缓存序列化
+- 小表（≤1000行）：JSON records 格式
+- 大表（>1000行）：CSV 格式（`__CSV__:` 前缀标记），体积小 3-5 倍
+- 缓存大小上限：20MB
 
 ## 关键 Bug 记录（勿重踩）
 1. `_align_bm()` 必须取 `ret` 列，取 `close` 导致跟踪误差 669740%
