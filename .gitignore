@@ -33,9 +33,8 @@ verify_*.py
 debug_*.py
 *_test.py
 
-# 数据文件（本地缓存）
-data/index_cache/
-*.parquet
+# 数据文件（本地缓存，6.6GB）
+data/
 
 # 日志文件
 *.log
@@ -55,3 +54,42 @@ update.log
 # 操作系统文件
 .DS_Store
 Thumbs.db
+
+# WorkBuddy 工作区（本地）
+.workbuddy/
+
+# 预览文件
+previews/
+
+# 旧版备份
+main_v1_backup.py
+
+# 本地数据构建/导出脚本（不需要部署）
+scripts/build_fund_meta.py
+scripts/build_manager_current.py
+scripts/cache_batch_v2.py
+scripts/cache_full_coverage.py
+scripts/cache_local_fund_basic_info.py
+scripts/cache_local_fund_basic_info_mp.py
+scripts/cache_local_fund_company.py
+scripts/cache_local_fund_hist_detail.py
+scripts/cache_local_fund_hist_sina.py
+scripts/cache_local_fund_manager.py
+scripts/cache_local_fund_portfolio.py
+scripts/cache_missing_data.py
+scripts/cache_p0_bond_data.py
+scripts/cache_p1_quant_data.py
+scripts/export_cache_to_local.py
+scripts/fetch_all_tasks.py
+scripts/fetch_fund_hist.py
+scripts/fetch_fund_holder.py
+scripts/fetch_gap_filler.py
+scripts/fetch_local_cache.py
+scripts/fetch_profit_only.py
+scripts/fetch_stock_value.py
+scripts/prewarm_active_funds.py
+scripts/prewarm_stock_metrics.py
+
+# 文档草稿
+docs/数据存储架构优化方案.md
+docs/量化指标数据盘点.md

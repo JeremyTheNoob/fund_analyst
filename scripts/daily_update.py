@@ -6,12 +6,15 @@
 1. 市场数据刷新（强制更新，忽略 TTL）：
    - 指数日线、国债收益率、中债综合指数、转债估值、港股指数
 2. 基金类型列表刷新（7天缓存，仅工作日更新）
-3. 缓存清理（删除过期数据，释放 Supabase 空间）
+3. 热门基金净值刷新（从排名快照中读取）
+4. 缓存清理（删除过期数据，释放 Supabase 空间）
+5. [可选] 个股指标全量预热（stock_metrics_all，约 50 分钟）
 
 运行方式：
     python -m scripts.daily_update
     python -m scripts.daily_update --market    # 只更新市场数据
     python -m scripts.daily_update --cleanup   # 只做清理
+    python -m scripts.daily_update --stock-metrics  # 额外预热个股指标
     python -m scripts.daily_update --dry-run   # 模拟运行，不实际更新
 
 通常由 GitHub Actions cron 每天定时触发。
@@ -432,6 +435,98 @@ def refresh_hot_funds(dry_run: bool = False, top_n: int = 5) -> dict:
 
 
 # ============================================================
+# 5. 个股指标全量预热（可选）
+# ============================================================
+
+def refresh_stock_metrics(dry_run: bool = False) -> dict:
+    """
+    预热全量 A 股个股指标（PE/PB/PEG/成交额）到 Supabase。
+
+    注意：此步骤耗时约 50 分钟（~5400 只股票），不建议每日自动执行。
+    建议每周手动触发一次，或在需要时手动执行。
+
+    Returns:
+        {"success": int, "failed": int}
+    """
+    results = {"success": 0, "failed": 0}
+
+    logger.info("\n📊 预热个股指标（stock_metrics_all）...")
+
+    try:
+        from scripts.prewarm_stock_metrics import (
+            get_portfolio_a_share_codes,
+            fetch_stock_combined,
+            save_to_supabase,
+        )
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        # 获取股票代码
+        codes = get_portfolio_a_share_codes()
+        if not codes:
+            logger.warning("  ⚠️ 无法获取股票代码列表")
+            return results
+
+        total = len(codes)
+        logger.info(f"  📊 共 {total} 只股票待拉取")
+        logger.info(f"  ⏱️ 预估耗时: {total / 5 / 60:.0f} 分钟（5 线程）")
+
+        if dry_run:
+            logger.info("  🔍 [DRY RUN] 跳过实际拉取")
+            return {"success": total, "failed": 0}
+
+        # 批量拉取
+        all_records = []
+        success = 0
+        fail = 0
+        counter_lock = threading.Lock()
+        start_t = time.time()
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(fetch_stock_combined, code): code for code in codes}
+
+            for i, future in enumerate(as_completed(futures), 1):
+                code = futures[future]
+                try:
+                    result = future.result(timeout=30)
+                    if result is not None:
+                        with counter_lock:
+                            all_records.append(result)
+                            success += 1
+                    else:
+                        with counter_lock:
+                            fail += 1
+                except Exception:
+                    with counter_lock:
+                        fail += 1
+
+                if i % 100 == 0 or i == total:
+                    elapsed = time.time() - start_t
+                    rate = i / elapsed if elapsed > 0 else 0
+                    eta = (total - i) / rate / 60 if rate > 0 else 0
+                    logger.info(
+                        f"  [{i}/{total}] ✅{success} ❌{fail} "
+                        f"速率 {rate:.1f}/s ETA {eta:.0f}min"
+                    )
+
+        if all_records:
+            import pandas as pd
+            df = pd.DataFrame(all_records)
+            save_to_supabase(df)
+            results["success"] = len(df)
+            results["failed"] = fail
+        else:
+            logger.warning("  ⚠️ 未获取到任何数据")
+            results["failed"] = total
+
+    except Exception as e:
+        logger.error(f"  ❌ 个股指标预热失败: {e}")
+        results["failed"] += 1
+
+    return results
+
+
+# ============================================================
 # 主入口
 # ============================================================
 
@@ -439,6 +534,7 @@ def main():
     parser = argparse.ArgumentParser(description="每日增量更新脚本")
     parser.add_argument("--market", action="store_true", help="只更新市场数据")
     parser.add_argument("--cleanup", action="store_true", help="只做缓存清理诊断")
+    parser.add_argument("--stock-metrics", action="store_true", help="额外预热全量个股指标（约50分钟）")
     parser.add_argument("--dry-run", action="store_true", help="模拟运行，不实际写入")
     args = parser.parse_args()
 
@@ -503,6 +599,14 @@ def main():
     logger.info("=" * 60)
     cleanup_result = cleanup_expired_cache(dry_run=args.dry_run)
 
+    # Step 5: [可选] 个股指标全量预热
+    stock_metrics_result = {"success": 0, "failed": 0}
+    if args.stock_metrics:
+        logger.info("\n" + "=" * 60)
+        logger.info("📌 Step 5/5: 预热全量个股指标（可选）")
+        logger.info("=" * 60)
+        stock_metrics_result = refresh_stock_metrics(dry_run=args.dry_run)
+
     # ---- 总结 ----
     elapsed = time.time() - start_time
     logger.info("\n" + "=" * 60)
@@ -511,6 +615,8 @@ def main():
     logger.info(f"   基金类型: {fund_type_result['success']} 成功 / {fund_type_result['failed']} 失败")
     logger.info(f"   热门基金: {hot_result['success']} 成功 / {hot_result['failed']} 失败")
     logger.info(f"   缓存诊断: {cleanup_result['checked']} 条目, {cleanup_result['expired']} 条过期")
+    if args.stock_metrics:
+        logger.info(f"   个股指标: {stock_metrics_result['success']} 成功 / {stock_metrics_result['failed']} 失败")
     logger.info("=" * 60)
 
 
