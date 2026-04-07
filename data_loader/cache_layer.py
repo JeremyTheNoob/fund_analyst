@@ -95,8 +95,8 @@ def _deserialize_df(json_str: str) -> Optional[pd.DataFrame]:
     try:
         from io import StringIO
         if json_str.startswith("__CSV__:"):
-            return pd.read_csv(StringIO(json_str[7:]))
-        return pd.read_json(StringIO(json_str), orient="records")
+            return pd.read_csv(StringIO(json_str[8:]), dtype=str)
+        return pd.read_json(StringIO(json_str), orient="records", dtype=str)
     except Exception:
         return None
 

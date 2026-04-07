@@ -65,7 +65,7 @@ def _load_current_table(force: bool = False) -> pd.DataFrame:
         from data_loader.cache_layer import cache_get
         cached = cache_get(_MANAGER_CACHE_KEY, _MANAGER_CACHE_TTL, expect_df=True)
         if cached is not None and not cached.empty:
-            df = cached
+            df = _normalize_df(cached)
             logger.debug(f"[manager_loader] Supabase 全量表命中: {len(df):,} 条")
     except Exception as e:
         logger.debug(f"[manager_loader] Supabase 查询跳过: {e}")
@@ -87,8 +87,8 @@ def _load_current_table(force: bool = False) -> pd.DataFrame:
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     """标准化经理表列类型"""
-    df["基金代码"] = df["基金代码"].str.strip()
-    df["经理姓名"] = df["经理姓名"].str.strip()
+    df["基金代码"] = df["基金代码"].astype(str).str.strip()
+    df["经理姓名"] = df["经理姓名"].astype(str).str.strip()
     for col in ("任职天数", "任职年限", "累计从业天数", "经理序号"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
