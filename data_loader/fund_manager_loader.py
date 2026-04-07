@@ -60,15 +60,15 @@ def _load_current_table(force: bool = False) -> pd.DataFrame:
 
     df = pd.DataFrame()
 
-    # ── 数据源 1: Supabase 全量表 ──
+    # ── 数据源 1: Supabase 全量表（Storage 优先） ──
     try:
-        from data_loader.cache_layer import cache_get
-        cached = cache_get(_MANAGER_CACHE_KEY, _MANAGER_CACHE_TTL, expect_df=True)
+        from data_loader.cache_layer import cache_get_large
+        cached = cache_get_large(_MANAGER_CACHE_KEY, _MANAGER_CACHE_TTL)
         if cached is not None and not cached.empty:
             df = _normalize_df(cached)
             logger.debug(f"[manager_loader] Supabase 全量表命中: {len(df):,} 条")
     except Exception as e:
-        logger.debug(f"[manager_loader] Supabase 查询跳过: {e}")
+        logger.warning(f"[manager_loader] Supabase 查询失败: {e}")
 
     # ── 数据源 2: 本地 CSV（Supabase 未命中时回退） ──
     if df.empty and _CURRENT_TABLE_PATH.exists():
@@ -86,7 +86,15 @@ def _load_current_table(force: bool = False) -> pd.DataFrame:
 
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """标准化经理表列类型"""
+    """标准化经理表列类型（含列名完整性校验）"""
+    required = ["基金代码", "经理姓名"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        logger.warning(
+            f"[manager_loader] 经理表缺少必要列: {missing}，"
+            f"实际列: {list(df.columns)[:10]}"
+        )
+        return pd.DataFrame(columns=required)
     df["基金代码"] = df["基金代码"].astype(str).str.strip()
     df["经理姓名"] = df["经理姓名"].astype(str).str.strip()
     for col in ("任职天数", "任职年限", "累计从业天数", "经理序号"):

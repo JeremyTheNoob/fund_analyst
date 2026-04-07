@@ -499,9 +499,19 @@ def _run_single_analysis(code: str, mode: str = "buy") -> Dict[str, Any]:
         logger.warning(f"[{_tag(code)}] 国债收益率加载失败: {e}")
 
     # === 5. 经理信息 ===
-    manager_info = get_manager_info(code)
+    try:
+        manager_info = get_manager_info(code)
+    except Exception as e:
+        logger.warning(f"[{_tag(code)}] 经理信息加载失败: {e}")
+        manager_info = {
+            "manager_names": [], "manager_str": "未知",
+            "manager_start_date": "", "tenure_years": None,
+            "tenure_years_max": None, "cum_days": None,
+            "is_multi_manager": False, "is_new_manager": False,
+            "is_stable": False, "manager_risk_flag": "任职信息待补充",
+        }
 
-    # === 6. 构建 Overview ===
+    # === 6. 构建 Overview === (show_buy_page)
     status.markdown("🔍 构建资产概览...")
     logger.info(f"[{_tag(code)}] 构建资产概览...")
     overview = _build_overview(code, basic, holdings, manager_info)
@@ -696,7 +706,16 @@ def _run_single_analysis_silent(code: str, mode: str = "buy") -> Dict[str, Any]:
     except Exception:
         pass
 
-    manager_info = get_manager_info(code)
+    try:
+        manager_info = get_manager_info(code)
+    except Exception:
+        manager_info = {
+            "manager_names": [], "manager_str": "未知",
+            "manager_start_date": "", "tenure_years": None,
+            "tenure_years_max": None, "cum_days": None,
+            "is_multi_manager": False, "is_new_manager": False,
+            "is_stable": False, "manager_risk_flag": "任职信息待补充",
+        }
 
     overview = _build_overview(code, basic, holdings, manager_info)
     result["overview"] = overview

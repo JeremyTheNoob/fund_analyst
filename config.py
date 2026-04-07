@@ -20,6 +20,9 @@ SUPABASE_ANON_KEY = os.environ.get(
 # 是否启用 Supabase 缓存（设为 "false" 可完全禁用，回退到实时 API）
 SUPABASE_ENABLED = os.environ.get("SUPABASE_ENABLED", "true").lower() == "true"
 
+# Supabase Storage bucket 名称（大表数据存储）
+STORAGE_BUCKET = "fund-cache"
+
 # ============================================================
 # 🗓️ 数据获取参数
 # ============================================================

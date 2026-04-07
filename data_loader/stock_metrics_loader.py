@@ -52,16 +52,22 @@ def _load_full_cache() -> Optional[pd.DataFrame]:
         if now - _stock_metrics_loaded_at < _CACHE_TTL_SECONDS:
             return _stock_metrics_cache
 
-    # 从 Supabase 读取
+    # 从 Supabase 读取（Storage 优先）
     try:
-        from data_loader.cache_layer import cache_get
+        from data_loader.cache_layer import cache_get_large
         from config import CACHE_TTL
 
         ttl = CACHE_TTL.get("long", 86400)
-        df = cache_get("stock_metrics_all", ttl, expect_df=True)
+        df = cache_get_large("stock_metrics_all", ttl)
 
         if df is not None and not df.empty:
-            # 确保 code 列为字符串
+            # 确保 code 列存在
+            if "code" not in df.columns:
+                logger.warning(
+                    f"[stock_metrics] 缓存数据缺少 code 列，"
+                    f"实际列: {list(df.columns)[:10]}"
+                )
+                return None
             df["code"] = df["code"].astype(str).str.zfill(6)
             _stock_metrics_cache = df
             _stock_metrics_loaded_at = now

@@ -501,26 +501,26 @@ def main():
     logger.info("=" * 60)
 
     import akshare as ak
-    from data_loader.cache_layer import cache_set
+    from data_loader.cache_layer import cache_set, cache_set_large
 
-    # 全量基金列表
+    # 全量基金列表（大表 → Storage）
     logger.info("\n📋 预热全量基金列表...")
     try:
         df_list = ak.fund_name_em()
         if df_list is not None and not df_list.empty:
-            cache_set("fund_list_all", df_list, expect_df=True)
+            cache_set_large("fund_list_all", df_list)
             logger.info(f"  ✅ 基金列表: {len(df_list)} 条")
         else:
             logger.warning("  ⚠️ 基金列表: 无数据")
     except Exception as e:
         logger.warning(f"  ❌ 基金列表: {e}")
 
-    # 申购赎回状态
+    # 申购赎回状态（大表 → Storage）
     logger.info("\n📋 预热申购赎回状态...")
     try:
         df_purchase = ak.fund_purchase_em()
         if df_purchase is not None and not df_purchase.empty:
-            cache_set("fund_purchase_all", df_purchase, expect_df=True)
+            cache_set_large("fund_purchase_all", df_purchase)
             logger.info(f"  ✅ 申购状态: {len(df_purchase)} 条")
         else:
             logger.warning("  ⚠️ 申购状态: 无数据")

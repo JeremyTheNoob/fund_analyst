@@ -320,11 +320,11 @@ def main():
             logger.warning(f"  ⚠️ 市场数据预热失败: {e}")
 
         import akshare as ak
-        from data_loader.cache_layer import cache_set
+        from data_loader.cache_layer import cache_set_large
         try:
             df = ak.fund_name_em()
             if df is not None and not df.empty:
-                cache_set("fund_list_all", df, expect_df=True)
+                cache_set_large("fund_list_all", df)
                 logger.info(f"  ✅ 基金列表: {len(df)} 条")
         except Exception as e:
             logger.warning(f"  ⚠️ 基金列表: {e}")
@@ -332,7 +332,7 @@ def main():
         try:
             df = ak.fund_purchase_em()
             if df is not None and not df.empty:
-                cache_set("fund_purchase_all", df, expect_df=True)
+                cache_set_large("fund_purchase_all", df)
                 logger.info(f"  ✅ 申购状态: {len(df)} 条")
         except Exception as e:
             logger.warning(f"  ⚠️ 申购状态: {e}")

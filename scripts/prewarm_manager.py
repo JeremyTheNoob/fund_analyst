@@ -44,23 +44,23 @@ def main():
     logger.info(f"📊 本地经理表: {len(df):,} 行, {len(df.columns)} 列, {csv_path.stat().st_size / 1024 / 1024:.1f} MB")
 
     # 检查 Supabase 连接
-    from data_loader.cache_layer import is_ready, cache_get, cache_set
+    from data_loader.cache_layer import is_ready, cache_get_large, cache_set_large
     if not is_ready():
         logger.error("❌ Supabase 不可用，请检查配置")
         sys.exit(1)
 
     # 检查已有缓存
     if not args.force:
-        existing = cache_get("fund_manager_all", 86_400, expect_df=True)
+        existing = cache_get_large("fund_manager_all", 86_400)
         if existing is not None and not existing.empty:
             logger.info(f"⚠️ Supabase 已有经理数据: {len(existing):,} 行（更新日期见 updated_at）")
             logger.info("💡 使用 --force 强制覆盖")
             sys.exit(0)
 
-    # 上传
-    logger.info("⬆️ 开始上传到 Supabase...")
+    # 上传（优先 Storage Parquet，同时备份 data_cache 表）
+    logger.info("⬆️ 开始上传到 Supabase Storage...")
     start_t = time.time()
-    ok = cache_set("fund_manager_all", df, expect_df=True)
+    ok = cache_set_large("fund_manager_all", df)
     elapsed = time.time() - start_t
 
     if ok:

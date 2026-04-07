@@ -91,13 +91,22 @@ def _serialize_df(df: pd.DataFrame) -> str:
 
 
 def _deserialize_df(json_str: str) -> Optional[pd.DataFrame]:
-    """JSON 字符串 → DataFrame"""
+    """JSON 字符串 → DataFrame（含有效性校验）"""
     try:
         from io import StringIO
         if json_str.startswith("__CSV__:"):
-            return pd.read_csv(StringIO(json_str[8:]), dtype=str)
-        return pd.read_json(StringIO(json_str), orient="records", dtype=str)
-    except Exception:
+            df = pd.read_csv(StringIO(json_str[8:]), dtype=str)
+        else:
+            df = pd.read_json(StringIO(json_str), orient="records", dtype=str)
+
+        # 校验：DataFrame 必须非空且至少有 1 列
+        if df is None or df.empty or len(df.columns) == 0:
+            logger.warning("[cache] 反序列化得到空 DataFrame，数据可能损坏")
+            return None
+
+        return df
+    except Exception as e:
+        logger.warning(f"[cache] DataFrame 反序列化失败: {e}")
         return None
 
 
@@ -210,6 +219,20 @@ def cache_set(
 
     try:
         value_str = _serialize_value(value)
+
+        # 自动路由：大表走 Storage，不塞 data_cache 的 text 字段
+        if (isinstance(value, pd.DataFrame)
+                and cache_key in _LARGE_TABLE_KEYS
+                and len(value_str) > _STORAGE_SIZE_THRESHOLD):
+            parquet_data = _serialize_large_df(value)
+            path = f"{cache_key}.parquet"
+            ok = storage_set(path, parquet_data)
+            if ok:
+                logger.debug(f"[cache] 大表路由到 Storage: {cache_key} ({len(parquet_data):,} bytes)")
+                return True
+            else:
+                logger.warning(f"[cache] Storage 写入失败，回退到 data_cache: {cache_key}")
+
         if len(value_str) > 20_000_000:  # 20MB 上限保护（大表用 CSV 压缩）
             logger.warning(f"[cache] 数据过大，跳过缓存: {cache_key} ({len(value_str)} bytes)")
             return False
@@ -293,3 +316,164 @@ def cached_api(
 def warm_cache(prefix: str, value: Any, ttl_hint: str = "long", **kwargs) -> bool:
     """主动预热缓存（供定时脚本调用）"""
     return cache_set(prefix, value, expect_df=isinstance(value, pd.DataFrame), **kwargs)
+
+
+# ============================================================
+# Supabase Storage 层 — 大表数据存储
+# ============================================================
+
+# 需要走 Storage 的大表 cache_key 白名单
+_LARGE_TABLE_KEYS = frozenset({
+    "fund_manager_all",
+    "stock_metrics_all",
+    "fund_list_all",
+    "fund_purchase_all",
+})
+
+# 序列化后体积阈值：超过此值走 Storage（否则仍走 data_cache 表）
+_STORAGE_SIZE_THRESHOLD = 100_000  # 100 KB
+
+
+def storage_get(path: str) -> Optional[bytes]:
+    """
+    从 Supabase Storage 下载文件（二进制）。
+
+    Args:
+        path: 文件路径（如 "fund_manager_all.parquet"）
+
+    Returns:
+        文件内容 bytes，或 None
+    """
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        data = client.storage.from_("fund-cache").download(path)
+        logger.debug(f"[storage] 下载成功: {path} ({len(data):,} bytes)")
+        return data
+    except Exception as e:
+        logger.debug(f"[storage] 下载失败 {path}: {e}")
+        return None
+
+
+def storage_set(path: str, data: bytes) -> bool:
+    """
+    上传文件到 Supabase Storage（upsert）。
+
+    Args:
+        path: 文件路径
+        data: 二进制内容
+
+    Returns:
+        是否上传成功
+    """
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        client.storage.from_("fund-cache").upload(
+            path, data, file_options={"upsert": True, "content-type": "application/octet-stream"}
+        )
+        logger.debug(f"[storage] 上传成功: {path} ({len(data):,} bytes)")
+        return True
+    except Exception as e:
+        logger.warning(f"[storage] 上传失败 {path}: {e}")
+        return False
+
+
+def _serialize_large_df(df: pd.DataFrame) -> bytes:
+    """
+    大表 DataFrame → Parquet 二进制。
+
+    Parquet 优势：
+    - 二进制格式，不存在中文编码问题
+    - 自带 schema（列名不会丢失或损坏）
+    - zstd 压缩率比 CSV/JSON 高 3-5 倍
+    """
+    buf = pd.io.common.BytesIO()
+    df.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
+    return buf.getvalue()
+
+
+def _deserialize_large_df(data: bytes) -> Optional[pd.DataFrame]:
+    """
+    Parquet 二进制 → DataFrame（含校验）。
+    """
+    try:
+        df = pd.read_parquet(pd.io.common.BytesIO(data))
+        if df is None or df.empty or len(df.columns) == 0:
+            logger.warning("[storage] Parquet 反序列化得到空 DataFrame")
+            return None
+        logger.debug(f"[storage] Parquet 解析成功: {len(df)} 行, {len(df.columns)} 列")
+        return df
+    except Exception as e:
+        logger.warning(f"[storage] Parquet 反序列化失败: {e}")
+        return None
+
+
+def cache_get_large(
+    cache_key: str,
+    ttl_seconds: int = 86_400,
+) -> Optional[pd.DataFrame]:
+    """
+    从 Supabase Storage 读取大表数据。
+
+    优先尝试 Storage（Parquet），如果不存在则回退到 data_cache 表。
+
+    Args:
+        cache_key: 缓存键（如 "fund_manager_all"）
+        ttl_seconds: TTL（暂未用于 Storage，预留）
+
+    Returns:
+        DataFrame 或 None
+    """
+    # 路径 1: Storage (Parquet)
+    path = f"{cache_key}.parquet"
+    data = storage_get(path)
+    if data is not None:
+        df = _deserialize_large_df(data)
+        if df is not None:
+            return df
+
+    # 路径 2: 回退到 data_cache 表（兼容旧数据）
+    logger.debug(f"[storage] Storage 未命中，回退到 data_cache: {cache_key}")
+    return cache_get(cache_key, ttl_seconds, expect_df=True)
+
+
+def cache_set_large(
+    cache_key: str,
+    df: pd.DataFrame,
+) -> bool:
+    """
+    将大表 DataFrame 写入 Supabase Storage（Parquet 格式）。
+
+    同时也写入 data_cache 表作为备份（方便直接在 Supabase 控制台查看）。
+
+    Args:
+        cache_key: 缓存键
+        df: DataFrame
+
+    Returns:
+        是否写入成功
+    """
+    if df is None or df.empty:
+        return False
+
+    # 序列化为 Parquet
+    parquet_data = _serialize_large_df(df)
+    path = f"{cache_key}.parquet"
+
+    # 写入 Storage
+    ok = storage_set(path, parquet_data)
+    if ok:
+        logger.info(
+            f"[storage] 大表写入 Storage: {cache_key} "
+            f"({len(df)} 行, {len(parquet_data):,} bytes)"
+        )
+    else:
+        logger.warning(f"[storage] Storage 写入失败，回退到 data_cache: {cache_key}")
+
+    # 同时写入 data_cache 作为备份
+    cache_ok = cache_set(cache_key, df, expect_df=True)
+
+    return ok or cache_ok
