@@ -145,7 +145,7 @@ def _align_benchmark(fund_ret: pd.Series, benchmark: BenchmarkData) -> np.ndarra
         logger.warning("[equity_v2] 基准对齐不足10天")
         return np.zeros(len(fund_ret))
 
-    aligned = bm_s.reindex(fund_dates).fillna(method="ffill").fillna(0).values
+    aligned = bm_s.reindex(fund_dates).ffill().fillna(0).values
     return aligned[:len(fund_ret)]
 
 

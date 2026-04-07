@@ -11,6 +11,8 @@
   get_manager_tenure(symbol)    → 最短/最长任职年限
   get_manager_info(symbol)      → 综合经理信息 dict（供 FundReport 使用）
   load_current_table()          → 返回完整 DataFrame（全量调用）
+
+注意：本地 CSV 不存在时（如 Streamlit Cloud 部署），自动从 AkShare fallback。
 """
 
 import logging
@@ -27,6 +29,63 @@ from data_loader.cache_paths import FUND_MANAGER_CURRENT, MANAGER_START_DATE
 
 _CURRENT_TABLE_PATH = FUND_MANAGER_CURRENT
 _START_DATE_TABLE_PATH = MANAGER_START_DATE
+
+
+# ── AkShare Fallback（Cloud 部署时本地 CSV 不存在） ────────────────────────
+_akshare_manager_cache: dict = {}   # symbol → list[dict]，进程内缓存
+
+
+def _fetch_manager_from_akshare(symbol: str) -> list[dict[str, Any]]:
+    """
+    从 AkShare fund_manager_em 实时获取某只基金的当前经理信息。
+    失败时返回空列表（不报错）。
+    """
+    if symbol in _akshare_manager_cache:
+        return _akshare_manager_cache[symbol]
+
+    try:
+        import akshare as ak
+        df = ak.fund_manager_em(symbol=symbol)
+        if df is None or df.empty:
+            _akshare_manager_cache[symbol] = []
+            return []
+
+        # AkShare 列名：基金经理, 任职日期, 离职日期, 任职天数
+        # 只取在任（离职日期为空）的经理
+        if "离职日期" in df.columns:
+            df = df[df["离职日期"].isna() | (df["离职日期"] == "") | (df["离职日期"] == "至今")]
+
+        result = []
+        for i, row in df.iterrows():
+            name = str(row.get("基金经理", "")).strip()
+            if not name:
+                continue
+            start_str = str(row.get("任职日期", "")).strip()
+            tenure_days_raw = row.get("任职天数", None)
+            try:
+                tenure_days = int(tenure_days_raw) if pd.notna(tenure_days_raw) else None
+            except (ValueError, TypeError):
+                tenure_days = None
+            tenure_years = round(tenure_days / 365.25, 1) if tenure_days else None
+
+            result.append({
+                "name":         name,
+                "company":      "",   # AkShare 此接口不含公司字段
+                "start_date":   start_str,
+                "tenure_days":  tenure_days,
+                "tenure_years": tenure_years,
+                "cum_days":     None,
+                "change_type":  "未知",
+                "is_multi":     len(df) > 1,
+            })
+
+        _akshare_manager_cache[symbol] = result
+        return result
+
+    except Exception as e:
+        logger.warning(f"[manager_loader] AkShare fallback 失败 ({symbol}): {e}")
+        _akshare_manager_cache[symbol] = []
+        return []
 
 # 模块级单例缓存（进程内复用，避免重复 IO）
 _current_df: pd.DataFrame | None = None
@@ -82,6 +141,9 @@ def get_fund_managers(symbol: str) -> list[dict[str, Any]]:
     """
     返回某只基金的现任经理列表（按经理序号排序）。
 
+    优先从本地 fund_manager_current.csv 读取；
+    本地文件不存在时（如 Streamlit Cloud），fallback 到 AkShare 实时接口。
+
     每个 dict 包含：
       - name          经理姓名
       - company       所属公司
@@ -99,11 +161,13 @@ def get_fund_managers(symbol: str) -> list[dict[str, Any]]:
     """
     df = _load_current_table()
     if df.empty:
-        return []
+        # 本地 CSV 不存在，fallback 到 AkShare
+        return _fetch_manager_from_akshare(symbol)
 
     rows = df[df["基金代码"] == symbol.strip()]
     if rows.empty:
-        return []
+        # 本地 CSV 中没有这只基金，也 fallback
+        return _fetch_manager_from_akshare(symbol)
 
     result = []
     for _, row in rows.sort_values("经理序号").iterrows():
