@@ -2,7 +2,7 @@
 builder = "dockerfile"
 
 [deploy]
-startCommand = "streamlit run main.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true"
+startCommand = "streamlit run main.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true --server.enableCORS=false --server.enableXsrfProtection=false --server.enableStaticServing=true"
 healthcheckPath = "/_stcore/health"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
