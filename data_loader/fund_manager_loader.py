@@ -32,22 +32,62 @@ _START_DATE_TABLE_PATH = MANAGER_START_DATE
 
 
 # ── AkShare Fallback（Cloud 部署时本地 CSV 不存在） ────────────────────────
+# 三级缓存：进程内 dict → Supabase → AkShare 实时
 _akshare_manager_cache: dict = {}   # symbol → list[dict]，进程内缓存
+_MANAGER_CACHE_TTL = 86_400         # 24 小时
 
 
 def _fetch_manager_from_akshare(symbol: str) -> list[dict[str, Any]]:
     """
-    从 AkShare fund_manager_em 实时获取某只基金的当前经理信息。
-    失败时返回空列表（不报错）。
+    获取某只基金的现任经理信息（带三级缓存）。
+
+    缓存优先级：
+      1. 进程内 dict（毫秒级）
+      2. Supabase data_cache（网络往返，~50ms）
+      3. AkShare fund_manager_em（实时 API，~1-2s）
+
+    AkShare 获取成功后自动写回 Supabase + 进程缓存。
     """
+    # ── 第一级：进程内缓存 ──
     if symbol in _akshare_manager_cache:
         return _akshare_manager_cache[symbol]
 
+    # ── 第二级：Supabase 缓存 ──
+    try:
+        from data_loader.cache_layer import cache_get, cache_set
+        cached = cache_get("fund_manager", _MANAGER_CACHE_TTL, symbol=symbol)
+        if cached is not None and isinstance(cached, list):
+            _akshare_manager_cache[symbol] = cached
+            logger.debug(f"[manager_loader] Supabase 缓存命中: {symbol}")
+            return cached
+    except Exception as e:
+        logger.debug(f"[manager_loader] Supabase 查询跳过: {e}")
+
+    # ── 第三级：AkShare 实时 ──
+    result = _fetch_manager_from_akshare_raw(symbol)
+
+    # 写回两级缓存
+    _akshare_manager_cache[symbol] = result
+    try:
+        from data_loader.cache_layer import cache_set
+        cache_set("fund_manager", result, symbol=symbol)
+        if result:
+            logger.info(f"[manager_loader] 经理数据已写入 Supabase 缓存: {symbol} ({len(result)} 位经理)")
+    except Exception as e:
+        logger.debug(f"[manager_loader] 写入 Supabase 失败: {e}")
+
+    return result
+
+
+def _fetch_manager_from_akshare_raw(symbol: str) -> list[dict[str, Any]]:
+    """
+    从 AkShare fund_manager_em 实时获取某只基金的当前经理信息。
+    失败时返回空列表（不报错）。
+    """
     try:
         import akshare as ak
         df = ak.fund_manager_em(symbol=symbol)
         if df is None or df.empty:
-            _akshare_manager_cache[symbol] = []
             return []
 
         # AkShare 列名：基金经理, 任职日期, 离职日期, 任职天数
@@ -79,12 +119,10 @@ def _fetch_manager_from_akshare(symbol: str) -> list[dict[str, Any]]:
                 "is_multi":     len(df) > 1,
             })
 
-        _akshare_manager_cache[symbol] = result
         return result
 
     except Exception as e:
         logger.warning(f"[manager_loader] AkShare fallback 失败 ({symbol}): {e}")
-        _akshare_manager_cache[symbol] = []
         return []
 
 # 模块级单例缓存（进程内复用，避免重复 IO）

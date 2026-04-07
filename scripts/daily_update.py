@@ -435,8 +435,96 @@ def refresh_hot_funds(dry_run: bool = False, top_n: int = 5) -> dict:
 
 
 # ============================================================
-# 5. 个股指标全量预热（可选）
+# 4b. 热门基金经理数据预热
 # ============================================================
+
+def refresh_manager_data(dry_run: bool = False, top_n: int = 50) -> dict:
+    """
+    从排名快照中提取基金代码，预热经理数据到 Supabase。
+
+    与热门基金净值刷新共享同一批基金代码，不额外调 API 获取列表。
+    每只基金只需 ~1s AkShare 请求，50 只约 1 分钟。
+    """
+    from config import SUPABASE_URL, SUPABASE_ANON_KEY
+    from supabase import create_client
+    from data_loader.cache_layer import cache_get, cache_set
+    from data_loader.fund_manager_loader import _fetch_manager_from_akshare_raw
+
+    results = {"success": 0, "failed": 0, "skipped": 0}
+
+    try:
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    except Exception as e:
+        logger.warning(f"⚠️ Supabase 连接失败，跳过经理预热: {e}")
+        return results
+
+    logger.info(f"\n👥 预热基金经理数据（前 {top_n} 只热门基金）...")
+
+    if dry_run:
+        logger.info("  🔍 [DRY RUN] 跳过实际拉取")
+        return {"success": top_n, "failed": 0, "skipped": 0}
+
+    try:
+        # 从排名快照中提取基金代码
+        resp = (
+            client.table("fund_rank_snapshot")
+            .select("fund_code")
+            .order("snapshot_date", desc=True)
+            .limit(500)
+            .execute()
+        )
+
+        if not resp.data:
+            logger.info("  ⚠️ 无排名快照数据，跳过经理预热")
+            return results
+
+        seen = set()
+        codes = []
+        for item in resp.data:
+            code = item["fund_code"]
+            if code not in seen:
+                seen.add(code)
+                codes.append(code)
+            if len(codes) >= top_n:
+                break
+
+        logger.info(f"  📊 共 {len(codes)} 只基金待预热")
+
+        for i, code in enumerate(codes, 1):
+            try:
+                # 先检查缓存是否已有（24h TTL）
+                existing = cache_get("fund_manager", 86_400, symbol=code)
+                if existing is not None:
+                    results["skipped"] += 1
+                    continue
+
+                # 从 AkShare 获取并写入缓存
+                managers = _fetch_manager_from_akshare_raw(code)
+                if managers:
+                    cache_set("fund_manager", managers, symbol=code)
+                    results["success"] += 1
+                else:
+                    results["skipped"] += 1  # 无经理数据不算失败
+
+            except Exception as e:
+                logger.debug(f"  ❌ {code}: {e}")
+                results["failed"] += 1
+
+            # 限速，避免 AkShare 封禁
+            time.sleep(1.5)
+
+            if i % 20 == 0:
+                logger.info(f"  ⏳ 进度: {i}/{len(codes)}")
+
+        logger.info(
+            f"  ✅ 经理数据预热完成: "
+            f"成功 {results['success']}，跳过 {results['skipped']}，失败 {results['failed']}"
+        )
+
+    except Exception as e:
+        logger.error(f"  ❌ 经理数据预热失败: {e}")
+
+    return results
 
 def refresh_stock_metrics(dry_run: bool = False) -> dict:
     """
@@ -587,11 +675,12 @@ def main():
     else:
         logger.info("\n📌 Step 2/4: 跳过基金类型索引刷新（非工作日）")
 
-    # Step 3: 热门基金净值刷新
+    # Step 3: 热门基金净值刷新 + 经理数据预热
     logger.info("\n" + "=" * 60)
-    logger.info("📌 Step 3/4: 刷新热门基金净值")
+    logger.info("📌 Step 3/4: 刷新热门基金净值 + 经理数据预热")
     logger.info("=" * 60)
     hot_result = refresh_hot_funds(dry_run=args.dry_run)
+    manager_result = refresh_manager_data(dry_run=args.dry_run, top_n=50)
 
     # Step 4: 缓存清理诊断
     logger.info("\n" + "=" * 60)
@@ -614,6 +703,7 @@ def main():
     logger.info(f"   市场数据: {market_result['success']} 成功 / {market_result['failed']} 失败")
     logger.info(f"   基金类型: {fund_type_result['success']} 成功 / {fund_type_result['failed']} 失败")
     logger.info(f"   热门基金: {hot_result['success']} 成功 / {hot_result['failed']} 失败")
+    logger.info(f"   经理数据: {manager_result['success']} 成功 / {manager_result['skipped']} 跳过 / {manager_result['failed']} 失败")
     logger.info(f"   缓存诊断: {cleanup_result['checked']} 条目, {cleanup_result['expired']} 条过期")
     if args.stock_metrics:
         logger.info(f"   个股指标: {stock_metrics_result['success']} 成功 / {stock_metrics_result['failed']} 失败")
