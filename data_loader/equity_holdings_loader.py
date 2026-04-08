@@ -10,9 +10,8 @@ from typing import Optional, List, Dict
 from dataclasses import dataclass
 
 import pandas as pd
-import akshare as ak
 
-from data_loader.base_api import safe_api_call, call_with_timeout
+from data_loader.base_api import safe_api_call, call_with_timeout, _ak_fund_holdings_stock, _ak_fund_asset_allocation
 from utils.common import audit_logger
 
 logger = logging.getLogger(__name__)
@@ -175,30 +174,16 @@ def load_holdings_by_year(
     all_holdings = []
 
     for year in years:
-        # 尝试读 Supabase 缓存（股票持仓，24h TTL）
+        # 从 SQLite 读取股票持仓（通过 base_api）
         _raw_df = None
         try:
-            from data_loader.cache_layer import cache_get, cache_set as _cache_set
-            _raw_df = cache_get("fund_holdings_stock", ttl_seconds=86400, expect_df=True, symbol=symbol, date=year)
+            _raw_df = _ak_fund_holdings_stock(symbol, year)
         except Exception:
             pass
 
         if _raw_df is None:
-            def _fetch():
-                return ak.fund_portfolio_hold_em(symbol=symbol, date=year)
-
-            try:
-                _raw_df = safe_api_call(_fetch, timeout_seconds=15.0, max_retries=max_retries)
-                # 写入缓存
-                if _raw_df is not None:
-                    try:
-                        from data_loader.cache_layer import cache_set as _cache_set
-                        _cache_set("fund_holdings_stock", _raw_df, expect_df=True, symbol=symbol, date=year)
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.error(f"[load_holdings_by_year] {symbol} {year}年持仓加载失败: {e}")
-                continue
+            logger.error(f"[load_holdings_by_year] {symbol} {year}年持仓数据为空")
+            continue
 
         df = _raw_df
         if df is None or df.empty:
@@ -274,30 +259,16 @@ def load_asset_structure(
     all_assets = []
 
     for date_str in quarter_end_dates:
-        # 尝试读 Supabase 缓存（资产配置，7d TTL，季报数据更新频率低）
+        # 从 SQLite 读取资产结构（通过 base_api）
         _raw_df = None
         try:
-            from data_loader.cache_layer import cache_get, cache_set as _cache_set
-            _raw_df = cache_get("fund_asset_alloc", ttl_seconds=604800, expect_df=True, symbol=symbol, date=date_str)
+            _raw_df = _ak_fund_asset_allocation(symbol, date_str)
         except Exception:
             pass
 
         if _raw_df is None:
-            def _fetch():
-                return ak.fund_individual_detail_hold_xq(symbol=symbol, date=date_str)
-
-            try:
-                _raw_df = safe_api_call(_fetch, timeout_seconds=10.0, max_retries=max_retries)
-                # 写入缓存
-                if _raw_df is not None:
-                    try:
-                        from data_loader.cache_layer import cache_set as _cache_set
-                        _cache_set("fund_asset_alloc", _raw_df, expect_df=True, symbol=symbol, date=date_str)
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.error(f"[load_asset_structure] {symbol} {date_str} 资产结构加载失败: {e}")
-                continue
+            logger.error(f"[load_asset_structure] {symbol} {date_str} 资产结构数据为空")
+            continue
 
         df = _raw_df
         if df is None or df.empty:

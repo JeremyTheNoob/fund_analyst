@@ -10,7 +10,6 @@
 import logging
 import pandas as pd
 from typing import Dict, Optional
-import akshare as ak
 
 logger = logging.getLogger(__name__)
 
@@ -220,24 +219,9 @@ def get_sw1_industry_codes() -> Dict[str, str]:
     """
     获取申万一级行业代码映射表
 
-    Returns:
-        {行业代码: 行业名称}
+    SQLite 模式：直接使用内置映射表。
     """
-    try:
-        df = ak.index_realtime_sw()
-        # 筛选一级行业（代码 801xxx）
-        df_sw1 = df[df['指数代码'].astype(str).str.startswith('801')].copy()
-        df_sw1 = df_sw1.sort_values('指数代码')
-
-        codes = {}
-        for _, row in df_sw1.iterrows():
-            codes[str(row['指数代码'])] = row['指数名称']
-
-        logger.info(f"[get_sw1_industry_codes] 加载 {len(codes)} 个申万一级行业")
-        return codes
-    except Exception as e:
-        logger.warning(f"[get_sw1_industry_codes] 获取失败: {e}，使用内置表")
-        return SW1_INDUSTRY_CODES.copy()
+    return SW1_INDUSTRY_CODES.copy()
 
 
 def get_stock_industry(stock_code: str) -> Optional[str]:
@@ -257,28 +241,12 @@ def get_stock_industry(stock_code: str) -> Optional[str]:
         return _STOCK_TO_INDUSTRY_CACHE[stock_code]
 
     try:
-        # 查询所有申万一级行业的成分股
+        # 使用内置映射表（SQLite 模式下无法调用 AkShare API）
         industry_codes = get_sw1_industry_codes()
 
-        for ind_code, ind_name in industry_codes.items():
-            try:
-                # 获取该行业的成分股
-                df = ak.index_component_sw(symbol=ind_code)
-
-                # 检查股票是否在该行业
-                if not df.empty and '证券代码' in df.columns:
-                    stock_codes = df['证券代码'].astype(str).tolist()
-                    if stock_code in stock_codes:
-                        _STOCK_TO_INDUSTRY_CACHE[stock_code] = ind_name
-                        logger.debug(f"[get_stock_industry] {stock_code} → {ind_name}")
-                        return ind_name
-            except Exception as e:
-                logger.debug(f"[get_stock_industry] 查询 {ind_code} 失败: {e}")
-                continue
-
-        # 未找到
-        _STOCK_TO_INDUSTRY_CACHE[stock_code] = None
-        logger.debug(f"[get_stock_industry] {stock_code} 未找到行业")
+        # 内置映射表是二级子行业，无法精确查询成分股
+        # 使用关键词匹配的备用方案
+        logger.debug(f"[get_stock_industry] {stock_code} 使用关键词匹配")
         return None
 
     except Exception as e:

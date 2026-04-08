@@ -9,27 +9,11 @@ from .base_api import (
     _ak_index_daily_main, _ak_index_daily_em,
 )
 
-# 全收益指数同步模块（独立导入，避免循环依赖）
-from .index_sync import (
-    get_total_return_series,
-    update_benchmark_data,
-    initialize_historical_data,
-    is_sw_index_code,
-    standardize_sw_code,
-)
-
 __all__ = [
     # 基础API
     "cached", "retry", "safe_df",
     "_ak_fund_nav", "_ak_fund_asset_allocation",
     "_ak_index_daily_main", "_ak_index_daily_em",
-    
-    # 全收益指数同步
-    "get_total_return_series",
-    "update_benchmark_data",
-    "initialize_historical_data",
-    "is_sw_index_code",
-    "standardize_sw_code",
 ]
 
 # 延迟导入其他模块，避免循环依赖

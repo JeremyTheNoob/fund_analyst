@@ -43,10 +43,17 @@ def load_bond_holdings(symbol: str) -> HoldingsData:
     for qdate in _generate_quarter_dates(max_quarters=4):
         df_asset = _ak_fund_asset_allocation(symbol, date=qdate)
         if df_asset is not None and not df_asset.empty and "资产类型" in df_asset.columns:
+            # 兼容多种比例列名
+            ratio_col = None
+            for col in ["占净值比例(%)", "仓位占比", "占净值比例"]:
+                if col in df_asset.columns:
+                    ratio_col = col
+                    break
             for _, row in df_asset.iterrows():
                 asset = str(row.get("资产类型", ""))
                 try:
-                    ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
+                    raw = row.get(ratio_col, 0) if ratio_col else 0
+                    ratio = float(raw or 0) / 100
                 except Exception:
                     ratio = 0.0
                 if "股票" in asset:
@@ -63,6 +70,8 @@ def load_bond_holdings(symbol: str) -> HoldingsData:
     for year in ["2024", "2023", "2022"]:
         df_bond = _ak_fund_holdings_bond(symbol, year)
         if df_bond is not None and not df_bond.empty and "占净值比例" in df_bond.columns:
+            # 确保占净值比例为数值类型
+            df_bond["占净值比例"] = pd.to_numeric(df_bond["占净值比例"], errors="coerce").fillna(0)
             # 只保留最新季度的数据（"季度"列值最大的）
             if "季度" in df_bond.columns:
                 # 找到最新的季度
@@ -121,7 +130,7 @@ def _classify_bonds_by_type(bond_details: list) -> dict:
     if not bond_details:
         return {}
     
-    total_ratio = sum(b.get("占净值比例", 0) for b in bond_details)
+    total_ratio = sum(float(b.get("占净值比例", 0) or 0) for b in bond_details)
     if total_ratio == 0:
         return {}
     
@@ -134,7 +143,7 @@ def _classify_bonds_by_type(bond_details: list) -> dict:
     
     for bond in bond_details:
         name = str(bond.get("债券名称", "")).upper()
-        ratio = bond.get("占净值比例", 0)
+        ratio = float(bond.get("占净值比例", 0) or 0)
         
         # 利率债识别
         if any(keyword in name for keyword in ["国债", "国开", "进出口", "农发", "央票", "地方政府"]):
@@ -211,28 +220,36 @@ def load_treasury_yields(start: str, end: str) -> BondYieldData:
 
 
 def _load_treasury_us_rate(start: str, end: str) -> tuple:
-    """从 bond_zh_us_rate 获取 2Y + 10Y 国债收益率"""
+    """获取 2Y + 10Y 国债收益率（从 bond_china_yield 表）"""
     y2y = pd.Series(dtype=float)
     y10y = pd.Series(dtype=float)
 
-    raw = _ak_bond_us_rate(start)
-    if raw is None or raw.empty:
-        return y2y, y10y
+    try:
+        from data_loader.db_accessor import DB
+        raw = DB.query_df(
+            "SELECT date, \"1年\" as y1, \"3年\" as y3, \"5年\" as y5, "
+            "\"10年\" as y10, \"30年\" as y30 "
+            "FROM bond_china_yield WHERE \"曲线名称\" = '中债国债收益率曲线' "
+            "ORDER BY date ASC"
+        )
+        if raw is None or raw.empty:
+            return y2y, y10y
 
-    # 统一日期列名
-    if "日期" in raw.columns:
-        raw = raw.rename(columns={"日期": "date"})
-    elif "date" not in raw.columns:
-        raw = raw.rename(columns={raw.columns[0]: "date"})
+        raw = raw.reset_index(drop=True)
+        raw["date"] = pd.to_datetime(raw["date"])
+        raw = raw[(raw["date"] >= pd.to_datetime(start)) & (raw["date"] <= pd.to_datetime(end))]
+        raw = raw.sort_values("date").set_index("date")
 
-    raw["date"] = pd.to_datetime(raw["date"])
-    raw = raw[(raw["date"] >= pd.to_datetime(start)) & (raw["date"] <= pd.to_datetime(end))]
-    raw = raw.sort_values("date").set_index("date")
+        for col in raw.columns:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce")
 
-    if "中国国债收益率2年" in raw.columns:
-        y2y = raw["中国国债收益率2年"].dropna()
-    if "中国国债收益率10年" in raw.columns:
-        y10y = raw["中国国债收益率10年"].dropna()
+        if "y1" in raw.columns:
+            y2y = raw["y1"].dropna()  # 用1年期代替2年期
+        if "y10" in raw.columns:
+            y10y = raw["y10"].dropna()
+
+    except Exception as e:
+        logger.warning(f"[_load_treasury_us_rate] 国债收益率加载失败: {e}")
 
     return y2y, y10y
 
@@ -264,6 +281,7 @@ def _load_real_credit_spread(start: str, end: str, y10y: pd.Series) -> Optional[
     if "日期" in raw.columns:
         raw = raw.rename(columns={"日期": "date"})
     if "date" in raw.columns:
+        raw = raw.reset_index(drop=True)  # 防止 date 既是 index 又是 column
         raw["date"] = pd.to_datetime(raw["date"])
         raw = raw.sort_values("date").set_index("date")
     else:
@@ -376,8 +394,12 @@ def load_bond_composite_index(start: str, end: str) -> pd.DataFrame:
     df = raw[["date", val_col]].copy()
     df.columns = ["date", "close"]
     df["date"] = pd.to_datetime(df["date"])
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["close"])
     df = df[(df["date"] >= pd.to_datetime(start)) & (df["date"] <= pd.to_datetime(end))]
     df = df.sort_values("date")
+    # 去重（同一日期保留最后一条）
+    df = df.drop_duplicates(subset=["date"], keep="last")
     df["ret"] = df["close"].pct_change().fillna(0)
     return df[["date", "ret"]].reset_index(drop=True)
 

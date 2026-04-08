@@ -62,9 +62,32 @@ def load_basic_info(symbol: str) -> FundBasicInfo:
         r["company"]        = info.get("基金公司", "")
         r["manager"]        = info.get("基金经理", "")
         r["benchmark_text"] = info.get("业绩比较基准", "")
-        r["fee_manage"]     = parse_pct(info.get("管理费率", ""))
-        r["fee_custody"]    = parse_pct(info.get("托管费率", ""))
         r["fee_sale"]       = parse_pct(info.get("销售服务费率", ""))
+
+    # --- 1b. 从 fund_individual_detail_xq 获取管理费/托管费 ---
+    if not r["fee_manage"] or not r["fee_custody"]:
+        try:
+            from data_loader.db_accessor import get_asset_allocation_detail
+            df_detail = get_asset_allocation_detail(symbol)
+            if df_detail is not None and not df_detail.empty:
+                other_fees = df_detail[
+                    (df_detail["费用类型"] == "其他费用")
+                ]
+                if not other_fees.empty:
+                    for _, row in other_fees.iterrows():
+                        fee_name = str(row.get("条件或名称", "")).strip()
+                        try:
+                            fee_val = float(row.get("费用", 0))
+                        except (ValueError, TypeError):
+                            fee_val = 0.0
+                        if "管理费" in fee_name and not r["fee_manage"]:
+                            r["fee_manage"] = fee_val
+                        elif "托管费" in fee_name and not r["fee_custody"]:
+                            r["fee_custody"] = fee_val
+                        elif "销售服务费" in fee_name and not r["fee_sale"]:
+                            r["fee_sale"] = fee_val
+        except Exception as e:
+            logger.debug(f"[load_basic_info] 费用详情查询失败: {e}")
 
     # --- 2. 获取申购赎回状态 ---
     purchase_status = _ak_fund_purchase_status(symbol)
@@ -348,20 +371,7 @@ def load_unit_nav(symbol: str) -> Optional[float]:
     获取最新单位净值（用于基础信息显示）。
     优先从净值缓存读取（与 load_nav 共享 fund_nav 缓存），避免额外 API 调用。
     """
-    # 优先利用已缓存的净值数据
-    try:
-        from data_loader.cache_layer import cache_get
-        cached_df = cache_get("fund_nav", ttl_seconds=300, expect_df=True, symbol=symbol, indicator="单位净值走势")
-        if cached_df is not None and not cached_df.empty:
-            df = cached_df.iloc[:, :2].copy()
-            df.columns = ["date", "nav"]
-            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
-            latest_nav = df["nav"].dropna().iloc[-1]
-            return float(latest_nav)
-    except Exception:
-        pass
-
-    # 缓存未命中，直接调 API
+    # 直接从 base_api 读取（SQLite 优先）
     from data_loader.base_api import _ak_fund_nav
     raw = _ak_fund_nav(symbol)
     if raw is None or raw.empty:
@@ -369,10 +379,9 @@ def load_unit_nav(symbol: str) -> Optional[float]:
         return None
     
     try:
-        df = df.iloc[:, :2].copy()
+        df = raw.iloc[:, :2].copy()
         df.columns = ["date", "nav"]
         df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
-        # 取最后一行的净值值
         latest_nav = df["nav"].dropna().iloc[-1]
         return float(latest_nav)
     except Exception as e:
@@ -396,34 +405,14 @@ def load_nav(
     _years = years or DATA_CONFIG["nav_years"]
 
     def _fetch_raw() -> Optional[pd.DataFrame]:
-        """获取原始净值数据（带缓存）"""
+        """获取原始净值数据（SQLite 优先）"""
+        from data_loader.base_api import _ak_fund_nav
         try:
-            from data_loader.cache_layer import cache_get, cache_set
-            cached = cache_get("fund_nav", ttl_seconds=300, expect_df=True, symbol=symbol, indicator="单位净值走势")
-            if cached is not None:
-                return cached
-        except Exception:
-            pass
-
-        def _call_api():
-            import akshare as ak
-            return ak.fund_open_fund_info_em(symbol=symbol, indicator="单位净值走势")
-
-        try:
-            df = safe_api_call(_call_api, timeout_seconds=10.0, max_retries=1)
-            if df is not None:
-                try:
-                    from data_loader.cache_layer import cache_set as _cs
-                    _cs("fund_nav", df, expect_df=True, symbol=symbol, indicator="单位净值走势")
-                except Exception:
-                    pass
+            df = _ak_fund_nav(symbol)
             return df
         except Exception as e:
             logger.warning(f"[load_nav] {symbol} 净值数据获取失败: {e}")
             return None
-        # 返回空数据而不是抛出异常，避免影响用户体验
-        empty = NavData(symbol=symbol, df=pd.DataFrame(columns=["date", "nav", "ret"]))
-        return empty
     
     # 使用缓存获取原始数据
     df = _fetch_raw()
@@ -480,10 +469,17 @@ def load_stock_holdings(symbol: str) -> HoldingsData:
     for qdate in candidate_dates:
         df_asset = _ak_fund_asset_allocation(symbol, date=qdate)
         if df_asset is not None and not df_asset.empty and "资产类型" in df_asset.columns:
+            # 兼容多种比例列名
+            ratio_col = None
+            for col in ["占净值比例(%)", "仓位占比", "占净值比例"]:
+                if col in df_asset.columns:
+                    ratio_col = col
+                    break
             for _, row in df_asset.iterrows():
                 asset = str(row.get("资产类型", ""))
                 try:
-                    ratio = float(row.get("占净值比例(%)", 0) or 0) / 100
+                    raw = row.get(ratio_col, 0) if ratio_col else 0
+                    ratio = float(raw or 0) / 100
                 except Exception:
                     ratio = 0.0
                 if "股票" in asset:
@@ -507,16 +503,21 @@ def load_stock_holdings(symbol: str) -> HoldingsData:
                 quarters = sorted(df_top10["季度"].unique(), reverse=True)
                 latest_quarter = quarters[0]
                 df_latest = df_top10[df_top10["季度"] == latest_quarter]
+                # DB 数据可能有重复（同一季度同一股票多条），先去重
+                if "股票代码" in df_latest.columns:
+                    df_latest = df_latest.drop_duplicates(subset="股票代码", keep="first")
                 r["top10_stocks"] = df_latest.head(10).to_dict("records")
                 # 用最新季度所有持仓估算股票仓位（仅当资产配置接口未返回时）
                 if r["stock_ratio"] == 0.0:
-                    total = df_latest["占净值比例"].sum()
-                    r["stock_ratio"] = min(total / 100, 1.0)
+                    total = pd.to_numeric(df_latest["占净值比例"], errors="coerce").sum()
+                    r["stock_ratio"] = min(float(total) / 100, 1.0) if pd.notna(total) else 0.0
             else:
+                if "股票代码" in df_top10.columns:
+                    df_top10 = df_top10.drop_duplicates(subset="股票代码", keep="first")
                 r["top10_stocks"] = df_top10.head(10).to_dict("records")
                 if r["stock_ratio"] == 0.0:
-                    total = df_top10["占净值比例"].sum()
-                    r["stock_ratio"] = min(total / 100, 1.0)
+                    total = pd.to_numeric(df_top10["占净值比例"], errors="coerce").sum()
+                    r["stock_ratio"] = min(float(total) / 100, 1.0) if pd.notna(total) else 0.0
             break
 
     # --- 默认值（所有接口均失败时）---
@@ -629,6 +630,8 @@ def load_index_daily(symbol_code: str, start: str, end: str) -> pd.DataFrame:
             return pd.DataFrame(columns=["date", "ret"])
         df = df[["date", "close"]].copy()
         df["date"] = pd.to_datetime(df["date"])
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        df = df.dropna(subset=["close"])
         df = df.sort_values("date")
         df = df[(df["date"] >= pd.to_datetime(start)) & (df["date"] <= pd.to_datetime(end))]
         df["ret"] = df["close"].pct_change().fillna(0)

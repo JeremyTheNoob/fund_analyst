@@ -3,17 +3,14 @@
 基金经理数据加载器
 
 数据源优先级：
-  1. Supabase 全量表（fund_manager_all，Cloud 部署首选）
-  2. 本地 fund_manager_current.csv（本地开发回退）
+  1. SQLite fund_manager_current 表
+  2. 本地 fund_manager_current.csv（回退）
 
 常用接口：
   get_fund_managers(symbol)     → 某只基金的现任经理列表
   get_manager_tenure(symbol)    → 最短/最长任职年限
   get_manager_info(symbol)      → 综合经理信息 dict（供 FundReport 使用）
   load_current_table()          → 返回完整 DataFrame（全量调用）
-
-预热：
-  python -m scripts.prewarm_manager   → 本地 CSV 上传到 Supabase
 """
 
 import logging
@@ -30,8 +27,7 @@ from data_loader.cache_paths import FUND_MANAGER_CURRENT, MANAGER_START_DATE
 _CURRENT_TABLE_PATH = FUND_MANAGER_CURRENT
 _START_DATE_TABLE_PATH = MANAGER_START_DATE
 
-# Supabase 缓存键
-_MANAGER_CACHE_KEY = "fund_manager_all"
+_SUPABASE_CACHE_KEY = "fund_manager_all"
 _MANAGER_CACHE_TTL = 86_400  # 24 小时
 
 # 模块级单例缓存（进程内复用，避免重复 IO）
@@ -42,10 +38,7 @@ _IN_MEMORY_TTL = 3600  # 1 小时内不重复读取
 
 def _load_current_table(force: bool = False) -> pd.DataFrame:
     """
-    加载全量经理表，优先级：进程内存 → Supabase → 本地 CSV。
-
-    Supabase 存储整张 fund_manager_current 表（~34000行，~3MB CSV），
-    作为单一 cache_key fund_manager_all，Cloud 部署时不再依赖本地文件。
+    加载全量经理表，优先级：进程内存 → SQLite → 本地 CSV。
     """
     global _current_df, _loaded_at
 
@@ -60,17 +53,18 @@ def _load_current_table(force: bool = False) -> pd.DataFrame:
 
     df = pd.DataFrame()
 
-    # ── 数据源 1: Supabase 全量表（Storage 优先） ──
-    try:
-        from data_loader.cache_layer import cache_get_large
-        cached = cache_get_large(_MANAGER_CACHE_KEY, _MANAGER_CACHE_TTL)
-        if cached is not None and not cached.empty:
-            df = _normalize_df(cached)
-            logger.debug(f"[manager_loader] Supabase 全量表命中: {len(df):,} 条")
-    except Exception as e:
-        logger.warning(f"[manager_loader] Supabase 查询失败: {e}")
+    # ── 数据源 1: SQLite ──
+    if df.empty:
+        try:
+            from data_loader.db_accessor import DB
+            raw = DB.query_df("SELECT * FROM fund_manager_current")
+            if raw is not None and not raw.empty:
+                df = _normalize_df(raw)
+                logger.debug(f"[manager_loader] SQLite 加载: {len(df):,} 条")
+        except Exception as e:
+            logger.warning(f"[manager_loader] SQLite 查询失败: {e}")
 
-    # ── 数据源 2: 本地 CSV（Supabase 未命中时回退） ──
+    # ── 数据源 2: 本地 CSV（回退） ──
     if df.empty and _CURRENT_TABLE_PATH.exists():
         try:
             raw = pd.read_csv(_CURRENT_TABLE_PATH, dtype=str)
@@ -115,7 +109,7 @@ def get_fund_managers(symbol: str) -> list[dict[str, Any]]:
     每个 dict 包含：
       - name          经理姓名
       - company       所属公司
-      - start_date    上任日期（str YYYY-MM-DD，可能为空）
+      - start_date    上任日期（str YYYY-MM-DD，查不到为空）
       - tenure_days   任职天数（int，可能为 None）
       - tenure_years  任职年限（float，可能为 None）
       - cum_days      累计从业天数（int）
@@ -132,12 +126,16 @@ def get_fund_managers(symbol: str) -> list[dict[str, Any]]:
 
     result = []
     for _, row in rows.sort_values("经理序号").iterrows():
+        start_date = str(row.get("上任日期", "")).strip() if pd.notna(row.get("上任日期")) else ""
+        tenure_days = int(row["任职天数"]) if pd.notna(row.get("任职天数")) else None
+        tenure_years = float(row["任职年限"]) if pd.notna(row.get("任职年限")) else None
+
         result.append({
             "name":         str(row.get("经理姓名", "")).strip(),
             "company":      str(row.get("所属公司", "")).strip(),
-            "start_date":   str(row.get("上任日期", "")).strip() if pd.notna(row.get("上任日期")) else "",
-            "tenure_days":  int(row["任职天数"]) if pd.notna(row.get("任职天数")) else None,
-            "tenure_years": float(row["任职年限"]) if pd.notna(row.get("任职年限")) else None,
+            "start_date":   start_date,
+            "tenure_days":  tenure_days,
+            "tenure_years": tenure_years,
             "cum_days":     int(row["累计从业天数"]) if pd.notna(row.get("累计从业天数")) else None,
             "change_type":  str(row.get("变更类型", "未知")).strip(),
             "is_multi":     str(row.get("多经理标记", "N")).strip() == "Y",

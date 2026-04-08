@@ -7,13 +7,11 @@ from __future__ import annotations
 import logging
 from typing import Optional, Tuple, Dict, Any, List
 
-import akshare as ak
 import pandas as pd
 import numpy as np
 
 from config import CACHE_TTL
-from data_loader.base_api import safe_api_call
-from data_loader.akshare_timeout import call_with_timeout
+from data_loader.base_api import safe_api_call, call_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -90,67 +88,12 @@ def get_index_name(code: str) -> str:
 
 def load_index_valuation(index_code: str) -> Optional[pd.DataFrame]:
     """
-    加载指数 PE/PB 估值历史（中证指数官方接口）。
-    优先从 Supabase 缓存读取，缓存 24 小时。
+    加载指数 PE/PB 估值历史。
     
-    Args:
-        index_code: 指数代码，如 "sh000300"、"000300" 等
-    
-    Returns:
-        DataFrame 列：日期 / 指数代码 / 指数名称 / 当日收盘点位 / 滚动市盈率 / 市净率 / 股息率
-        失败返回 None
+    SQLite 模式：数据库中无 index_valuation 表，返回 None。
+    该功能降级为不可用。
     """
-    short_code = index_code_to_short(index_code)
-
-    # 尝试读缓存
-    try:
-        from data_loader.cache_layer import cache_get, cache_set
-        cached = cache_get("index_valuation", ttl_seconds=86400, expect_df=True, symbol=short_code)
-        if cached is not None:
-            return cached
-    except Exception:
-        pass
-    
-    try:
-        df = call_with_timeout(
-            ak.stock_zh_index_value_csindex, kwargs={"symbol": short_code},
-            timeout=15.0
-        )
-        if df is not None and not df.empty:
-            # 标准化列名
-            col_map = {
-                "日期": "date",
-                "指数代码": "index_code",
-                "指数名称": "index_name",
-                "收盘点位": "close",
-                "滚动市盈率": "pe_ttm",
-                "市净率": "pb",
-                "股息率": "dividend_yield",
-            }
-            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-            
-            # 确保有 date 列
-            if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-            
-            # 数值列转 float
-            for col in ["close", "pe_ttm", "pb", "dividend_yield"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-            
-            logger.info(f"[load_index_valuation] {short_code} 估值数据 {len(df)} 行")
-
-            # 写入缓存
-            try:
-                from data_loader.cache_layer import cache_set as _cs
-                _cs("index_valuation", df, expect_df=True, symbol=short_code)
-            except Exception:
-                pass
-
-            return df
-    except Exception as e:
-        logger.warning(f"[load_index_valuation] {short_code} 估值数据加载失败: {e}")
-    
+    logger.debug(f"[load_index_valuation] {index_code} — SQLite 模式无估值表")
     return None
 
 
@@ -232,55 +175,12 @@ def calc_valuation_percentile(
 
 def load_index_cons_weights(index_code: str) -> Optional[pd.DataFrame]:
     """
-    加载指数成份股及权重（中证指数官方接口）。
-    优先从 Supabase 缓存读取，缓存 7 天（成份股权重半年调整一次）。
+    加载指数成份股及权重。
     
-    Args:
-        index_code: 指数代码，如 "sh000300"、"000300" 等
-    
-    Returns:
-        DataFrame 列：成分券代码 / 成分券名称 / 权重(%)
-        失败返回 None
+    SQLite 模式：数据库中无 index_cons_weights 表，返回 None。
+    该功能降级为不可用。
     """
-    short_code = index_code_to_short(index_code)
-
-    # 尝试读缓存
-    try:
-        from data_loader.cache_layer import cache_get, cache_set
-        cached = cache_get("index_cons_weights", ttl_seconds=604800, expect_df=True, symbol=short_code)
-        if cached is not None:
-            return cached
-    except Exception:
-        pass
-    
-    try:
-        df = call_with_timeout(
-            ak.index_stock_cons_weight_csindex, kwargs={"symbol": short_code},
-            timeout=15.0
-        )
-        if df is not None and not df.empty:
-            # 标准化列名
-            col_map = {
-                "成分券代码": "code",
-                "成分券名称": "name",
-                "权重": "weight",
-            }
-            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-            df["weight"] = pd.to_numeric(df.get("weight", 0), errors="coerce")
-            
-            logger.info(f"[load_index_cons_weights] {short_code} 成份股 {len(df)} 只")
-
-            # 写入缓存
-            try:
-                from data_loader.cache_layer import cache_set as _cs
-                _cs("index_cons_weights", df, expect_df=True, symbol=short_code)
-            except Exception:
-                pass
-
-            return df
-    except Exception as e:
-        logger.warning(f"[load_index_cons_weights] {short_code} 成份股加载失败: {e}")
-    
+    logger.debug(f"[load_index_cons_weights] {index_code} — SQLite 模式无成份股表")
     return None
 
 
@@ -353,33 +253,8 @@ def build_concentration_analysis(weights_df: Optional[pd.DataFrame]) -> Dict[str
 def load_fund_fee_detail(symbol: str) -> Dict[str, float]:
     """
     加载基金费率详情（管理费/托管费/销售服务费）。
-    优先从 Supabase 缓存读取，缓存 7 天（费率极少变动）。
-    
-    Args:
-        symbol: 基金代码
-    
-    Returns:
-        {
-            "management_fee": 管理费率（小数，如0.005）,
-            "custody_fee": 托管费率（小数）,
-            "sales_service_fee": 销售服务费率（小数，C类）,
-            "total_expense_ratio": 综合费率 TER（小数）,
-        }
+    SQLite 模式：从 fund_fee_em 表读取。
     """
-    # 尝试读缓存
-    try:
-        from data_loader.cache_layer import cache_get, cache_set
-        cached = cache_get("fund_fee_detail", ttl_seconds=604800, expect_df=False, symbol=symbol)
-        if cached is not None and isinstance(cached, dict):
-            cached["total_expense_ratio"] = (
-                cached.get("management_fee", 0.0)
-                + cached.get("custody_fee", 0.0)
-                + cached.get("sales_service_fee", 0.0)
-            )
-            return cached
-    except Exception:
-        pass
-
     result = {
         "management_fee": 0.0,
         "custody_fee": 0.0,
@@ -388,16 +263,13 @@ def load_fund_fee_detail(symbol: str) -> Dict[str, float]:
     }
     
     try:
-        df = call_with_timeout(
-            ak.fund_fee_em, kwargs={"symbol": symbol, "indicator": "运作费用"},
-            timeout=10.0
-        )
+        from data_loader.db_accessor import get_fund_fee
+        df = get_fund_fee(symbol)
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 item = str(row.iloc[0]) if len(row) > 0 else ""
                 value = str(row.iloc[1]) if len(row) > 1 else ""
                 
-                # 解析费率值（可能含 %）
                 try:
                     val = float(str(value).replace("%", "").strip()) / 100
                 except (ValueError, TypeError):
@@ -417,13 +289,6 @@ def load_fund_fee_detail(symbol: str) -> Dict[str, float]:
         + result["custody_fee"]
         + result["sales_service_fee"]
     )
-
-    # 写入缓存
-    try:
-        from data_loader.cache_layer import cache_set as _cs
-        _cs("fund_fee_detail", result, expect_df=False, symbol=symbol)
-    except Exception:
-        pass
     
     return result
 

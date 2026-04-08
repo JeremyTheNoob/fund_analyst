@@ -1,23 +1,19 @@
 """
-stock_metrics_loader.py — Top10 持仓个股指标加载（v2 缓存版）
+stock_metrics_loader.py — Top10 持仓个股指标加载（v3 SQLite 计算版）
 
-获取个股的 PE(TTM)、PB、PEG、20日均成交额，
+获取个股的 PE(TTM)、PB、PEG、PE 分位、20日均成交额，
 用于计算估值水位、PEG、流动性穿透(Ldays)等指标。
 
-缓存策略：
-- 优先从 Supabase 全量缓存表（stock_metrics_all）批量查找
-- 缓存未命中时，回退到 AkShare API 单只拉取
-- 全量表由 scripts/prewarm_stock_metrics.py 每日预热
-
-存储估算：
-- 全量 ~5400 只股票 × 9 列 ≈ 800 KB（JSON records）
-- TTL: 24h（每日预热更新）
+数据源（全部本地，零网络依赖）：
+- stock_value 表 → PE(TTM)/PB/PEG + 历史PE分位实时计算
+- stock_daily_amt CSV → 20日均成交额实时计算
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -25,9 +21,149 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# 项目路径
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_AMT_CSV = _PROJECT_ROOT / "data" / "local_cache" / "history" / "stock_daily_amt.csv"
+
 
 # ============================================================
-# 全量缓存读取
+# PE 分位计算
+# ============================================================
+
+_pe_percentile_cache: Dict[str, Optional[float]] = {}
+
+
+def _ensure_pe_percentile_cache(codes: List[str]) -> None:
+    """
+    批量计算 PE 分位并缓存。
+
+    对每只股票：当前 PE 在过去 3 年历史中的百分位。
+    缓存是增量的——已缓存的股票不会重复计算，未缓存的会查询并缓存。
+    """
+    global _pe_percentile_cache
+
+    missing = [c for c in codes if c not in _pe_percentile_cache]
+    if not missing:
+        return
+
+    try:
+        from data_loader.db_accessor import DB
+
+        # 3 年前的日期
+        cutoff = (datetime.now() - timedelta(days=365 * 3)).strftime("%Y-%m-%d")
+
+        # 批量查询所有目标股票过去 3 年的 PE 数据
+        placeholders = ",".join("?" for _ in missing)
+        sql = (
+            f'SELECT "股票代码", "PE(TTM)" FROM stock_value '
+            f'WHERE "股票代码" IN ({placeholders}) '
+            f'AND "数据日期" >= ? '
+            f'AND "PE(TTM)" IS NOT NULL AND "PE(TTM)" != \'\' '
+            f'ORDER BY "股票代码", "数据日期" ASC'
+        )
+        params = missing + [cutoff]
+        df = DB.query_df(sql, params)
+
+        if df is None or df.empty:
+            for c in missing:
+                _pe_percentile_cache[c] = None
+            return
+
+        # 转数值
+        df["PE(TTM)"] = pd.to_numeric(df["PE(TTM)"], errors="coerce")
+        df = df.dropna(subset=["PE(TTM)"])
+
+        # 按股票分组计算分位
+        for code in missing:
+            sub = df[df["股票代码"] == code]
+            if sub.empty or len(sub) < 60:  # 至少 3 个月数据
+                _pe_percentile_cache[code] = None
+                continue
+
+            current_pe = sub["PE(TTM)"].iloc[-1]
+            if current_pe <= 0:
+                _pe_percentile_cache[code] = None
+                continue
+
+            # 当前 PE 在历史中的分位（值越小越低估）
+            pct = (sub["PE(TTM)"] < current_pe).mean() * 100
+            _pe_percentile_cache[code] = round(float(pct), 1)
+
+    except Exception as e:
+        logger.warning(f"[stock_metrics] PE 分位计算失败: {e}")
+        for c in missing:
+            _pe_percentile_cache.setdefault(c, None)
+
+
+# ============================================================
+# 20 日均成交额计算
+# ============================================================
+
+_amt_cache: Dict[str, Optional[float]] = {}
+_amt_df: Optional[pd.DataFrame] = None
+
+
+def _load_amt_csv() -> Optional[pd.DataFrame]:
+    """加载 stock_daily_amt CSV（带缓存）"""
+    global _amt_df
+    if _amt_df is not None:
+        return _amt_df
+
+    if not _AMT_CSV.exists():
+        logger.warning(f"[stock_metrics] 成交额文件不存在: {_AMT_CSV}")
+        _amt_df = pd.DataFrame()
+        return _amt_df
+
+    try:
+        # 只读取需要的列（节省内存），跳过可能的 __CSV__: 前缀行
+        _amt_df = pd.read_csv(
+            _AMT_CSV,
+            usecols=["stock_code", "date", "amount"],
+            dtype={"stock_code": str},
+            low_memory=True,
+            on_bad_lines="skip",
+            skiprows=[0] if _AMT_CSV.stat().st_size > 0 else None,
+        )
+        _amt_df["amount"] = pd.to_numeric(_amt_df["amount"], errors="coerce")
+        _amt_df["date"] = pd.to_datetime(_amt_df["date"], errors="coerce")
+        logger.info(f"[stock_metrics] 成交额数据加载: {len(_amt_df)} 条")
+    except Exception as e:
+        logger.warning(f"[stock_metrics] 成交额数据加载失败: {e}")
+        _amt_df = pd.DataFrame()
+
+    return _amt_df
+
+
+def _calc_avg_amount_20d(codes: List[str]) -> Dict[str, Optional[float]]:
+    """
+    从 stock_daily_amt CSV 计算每只股票最近 20 日均成交额（万元）。
+    """
+    df = _load_amt_csv()
+    if df is None or df.empty:
+        return {c: None for c in codes}
+
+    result: Dict[str, Optional[float]] = {}
+    cutoff = datetime.now() - timedelta(days=40)  # 留余量
+
+    for code in codes:
+        sub = df[
+            (df["stock_code"] == code)
+            & (df["date"] >= pd.Timestamp(cutoff))
+            & (df["amount"].notna())
+        ].tail(20)
+
+        if not sub.empty and len(sub) >= 5:
+            avg = sub["amount"].mean()
+            # amount 单位是元，转为万元
+            result[code] = round(float(avg) / 10000, 2)
+        else:
+            result[code] = None
+
+    return result
+
+
+# ============================================================
+# 全量缓存读取（stock_value 表）
 # ============================================================
 
 _stock_metrics_cache: Optional[pd.DataFrame] = None
@@ -37,61 +173,55 @@ _CACHE_TTL_SECONDS = 3600  # 内存缓存 1 小时
 
 def _load_full_cache() -> Optional[pd.DataFrame]:
     """
-    从 Supabase 加载全量个股指标缓存。
+    从 SQLite 加载全量个股指标（仅最新一条/每只股票）。
 
     Returns:
-        DataFrame 或 None（列：code, pe_ttm, pb, peg, close, market_cap,
-                               date, pe_percentile, avg_amount_20d）
+        DataFrame 或 None（列：code, pe_ttm, pb, peg, close, market_cap, date）
     """
     import time
     global _stock_metrics_cache, _stock_metrics_loaded_at
 
-    # 内存缓存有效期内直接返回
     now = time.time()
     if _stock_metrics_cache is not None and _stock_metrics_loaded_at is not None:
         if now - _stock_metrics_loaded_at < _CACHE_TTL_SECONDS:
             return _stock_metrics_cache
 
-    # 从 Supabase 读取（Storage 优先）
     try:
-        from data_loader.cache_layer import cache_get_large
-        from config import CACHE_TTL
-
-        ttl = CACHE_TTL.get("long", 86400)
-        df = cache_get_large("stock_metrics_all", ttl)
-
+        from data_loader.db_accessor import DB
+        df = DB.query_df("SELECT * FROM stock_value")
         if df is not None and not df.empty:
-            # 确保 code 列存在
+            col_map = {
+                "股票代码": "code",
+                "PE(TTM)": "pe_ttm",
+                "市净率": "pb",
+                "PEG值": "peg",
+                "当日收盘价": "close",
+                "总市值": "market_cap",
+                "数据日期": "date",
+            }
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
             if "code" not in df.columns:
                 logger.warning(
-                    f"[stock_metrics] 缓存数据缺少 code 列，"
+                    f"[stock_metrics] 数据缺少 code 列，"
                     f"实际列: {list(df.columns)[:10]}"
                 )
                 return None
             df["code"] = df["code"].astype(str).str.zfill(6)
             _stock_metrics_cache = df
             _stock_metrics_loaded_at = now
-            logger.info(f"[stock_metrics] 全量缓存加载成功: {len(df)} 只股票")
+            logger.info(f"[stock_metrics] 全量数据加载成功: {len(df)} 条")
             return df
         else:
-            logger.debug("[stock_metrics] 全量缓存未命中")
+            logger.debug("[stock_metrics] 全量数据为空")
             return None
     except Exception as e:
-        logger.warning(f"[stock_metrics] 全量缓存加载失败: {e}")
+        logger.warning(f"[stock_metrics] 全量数据加载失败: {e}")
         return None
 
 
-def _lookup_from_cache(
-    codes: List[str],
-) -> Dict[str, Dict[str, Any]]:
+def _lookup_from_cache(codes: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    从全量缓存中批量查找个股指标。
-
-    Args:
-        codes: 6位股票代码列表
-
-    Returns:
-        {code: {pe_ttm, pb, peg, close, market_cap, date, pe_percentile, avg_amount_20d}}
+    从全量缓存中批量查找个股指标（只取最新一条/每只股票）。
     """
     df = _load_full_cache()
     if df is None or df.empty:
@@ -111,122 +241,37 @@ def _lookup_from_cache(
                 "close": _safe_float(row.get("close")),
                 "market_cap": _safe_float(row.get("market_cap")),
                 "date": str(row.get("date", "")),
-                "pe_percentile": _safe_float(row.get("pe_percentile")),
-                "avg_amount_20d": _safe_float(row.get("avg_amount_20d")),
             }
 
     return result
 
 
 # ============================================================
-# AkShare 单只拉取（回退方案）
-# ============================================================
-
-def _load_single_stock_value(code: str) -> Optional[Dict[str, Any]]:
-    """
-    AkShare 实时拉取单只股票估值指标。
-
-    Returns:
-        {code, pe_ttm, pb, peg, close, market_cap, date, pe_percentile} 或 None
-    """
-    try:
-        import akshare as ak
-        from data_loader.akshare_timeout import call_with_timeout
-
-        df = call_with_timeout(
-            ak.stock_value_em, kwargs={"symbol": code}, timeout=15
-        )
-        if df is None or df.empty:
-            return None
-
-        latest = df.iloc[-1]
-        result = {
-            "code": code,
-            "pe_ttm": _safe_float(latest.get("PE(TTM)")),
-            "pb": _safe_float(latest.get("市净率")),
-            "peg": _safe_float(latest.get("PEG值")),
-            "close": _safe_float(latest.get("当日收盘价")),
-            "market_cap": _safe_float(latest.get("总市值")),
-            "date": str(latest.get("数据日期", "")),
-        }
-
-        # PE 历史分位
-        pe_series = pd.to_numeric(df["PE(TTM)"], errors="coerce").dropna()
-        if len(pe_series) > 60:
-            result["pe_percentile"] = round(
-                (pe_series.iloc[-1] < pe_series).mean() * 100, 1
-            )
-        else:
-            result["pe_percentile"] = None
-
-        return result
-
-    except Exception as e:
-        logger.debug(f"[stock_metrics] {code} AkShare拉取失败: {e}")
-        return None
-
-
-def _load_single_stock_amount(code: str, days: int = 20) -> Optional[float]:
-    """
-    AkShare 实时拉取单只股票最近 N 天平均日成交额。
-
-    Returns:
-        平均日成交额（元），或 None
-    """
-    try:
-        import akshare as ak
-        from data_loader.akshare_timeout import call_with_timeout
-
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
-
-        df = call_with_timeout(
-            ak.stock_zh_a_hist,
-            kwargs={
-                "symbol": code,
-                "period": "daily",
-                "start_date": start_date,
-                "end_date": end_date,
-                "adjust": "qfq",
-            },
-            timeout=15,
-        )
-
-        if df is None or df.empty or "成交额" not in df.columns:
-            return None
-
-        amounts = pd.to_numeric(df["成交额"], errors="coerce").dropna()
-        if len(amounts) < 5:
-            return None
-
-        return float(amounts.tail(days).mean())
-
-    except Exception as e:
-        logger.debug(f"[stock_metrics] {code} 成交额拉取失败: {e}")
-        return None
-
-
-# ============================================================
-# 批量加载（缓存优先 + 回退）
+# 批量加载（主入口）
 # ============================================================
 
 def load_top10_stock_metrics(
     top10_stocks: List[Dict[str, Any]],
+    fund_code: str = "",
+    fund_aum_yi: Optional[float] = None,
     max_workers: int = 5,
 ) -> List[Dict[str, Any]]:
     """
     批量加载 Top10 持仓股的估值指标和成交额。
 
-    策略：
-    1. 先从 Supabase 全量缓存表批量查找
-    2. 缓存未命中的股票回退到 AkShare 实时拉取（并发）
+    数据源（全部本地）：
+    1. stock_value 表 → PE/PB/PEG
+    2. stock_value 表 → PE 分位（历史 3 年实时计算）
+    3. stock_daily_amt CSV → 20 日均成交额
 
     Args:
         top10_stocks: [{code, name, ratio, ...}] 来自 HoldingsData
-        max_workers: AkShare 回退时的并发线程数
+        fund_code: 基金代码，用于从 fund_meta 表自动获取基金规模
+        fund_aum_yi: 基金规模（亿元），直接传入（优先于 fund_code 查询）
+        max_workers: （保留参数，未使用）
 
     Returns:
-        增强后的 list，每项新增 pe_ttm / pb / peg / avg_amount_20d / ldays
+        增强后的 list，每项新增 pe_ttm / pb / peg / pe_percentile / avg_amount_20d / ldays
     """
     if not top10_stocks:
         return []
@@ -234,13 +279,13 @@ def load_top10_stock_metrics(
     results = []
     codes_to_load = []
 
-    for i, stock in enumerate(top10_stocks):
+    for stock in top10_stocks:
         code = str(stock.get("code", "")).zfill(6)
         if not code or code == "000000":
             results.append({
                 **stock,
                 "pe_ttm": None, "pb": None, "peg": None,
-                "avg_amount_20d": None, "ldays": None,
+                "pe_percentile": None, "avg_amount_20d": None, "ldays": None,
             })
             continue
         codes_to_load.append(code)
@@ -249,69 +294,29 @@ def load_top10_stock_metrics(
     if not codes_to_load:
         return results
 
-    # === Step 1: 全量缓存查找 ===
+    # === Step 1: 从 stock_value 表查找 PE/PB/PEG ===
     cache_map = _lookup_from_cache(codes_to_load)
-    cache_hit_count = len(cache_map)
-    if cache_hit_count > 0:
-        logger.info(f"[stock_metrics] 缓存命中 {cache_hit_count}/{len(codes_to_load)} 只股票")
+    if cache_map:
+        logger.info(f"[stock_metrics] stock_value 命中 {len(cache_map)}/{len(codes_to_load)} 只股票")
 
-    # === Step 2: 缓存未命中的回退到 AkShare ===
-    missing_codes = [c for c in codes_to_load if c not in cache_map]
+    # === Step 2: 计算 PE 分位 ===
+    _ensure_pe_percentile_cache(codes_to_load)
 
-    if missing_codes:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+    # === Step 3: 计算 20 日均成交额 ===
+    amt_map = _calc_avg_amount_20d(codes_to_load)
+    amt_hit = sum(1 for v in amt_map.values() if v is not None)
+    if amt_hit:
+        logger.info(f"[stock_metrics] 成交额命中 {amt_hit}/{len(codes_to_load)} 只股票")
 
-        # 并发拉取估值数据
-        value_map: Dict[str, Dict] = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_load_single_stock_value, code): code
-                for code in missing_codes
-            }
-            for future in as_completed(futures, timeout=30):
-                code = futures[future]
-                try:
-                    val = future.result()
-                    if val is not None:
-                        value_map[code] = val
-                except Exception:
-                    pass
+    # === Step 4: 合并结果 + 计算 Ldays ===
+    A_SHARE_DAILY_TURNOVER = 0.05  # A 股日均换手率约 5%
 
-        # 并发拉取成交额
-        amount_map: Dict[str, float] = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_load_single_stock_amount, code): code
-                for code in missing_codes
-            }
-            for future in as_completed(futures, timeout=30):
-                code = futures[future]
-                try:
-                    amt = future.result()
-                    if amt is not None:
-                        amount_map[code] = amt
-                except Exception:
-                    pass
-
-        # 合并回退数据到 cache_map
-        for code in missing_codes:
-            val = value_map.get(code, {})
-            amt = amount_map.get(code)
-            entry = {
-                "code": code,
-                "pe_ttm": val.get("pe_ttm"),
-                "pb": val.get("pb"),
-                "peg": val.get("peg"),
-                "close": val.get("close"),
-                "market_cap": val.get("market_cap"),
-                "date": val.get("date"),
-                "pe_percentile": val.get("pe_percentile"),
-                "avg_amount_20d": amt,
-            }
-            cache_map[code] = entry
-
-    # === Step 3: 合并结果 + 计算 Ldays ===
-    A_SHARE_DAILY_TURNOVER = 0.05
+    # 获取基金规模（用于 Ldays 计算）
+    if fund_aum_yi is None or fund_aum_yi <= 0:
+        if fund_code:
+            fund_aum_yi = _get_fund_aum(fund_code)
+        if fund_aum_yi is None or fund_aum_yi <= 0:
+            fund_aum_yi = 10.0  # 默认 10 亿
 
     for result in results:
         code = result.get("code", "")
@@ -320,19 +325,65 @@ def load_top10_stock_metrics(
         result["pe_ttm"] = entry.get("pe_ttm")
         result["pb"] = entry.get("pb")
         result["peg"] = entry.get("peg")
-        result["pe_percentile"] = entry.get("pe_percentile")
-        result["avg_amount_20d"] = entry.get("avg_amount_20d")
+        result["pe_percentile"] = _pe_percentile_cache.get(code)
+        result["avg_amount_20d"] = amt_map.get(code)
 
-        # Ldays = 持仓占比 / (20日均成交额 × 换手率 / 总规模)
+        # Ldays = 基金持有该股市值 / 日可交易量
+        # 持股市值 = fund_aum_yi * ratio% (亿元)
+        # 日可交易量 = avg_amount_20d(万元) * 换手率
+        # 统一为亿元：日可交易量 = avg_amount_20d * 换手率 / 10000 (亿元)
+        # Ldays = 持股市值(亿元) / 日可交易量(亿元)
         ratio = _safe_float(result.get("ratio") or result.get("占净值比例", 0))
-        amt = entry.get("avg_amount_20d")
+        amt = result.get("avg_amount_20d")  # 万元
         if amt and amt > 0 and ratio and ratio > 0:
-            daily_tradable = amt * A_SHARE_DAILY_TURNOVER
-            result["ldays"] = round(ratio / (daily_tradable / 1e8), 1) if daily_tradable > 0 else None
+            hold_value_yi = fund_aum_yi * ratio / 100  # 亿元
+            daily_tradable_yi = amt * A_SHARE_DAILY_TURNOVER / 10000  # 亿元
+            if daily_tradable_yi > 0:
+                ldays = hold_value_yi / daily_tradable_yi
+                result["ldays"] = round(ldays, 1)
+            else:
+                result["ldays"] = None
         else:
             result["ldays"] = None
 
     return results
+
+
+# ============================================================
+# 基金规模获取
+# ============================================================
+
+_fund_aum_cache: Dict[str, Optional[float]] = {}
+
+
+def _get_fund_aum(fund_code: str) -> Optional[float]:
+    """
+    从 fund_meta 表获取基金规模（亿元）。
+
+    latest_aum 列格式如 "4.74亿元"，提取数值。
+    """
+    if fund_code in _fund_aum_cache:
+        return _fund_aum_cache[fund_code]
+
+    try:
+        from data_loader.db_accessor import DB
+        df = DB.query_df(
+            'SELECT latest_aum FROM fund_meta WHERE code = ?',
+            [fund_code],
+        )
+        if df is not None and not df.empty:
+            raw = str(df.iloc[0]["latest_aum"])
+            import re
+            m = re.search(r"([\d.]+)", raw)
+            if m:
+                val = float(m.group(1))
+                _fund_aum_cache[fund_code] = val
+                return val
+    except Exception as e:
+        logger.warning(f"[stock_metrics] 获取基金规模失败: {e}")
+
+    _fund_aum_cache[fund_code] = None
+    return None
 
 
 # ============================================================

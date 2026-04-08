@@ -64,6 +64,8 @@ def run_cb_analysis(
     ytms = []
     weights = []
     double_high_list = []
+    bond_floor_strong_list = []     # 纯债溢价率 < 5% 的债底保护强转债
+    bond_floor_strong_w = 0.0       # 债底保护强转债的权重合计
 
     for bond in cb_details:
         name = str(bond.get("债券名称", "") or "")
@@ -72,10 +74,12 @@ def run_cb_analysis(
             continue
 
         # 尝试从估值数据中获取
-        cb_code = bond.get("债券代码", "")
+        cb_code_raw = bond.get("债券代码", "")
+        cb_code = _normalize_bond_code(cb_code_raw)
         cb_row = None
         if cb_val_df is not None and not cb_val_df.empty and cb_code:
-            cb_rows = cb_val_df[cb_val_df.iloc[:, 0].astype(str) == str(cb_code)]
+            code_col = "债券代码" if "债券代码" in cb_val_df.columns else cb_val_df.columns[0]
+            cb_rows = cb_val_df[cb_val_df[code_col].astype(str).str.strip() == cb_code]
             if not cb_rows.empty:
                 cb_row = cb_rows.iloc[-1]
 
@@ -85,19 +89,31 @@ def run_cb_analysis(
             premiums.append(premium)
             weights.append(ratio)
 
+        # 转债价格（cb_value_analysis 列名为"收盘价"，不是"转债价格"）
+        price = None
+        if cb_row is not None:
+            price = _safe_float(cb_row.get("收盘价")) or _safe_float(cb_row.get("转债价格"))
+        else:
+            price = _safe_float(bond.get("价格"))
+        if price is not None:
+            prices.append(price)
+
         # 纯债溢价率 / 债底溢价率
         bfp = _safe_float(
             cb_row.get("纯债溢价率") if cb_row is not None else bond.get("纯债溢价率")
         )
         if bfp is not None:
             bond_floor_premiums.append(bfp)
-
-        # 转债价格
-        price = _safe_float(
-            cb_row.get("转债价格") if cb_row is not None else bond.get("价格")
-        )
-        if price is not None:
-            prices.append(price)
+            # 纯债溢价率 < 5%：债底保护强（即使正股跌停，转债也几乎没有下跌空间）
+            if bfp < 5.0:
+                bond_floor_strong_list.append({
+                    "name": name,
+                    "code": cb_code,
+                    "price": price,
+                    "bond_floor_premium": bfp,
+                    "weight": ratio,
+                })
+                bond_floor_strong_w += ratio
 
         # YTM
         ytm_val = _safe_float(
@@ -141,6 +157,11 @@ def run_cb_analysis(
         result.is_double_high = True
         result.double_high_list = double_high_list
 
+    # === 债底保护强度（纯债溢价率 < 5%） ===
+    if bond_floor_strong_list:
+        result.bond_floor_strong_ratio = round(bond_floor_strong_w * 100, 2)
+        result.bond_floor_strong_list = bond_floor_strong_list
+
     # === 已持有模式额外指标 ===
     if mode == "hold":
         # 债底保护失效（YTM 转负）
@@ -170,37 +191,39 @@ def run_cb_analysis(
 # ============================================================
 
 def _filter_convertible_bonds(bond_details: List[Dict]) -> List[Dict]:
-    """筛选可转债"""
+    """筛选可转债，按债券代码去重（同一季度可能有多条记录）"""
     if not bond_details:
         return []
 
+    seen = set()
     result = []
     for bond in bond_details:
         name = str(bond.get("债券名称", "")).upper()
-        if "转债" in name:
-            result.append(bond)
+        if "转债" not in name:
+            continue
+        code = _normalize_bond_code(bond.get("债券代码", ""))
+        if code in seen:
+            continue
+        seen.add(code)
+        result.append(bond)
     return result
 
 
+def _normalize_bond_code(code: str) -> str:
+    """去掉 .SH / .SZ 后缀，统一为纯数字代码"""
+    if not code:
+        return ""
+    s = str(code).strip()
+    if "." in s:
+        s = s.split(".")[0]
+    return s
+
+
 def _load_cb_value_analysis() -> Optional[pd.DataFrame]:
-    """加载可转债估值数据（从本地缓存或API）"""
+    """加载可转债估值数据（从 SQLite cb_value_analysis 表读取）"""
     try:
-        from data_loader.bond_loader import load_cb_holdings_with_details
-        # 复用已有加载函数
-        df = load_cb_holdings_with_details("placeholder")
-        # 这返回的不是估值数据，直接尝试其他路径
-    except Exception:
-        pass
-
-    try:
-        from data_loader.base_api import cached
-        from data_loader.akshare_timeout import call_with_timeout
-        import akshare as ak
-
-        df = call_with_timeout(
-            ak.bond_zh_cov_value_analysis,
-            timeout=15,
-        )
+        from data_loader.base_api import load_cb_value_analysis
+        df = load_cb_value_analysis()
         if df is not None and not df.empty:
             return df
     except Exception as e:
@@ -242,8 +265,9 @@ def _simulate_cb_blackswan(
 
 
 def _safe_ratio(bond: Dict) -> float:
+    """DB 中占净值比例为百分比格式（如 2.2 表示 2.2%），统一除 100"""
     ratio = float(bond.get("占净值比例", 0) or 0)
-    if ratio > 1.5:
+    if ratio > 0:
         ratio = ratio / 100.0
     return ratio
 

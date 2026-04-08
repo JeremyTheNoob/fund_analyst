@@ -90,65 +90,15 @@ def get_visitor_id() -> str:
 # ============================================================
 
 def get_usage_count(visitor_id: str) -> int:
-    """获取用户当前使用次数"""
-    try:
-        from data_loader.cache_layer import _get_client
-        client = _get_client()
-        if client is None:
-            return 0
-
-        resp = (
-            client.table("visitor_usage")
-            .select("usage_count")
-            .eq("visitor_id", visitor_id)
-            .maybe_single()
-            .execute()
-        )
-
-        if resp and resp.data:
-            return resp.data.get("usage_count", 0)
-        return 0
-    except Exception as e:
-        logger.warning(f"[usage] 查询失败: {e}")
-        return 0
+    """获取用户当前使用次数。SQLite 模式下始终返回 0。"""
+    return 0
 
 
 def increment_usage(visitor_id: str) -> bool:
     """
-    使用次数 +1。
-
-    Returns:
-        是否成功
+    使用次数 +1。SQLite 模式下直接放行。
     """
-    try:
-        from data_loader.cache_layer import _get_client
-        client = _get_client()
-        if client is None:
-            return True  # Supabase 不可用时放行
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        # 先查是否存在
-        existing = get_usage_count(visitor_id)
-        if existing > 0:
-            # 更新
-            client.table("visitor_usage").update({
-                "usage_count": existing + 1,
-                "last_used_at": now,
-            }).eq("visitor_id", visitor_id).execute()
-        else:
-            # 新记录
-            client.table("visitor_usage").insert({
-                "visitor_id": visitor_id,
-                "usage_count": 1,
-                "first_seen_at": now,
-                "last_used_at": now,
-            }).execute()
-
-        return True
-    except Exception as e:
-        logger.warning(f"[usage] 更新失败: {e}")
-        return True  # 失败时放行
+    return True
 
 
 def check_usage_limit(visitor_id: str) -> tuple[bool, int]:
@@ -181,33 +131,7 @@ def submit_feedback(
     q7_open_feedback: str = "",
 ) -> bool:
     """
-    提交内测反馈到 Supabase。
-
-    Returns:
-        是否成功
+    提交内测反馈。SQLite 模式下直接返回 False。
     """
-    try:
-        from data_loader.cache_layer import _get_client
-        client = _get_client()
-        if client is None:
-            return False
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        client.table("beta_feedback").insert({
-            "visitor_id": visitor_id,
-            "submitted_at": now,
-            "q1_experience": q1_experience,
-            "q2_channels": json.dumps(q2_channels, ensure_ascii=False),
-            "q3_features": json.dumps(q3_features, ensure_ascii=False),
-            "q4_valuable": json.dumps(q4_valuable, ensure_ascii=False),
-            "q5_complexity": q5_complexity,
-            "q6_pricing": q6_pricing,
-            "q7_open_feedback": q7_open_feedback.strip() if q7_open_feedback else None,
-        }).execute()
-
-        logger.info(f"[feedback] 反馈提交成功: {visitor_id}")
-        return True
-    except Exception as e:
-        logger.warning(f"[feedback] 提交失败: {e}")
-        return False
+    logger.info(f"[feedback] SQLite 模式下反馈未保存: {visitor_id}")
+    return False

@@ -53,6 +53,9 @@ class FundAssetOverview(BaseSchema):
     credit_bond_ratio: float = 0.0    # 信用债占净值比例
     cb_ratio: float = 0.0             # 可转债占净值比例
 
+    # 机构持有比例变化（最近两期）
+    institution_ratio_change: Optional[float] = None
+
 
 # ============================================================
 # 股票维度指标
@@ -123,11 +126,9 @@ class CreditBondMetrics(BaseSchema):
     # === 拟买入 ===
     ytm: Optional[float] = None                  # 静态收益率 YTM
     avg_rating: Optional[str] = None             # 平均信用评级（如"AAA"/"AA+"）
-    institution_ratio_change: Optional[float] = None  # 机构持有比例变化（最近两期）
 
     # === 已持有（额外） ===
-    default_warning: Optional[str] = None        # 违约预警描述
-    reinvestment_risk: Optional[str] = None      # 再投资风险描述
+    default_warning: Optional[str] = None        # 行业风险预警（城投/地产/弱资质）
 
     # === 通用 ===
     credit_spread_latest: Optional[float] = None  # 最新信用利差（bp）
@@ -154,6 +155,8 @@ class CBMetrics(BaseSchema):
     is_double_high: Optional[bool] = None        # 价格/溢价率"双高"
     double_high_list: Optional[List[Dict]] = None  # 双高转债列表
     bond_floor_failed: Optional[bool] = None     # 债底保护失效（YTM转负）
+    bond_floor_strong_ratio: Optional[float] = None  # 债底保护强度（纯债溢价率<5%的转债占净值比例）
+    bond_floor_strong_list: Optional[List[Dict]] = None  # 债底保护强的转债列表
     blackswan_cb_loss: Optional[float] = None    # 股债双杀模拟跌幅 %
 
     # === 动态处方 ===

@@ -537,6 +537,7 @@ def _run_single_analysis(code: str, mode: str = "buy") -> Dict[str, Any]:
                 holdings=holdings,
                 mode=mode,
                 yield_10y=yield_10y,
+                fund_code=code,
             )
         except Exception as e:
             logger.error(f"[{_tag(code)}] 股票分析失败: {e}")
@@ -731,6 +732,7 @@ def _run_single_analysis_silent(code: str, mode: str = "buy") -> Dict[str, Any]:
             result["stock"] = run_stock_analysis(
                 nav=nav_clean, benchmark=benchmark,
                 holdings=holdings, mode=mode, yield_10y=yield_10y,
+                fund_code=code,
             )
         except Exception as e:
             result["warnings"].append(f"股票分析失败: {e}")
@@ -789,10 +791,10 @@ def _build_portfolio_metrics(results: Dict[str, Any]) -> Dict[str, Any]:
                 "code": code,
                 "name": overview.fund_name,
                 "fund_type": overview.fund_type,
-                "stock_ratio": getattr(overview, "stock_ratio", 0),
-                "bond_ratio": getattr(overview, "bond_ratio", 0),
+                "stock_ratio": overview.asset_allocation.get("股票", 0),
+                "bond_ratio": overview.asset_allocation.get("债券", 0),
                 "cb_ratio": getattr(overview, "cb_ratio", 0),
-                "cash_ratio": getattr(overview, "cash_ratio", 0),
+                "cash_ratio": overview.asset_allocation.get("现金", 0),
             })
             valid_reports.append(report)
 
@@ -944,9 +946,9 @@ def _build_per_fund_summary(valid_reports: List[Dict]) -> List[Dict]:
             "code": code,
             "name": overview.fund_name if overview else code,
             "type": overview.fund_type if overview else "",
-            "stock_ratio": getattr(overview, "stock_ratio", 0),
-            "bond_ratio": getattr(overview, "bond_ratio", 0),
-            "cb_ratio": getattr(overview, "cb_ratio", 0),
+            "stock_ratio": (overview.asset_allocation.get("股票", 0) if overview else 0),
+            "bond_ratio": (overview.asset_allocation.get("债券", 0) if overview else 0),
+            "cb_ratio": getattr(overview, "cb_ratio", 0) if overview else 0,
             "ldays": getattr(stock, "ldays", None),
             "alpha_60d": getattr(stock, "alpha_60d", None),
             "max_drawdown_stock": getattr(stock, "max_drawdown", None),
@@ -995,10 +997,12 @@ def _build_overview(code: str, basic, holdings, manager_info: dict) -> "FundAsse
         has_credit_bond = len(holdings.bond_details) - len(rate_bonds) > 0
 
     # 规模
+    import re as _re
     aum = 0.0
     if basic.scale:
         try:
-            aum_str = basic.scale.replace("亿元", "").strip()
+            # 兼容 "4.74亿"、"4.74亿元"、"2.02亿"、"100.50亿元"
+            aum_str = _re.sub(r'[亿元]*', '', basic.scale).strip()
             aum = float(aum_str)
         except Exception:
             pass
@@ -1608,13 +1612,6 @@ def _render_rate_bond_section(rate_bond: Any, overview, mode: str):
                 "desc": f"曲线形态：{rate_bond.yield_curve_shape or '未知'}",
             })
 
-        if rate_bond.tri_deviation is not None:
-            items.append({
-                "label": "全收益脱水",
-                "value": f"{rate_bond.tri_deviation:+.2f}%",
-                "desc": "相对中债综合财富指数的超额收益",
-            })
-
         if rate_bond.drawdown_recovery_days is not None:
             items.append({
                 "label": "回撤修复天数",
@@ -1676,26 +1673,13 @@ def _render_credit_bond_section(credit_bond: Any, overview, mode: str):
                 "desc": f"走势：{credit_bond.credit_spread_trend or '未知'}",
             })
 
-        if credit_bond.institution_ratio_change is not None:
-            items.append({
-                "label": "机构持有比例变化",
-                "value": f"{credit_bond.institution_ratio_change:+.1f}%",
-                "desc": "最近两期机构持有比例变化",
-            })
-
         if mode == "hold":
             if credit_bond.default_warning:
                 items.append({
-                    "label": "违约预警",
+                    "label": "行业风险预警",
                     "value": credit_bond.default_warning,
-                    "desc": "",
+                    "desc": "城投/地产/弱资质敞口检测",
                     "trend": "negative",
-                })
-            if credit_bond.reinvestment_risk:
-                items.append({
-                    "label": "再投资风险",
-                    "value": credit_bond.reinvestment_risk,
-                    "desc": "",
                 })
 
         _render_metrics_grid(items)
@@ -2052,12 +2036,18 @@ def _render_portfolio_overlap(portfolio: Dict[str, Any], sub_reports: Dict[str, 
                 fig.update_xaxes(side="bottom")
                 st.plotly_chart(fig, use_container_width=True)
 
-        # 2. 重叠股票列表（卡片式）
+        # 2. 重叠股票列表（仅显示出现在≥2只基金的）
         if top_overlap:
+            multi_overlap = [s for s in top_overlap if s["fund_count"] >= 2]
+            if not multi_overlap:
+                st.markdown('<span style="color:#27ae60;font-size:13px;">✅ 持仓无重叠，分散化良好</span>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                return
+
             st.markdown('<div style="font-size:13px;font-weight:600;margin:8px 0 4px;">重叠最高的股票</div>', unsafe_allow_html=True)
 
             name_map = {f["code"]: f["name"] for f in portfolio.get("fund_list", [])}
-            for item in top_overlap[:8]:
+            for item in multi_overlap[:8]:
                 fc = item["fund_count"]
                 total_r = item.get("total_ratio", 0)
                 # 颜色按严重程度
@@ -2368,19 +2358,13 @@ def _render_rate_bond_hold_enhanced(rate_bond: Any):
                 unsafe_allow_html=True,
             )
 
-    # 4. 机构占比
-    if rate_bond.institution_ratio is not None:
-        st.markdown(
-            f'<span style="font-size:12px;color:#888;">'
-            f'底层机构持有占比：{rate_bond.institution_ratio:.1f}%</span>',
-            unsafe_allow_html=True,
-        )
+
 
 
 def _render_credit_bond_hold_enhanced(credit_bond: Any):
     """已持有模式·信用债板块增强展示"""
 
-    # 1. 违约预警高亮卡
+    # 1. 行业风险预警高亮卡
     if credit_bond.default_warning:
         warnings = credit_bond.default_warning.split("；")
         for w in warnings:
@@ -2388,23 +2372,12 @@ def _render_credit_bond_hold_enhanced(credit_bond: Any):
                 '<div style="margin:6px 0;padding:10px 14px;border-radius:8px;'
                 'background:#fdeaea;border-left:3px solid #e74c3c;">'
                 '<span style="font-weight:600;color:#e74c3c;font-size:13px;">'
-                f'🚨 违约预警</span>'
+                f'⚠️ 行业风险预警</span>'
                 f'<br><span style="font-size:12px;color:#666;">{w}</span></div>',
                 unsafe_allow_html=True,
             )
 
-    # 2. 再投资风险提示
-    if credit_bond.reinvestment_risk:
-        st.markdown(
-            '<div style="margin:6px 0;padding:10px 14px;border-radius:8px;'
-            'background:#fef9e7;border-left:3px solid #f39c12;">'
-            '<span style="font-weight:600;color:#f39c12;font-size:13px;">'
-            f'💡 再投资风险</span>'
-            f'<br><span style="font-size:12px;color:#666;">{credit_bond.reinvestment_risk}</span></div>',
-            unsafe_allow_html=True,
-        )
-
-    # 3. 信用评级色条
+    # 2. 信用评级色条
     if credit_bond.avg_rating:
         rating = credit_bond.avg_rating
         rating_map = {

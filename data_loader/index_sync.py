@@ -26,7 +26,6 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Tuple, Union, Any
 
-import akshare as ak
 import pandas as pd
 
 from config import (
@@ -42,10 +41,12 @@ from data_loader.base_api import retry
 logger = logging.getLogger(__name__)
 
 # 导入新的全收益指数系统
+# NOTE: 新系统依赖的数据格式与当前 SQLite 表结构不兼容（缺少 close 列），
+# 暂时禁用，使用原有系统（_get_generic_total_return_series）。
 try:
     from data_loader.index_integration import get_total_return_provider
-    NEW_SYSTEM_AVAILABLE = True
-    logger.info("[index_sync] 新全收益指数系统可用")
+    NEW_SYSTEM_AVAILABLE = False  # 临时禁用新系统
+    logger.info("[index_sync] 新全收益指数系统已导入但暂时禁用（数据格式不兼容）")
 except ImportError as e:
     NEW_SYSTEM_AVAILABLE = False
     logger.warning(f"[index_sync] 无法导入新全收益指数系统，将使用原有功能: {e}")
@@ -242,59 +243,9 @@ class SWIndexFetcher:
             
             logger.info(f"[SWIndexFetcher] 获取申万{category}数据: {start_date}~{end_date}")
             
-            # 调用申万指数分析接口
-            df = ak.index_analysis_daily_sw(
-                symbol=category,
-                start_date=start_date,
-                end_date=end_date
-            )
-            
-            if df is None or df.empty:
-                logger.warning(f"[SWIndexFetcher] 申万{category}数据为空")
-                return pd.DataFrame()
-            
-            # 标准化列名
-            column_mapping = {
-                "指数代码": "index_code",
-                "指数名称": "index_name", 
-                "发布日期": "trade_date",
-                "收盘指数": "close",
-                "成交量": "volume",
-                "涨跌幅": "pct_change",
-                "换手率": "turnover_rate",
-                "市盈率": "pe_ratio",
-                "市净率": "pb_ratio",
-                "均价": "avg_price",
-                "成交额占比": "amount_ratio",
-                "流通市值": "float_market_cap",
-                "平均流通市值": "avg_float_market_cap",
-                "股息率": "dividend_yield"
-            }
-            
-            # 重命名列
-            for old_col, new_col in column_mapping.items():
-                if old_col in df.columns:
-                    df = df.rename(columns={old_col: new_col})
-            
-            # 添加数据来源标记
-            df["source_type"] = "official"
-            
-            # 确保日期格式正确
-            if "trade_date" in df.columns:
-                df["trade_date"] = pd.to_datetime(df["trade_date"])
-            
-            # 确保数值列格式正确
-            numeric_cols = ["close", "volume", "pct_change", "turnover_rate", 
-                          "pe_ratio", "pb_ratio", "avg_price", "amount_ratio",
-                          "float_market_cap", "avg_float_market_cap", "dividend_yield"]
-            
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-            
-            logger.info(f"[SWIndexFetcher] 成功获取 {len(df)} 条数据，包含 {df['index_code'].nunique()} 个指数")
-            
-            return df
+            # SQLite 模式：无法调用 AkShare API，返回空 DataFrame
+            logger.warning(f"[SWIndexFetcher] SQLite 模式下无法获取申万{category}数据")
+            return pd.DataFrame()
             
         except Exception as e:
             logger.error(f"[SWIndexFetcher] 获取申万数据失败: {e}")
@@ -673,12 +624,37 @@ def _get_generic_total_return_series(
         # 获取价格指数数据
         from data_loader.base_api import _ak_index_daily_main
         
+        # 格式转换：000300.SH → sh000300（_ak_index_daily_main 期望的格式）
+        ak_code = index_code.lower().strip()
+        # 去掉 .SH / .SZ / .CSI 等后缀
+        for suffix in ['.sh', '.sz', '.csi']:
+            if ak_code.endswith(suffix):
+                ak_code = ak_code[:-len(suffix)]
+                break
+        # 添加交易所前缀
+        if not ak_code.startswith('sh') and not ak_code.startswith('sz'):
+            if ak_code.startswith('000'):
+                ak_code = 'sh' + ak_code
+            elif ak_code.startswith('399'):
+                ak_code = 'sz' + ak_code
+        
         # 获取价格指数
-        price_df = _ak_index_daily_main(index_code)
+        price_df = _ak_index_daily_main(ak_code)
         
         if price_df is None or price_df.empty:
             logger.warning(f"[_get_generic_total_return_series] 无法获取 {index_code} 价格数据")
             return pd.DataFrame()
+
+        # 确保列名正确（SQLite 返回的 DataFrame 列名可能包含 index_code）
+        if 'close' not in price_df.columns:
+            # 尝试从 index_code 和 close 列中提取
+            if 'index_code' in price_df.columns:
+                price_df = price_df.drop(columns=['index_code'], errors='ignore')
+            if price_df.shape[1] >= 2:
+                price_df.columns = ['date', 'close'] + list(price_df.columns[2:])
+            else:
+                logger.warning(f"[_get_generic_total_return_series] {index_code} 数据格式不正确: {list(price_df.columns)}")
+                return pd.DataFrame()
         
         # 确保有date和close列
         if 'date' not in price_df.columns or 'close' not in price_df.columns:
@@ -688,6 +664,8 @@ def _get_generic_total_return_series(
         # 筛选日期范围
         price_df = price_df.copy()
         price_df['date'] = pd.to_datetime(price_df['date'])
+        price_df['close'] = pd.to_numeric(price_df['close'], errors='coerce')
+        price_df = price_df.dropna(subset=['close'])
         price_df = price_df.sort_values('date')
         
         # 转换日期格式

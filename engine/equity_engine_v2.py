@@ -40,6 +40,7 @@ def run_stock_analysis(
     holdings: HoldingsData,
     mode: str = "buy",  # "buy" or "hold"
     yield_10y: Optional[float] = None,  # 10年国债收益率（用于ERP计算）
+    fund_code: str = "",  # 基金代码（用于获取基金规模）
 ) -> StockAssetMetrics:
     """
     股票维度完整分析。
@@ -65,17 +66,33 @@ def run_stock_analysis(
     dates = pd.DatetimeIndex(nav_df["date"])
 
     # === 基准对齐 ===
-    bm_rets = _align_benchmark(fund_ret, benchmark)
+    bm_rets = None
+    if benchmark is None or benchmark.df is None or benchmark.df.empty:
+        logger.warning("[equity_v2] 基准数据为空，Alpha/R²/Beta 等依赖基准的指标将无法计算")
+    else:
+        bm_rets = _align_benchmark(fund_ret, benchmark)
 
     # === 通用指标 ===
-    result.alpha_annual = _calc_alpha(fund_rets, bm_rets)
-    result.r_squared = _calc_r_squared(fund_rets, bm_rets)
-    result.beta = _calc_beta(fund_rets, bm_rets)
+    if bm_rets is not None:
+        result.alpha_annual = _calc_alpha(fund_rets, bm_rets)
+        result.r_squared = _calc_r_squared(fund_rets, bm_rets)
+        result.beta = _calc_beta(fund_rets, bm_rets)
+    else:
+        logger.info("[equity_v2] 基准为空，跳过 Alpha/R²/Beta 计算")
 
     # === Top10 持仓加载 ===
     top10 = holdings.top10_stocks if holdings.top10_stocks else []
     if top10:
-        enriched = load_top10_stock_metrics(top10)
+        # 统一键名：中文键 → 英文键
+        normalized = []
+        for s in top10:
+            entry = {
+                "code": s.get("code") or s.get("股票代码", ""),
+                "name": s.get("name") or s.get("股票名称", ""),
+                "ratio": _safe_float(s.get("ratio") or s.get("占净值比例", 0)),
+            }
+            normalized.append(entry)
+        enriched = load_top10_stock_metrics(normalized, fund_code=fund_code)
         result.top10_details = enriched
 
         # 加权 PEG
@@ -99,10 +116,11 @@ def run_stock_analysis(
             result.pe_extreme = _detect_pe_extreme(enriched)
 
     # === 全收益脱水（TRI 偏离度） ===
-    result.tri_deviation = _calc_tri_deviation(fund_ret, benchmark)
+    if benchmark is not None:
+        result.tri_deviation = _calc_tri_deviation(fund_ret, benchmark)
 
     # === 已持有模式额外指标 ===
-    if mode == "hold":
+    if mode == "hold" and benchmark is not None:
         # 滚动 Alpha 趋势
         alpha_df = _calc_rolling_alpha(fund_ret, benchmark)
         result.alpha_trend_df = alpha_df
@@ -247,14 +265,23 @@ def _calc_weighted_pe_percentile(enriched_stocks: List[Dict]) -> Optional[float]
 
 
 def _calc_weighted_ldays(enriched_stocks: List[Dict]) -> Optional[float]:
-    """加权流动性穿透（Ldays）"""
+    """
+    加权流动性穿透（Ldays）。
+
+    Ldays > 30 的个股视为流动性极差，cap 到 30 天参与加权计算，
+    避免个别极端值（如停牌/冷门股）拉高整体结果。
+    """
+    LDAYS_CAP = 30.0  # 单只股票 Ldays 上限
+
     ldays_list = []
     weights = []
     for s in enriched_stocks:
         ld = s.get("ldays")
         ratio = _safe_float(s.get("ratio") or s.get("占净值比例", 0))
         if ld is not None and ratio and ratio > 0:
-            ldays_list.append(ld)
+            # 超过上限的 cap 住
+            capped_ld = min(ld, LDAYS_CAP)
+            ldays_list.append(capped_ld)
             weights.append(ratio)
 
     if not ldays_list or not weights:

@@ -60,6 +60,7 @@ Thumbs.db
 
 # 预览文件
 previews/
+test_chart_output.html
 
 # 旧版备份
 main_v1_backup.py
